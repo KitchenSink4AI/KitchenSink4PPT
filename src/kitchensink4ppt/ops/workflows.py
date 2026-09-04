@@ -1,0 +1,510 @@
+"""Workflow guidance: recommended tool sequences for common multi-step tasks.
+
+Discoverability rule 4: get_workflows ships in lite and every
+recipe NAMES the packs it needs, so a fresh session learns both the sequence
+and the exact enable_tools call before touching a deck. Every tool named in a
+step MUST be a registered tool on the server (tests assert this against the
+live registry), so a workflow can never point at a tool that does not exist.
+
+The sequences are recommendations, not scripts: steps marked optional can be
+skipped, and the notes carry the judgment calls a caller should know about.
+"""
+
+from __future__ import annotations
+
+from ..core.errors import PptMcpError
+
+# task -> {summary, packs, steps: [{tool, why, optional?}], notes: [...]}
+WORKFLOWS: dict[str, dict] = {
+    "build-a-diagram": {
+        "summary": (
+            "Turn an SVG (or a from-scratch shape layout) into native, "
+            "individually editable PowerPoint shapes with glued connectors, "
+            "then verify by rendering."
+        ),
+        "packs": ["graphics", "assembly-export"],
+        "steps": [
+            {"tool": "enable_tools",
+             "why": "packs=['graphics','assembly-export'] turns on the shape "
+                    "engine and the render-to-verify loop"},
+            {"tool": "get_presentation_view",
+             "why": "see the target slide's current shapes and anchors first"},
+            {"tool": "svg_to_shapes",
+             "why": "compile the SVG into one grouped tree of native shapes "
+                    "(no rasterization); returns every created shape id"},
+            {"tool": "insert_connector", "optional": True,
+             "why": "add glued arrows between shapes by id; glued ends follow "
+                    "the shape when it moves"},
+            {"tool": "export_slide_image",
+             "why": "render the slide to PNG and LOOK at it; layout bugs are "
+                    "visual, not structural"},
+            {"tool": "set_shape",
+             "why": "nudge position, size, fill, or text by shape id and "
+                    "re-render until it is right"},
+        ],
+        "notes": [
+            "insert_shape builds presets and freeform geometry directly when "
+            "there is no SVG to compile.",
+            "align_shapes and distribute_shapes do mechanical cleanup that "
+            "eyeballing coordinates cannot.",
+        ],
+    },
+    "build-a-table-report": {
+        "summary": (
+            "Create or import a data table on a slide, style it, and export "
+            "it back out as CSV/JSON."
+        ),
+        "packs": ["tables-charts"],
+        "steps": [
+            {"tool": "enable_tools",
+             "why": "packs=['tables-charts'] turns on the structural table set"},
+            {"tool": "create_table",
+             "why": "new table with optional initial data; import_table "
+                    "builds one from an existing CSV/JSON file instead"},
+            {"tool": "set_table_cells",
+             "why": "bulk cell edits: text plus per-cell bold/size/fill in "
+                    "one call"},
+            {"tool": "merge_cells", "optional": True,
+             "why": "span header cells; unmerge_cells reverses it"},
+            {"tool": "apply_table_style", "optional": True,
+             "why": "one of the 74 built-in PowerPoint table styles by name"},
+            {"tool": "export_table", "optional": True,
+             "why": "round-trip the finished table to CSV/JSON for records"},
+        ],
+        "notes": [
+            "create_chart / update_chart_data live in the same pack for "
+            "bar, column, line, and pie charts.",
+            "Cell addresses are 0-based (row, col) into the full grid; merge "
+            "continuations refuse edits and name the origin cell.",
+        ],
+    },
+    "template-deck-setup": {
+        "summary": (
+            "Start a new deck FROM a template (theme, layouts, and masters "
+            "intact) and shape its skeleton."
+        ),
+        "packs": ["design"],
+        "steps": [
+            {"tool": "enable_tools",
+             "why": "packs=['design'] turns on create_presentation and "
+                    "slide-size/hide controls"},
+            {"tool": "create_presentation",
+             "why": "byte-copies the template so theme colors, fonts, "
+                    "layouts, and masters all carry over"},
+            {"tool": "list_elements",
+             "why": "kind='layouts' shows which layouts the template offers, "
+                    "by name and part"},
+            {"tool": "insert_slide",
+             "why": "add slides by layout name or index; repeat per section"},
+            {"tool": "set_placeholder_text",
+             "why": "titles and body placeholders inherit the template's "
+                    "styling automatically"},
+            {"tool": "move_slide", "optional": True,
+             "why": "adjust running order; set_slide_hidden parks optional "
+                    "slides without deleting them"},
+        ],
+        "notes": [
+            "keep_slides=False (default) strips the template's slides and "
+            "keeps only its design machinery.",
+        ],
+    },
+    "render-and-review": {
+        "summary": (
+            "The verification loop: render slides to images, inspect, fix, "
+            "re-render; finish with a full-deck validation and PDF."
+        ),
+        "packs": ["assembly-export", "design"],
+        "steps": [
+            {"tool": "enable_tools",
+             "why": "packs=['assembly-export','design'] turns on export, "
+                    "validation, and the autofit report"},
+            {"tool": "get_export_engines",
+             "why": "confirm which render engine exists here (PowerPoint COM "
+                    "is ground truth; LibreOffice drifts on themes/fonts)"},
+            {"tool": "export_slide_image",
+             "why": "PNG per slide; read the image to catch overflow, "
+                    "overlap, and color mistakes"},
+            {"tool": "get_autofit_state", "optional": True,
+             "why": "flags text boxes that are shrinking or overflowing "
+                    "without opening PowerPoint"},
+            {"tool": "validate",
+             "why": "package payload check plus a real invisible-PowerPoint "
+                    "open; repair prompts count as failure"},
+            {"tool": "export_pdf",
+             "why": "the shareable artifact once the deck passes review"},
+        ],
+        "notes": [
+            "set_notes (same pack) writes the speaker notes reviewers read "
+            "alongside the rendered slides.",
+        ],
+    },
+    "one-call-diagram": {
+        "summary": (
+            "Build a timeline, org chart, matrix, cycle, or comparison "
+            "diagram from one spec call, then tweak it by role ids."
+        ),
+        "packs": ["graphics", "assembly-export"],
+        "steps": [
+            {"tool": "enable_tools",
+             "why": "packs=['graphics','assembly-export'] turns on the "
+                    "generators and the render-to-verify loop"},
+            {"tool": "generate_diagram",
+             "why": "kind + spec + inch box in, a grouped tree of native "
+                    "shapes with glued connectors out; the result maps "
+                    "roles to shape ids"},
+            {"tool": "export_slide_image",
+             "why": "render and LOOK; crowding warnings in the result tell "
+                    "you where to check first"},
+            {"tool": "set_shape",
+             "why": "move or restyle any piece by its role's shape id; "
+                    "glued connectors follow"},
+        ],
+        "notes": [
+            "svg_to_shapes covers diagrams outside the five kinds; "
+            "generate_diagram is the fast path, not the ceiling.",
+            "Specs take theme colors by default, so a template change "
+            "recolors the whole diagram.",
+        ],
+    },
+    "batch-edit-from-view": {
+        "summary": (
+            "The token-cheap editing loop, all in lite: read the anchored "
+            "view once, then apply many edits in one atomic call."
+        ),
+        "packs": ["lite"],
+        "steps": [
+            {"tool": "get_presentation_view",
+             "why": "one anchored markdown projection of the deck: slide "
+                    "anchors [s:id], shape anchors [a:hex], table cells "
+                    "t:hex:rNcN"},
+            {"tool": "apply_edits",
+             "why": "batch of {op, anchor, ...} edits; every anchor is "
+                    "resolved BEFORE anything mutates, one backup and one "
+                    "save for the whole batch"},
+            {"tool": "get_presentation_view", "optional": True,
+             "why": "re-read only when anchors went stale (shape deleted or "
+                    "re-created); surviving anchors stay valid"},
+        ],
+        "notes": [
+            "A stale or ambiguous anchor refuses the WHOLE batch and lists "
+            "every failed op index; nothing is half-applied.",
+            "search_and_replace inside apply_edits covers deck-wide text "
+            "swaps without any anchors at all.",
+        ],
+    },
+    "animate-a-build": {
+        "summary": (
+            "Give a deck slide transitions and click-by-click entrance "
+            "builds, honestly bounded to the verified effect subset."
+        ),
+        "packs": ["assembly-export"],
+        "steps": [
+            {"tool": "enable_tools",
+             "why": "packs=['assembly-export'] turns on the "
+                    "transition and animation set"},
+            {"tool": "get_transitions",
+             "why": "see what the deck already carries before overwriting "
+                    "(morph and friends are reported, not authored)"},
+            {"tool": "set_transition",
+             "why": "one call for one slide or the whole deck; kind, "
+                    "direction, millisecond duration, auto-advance"},
+            {"tool": "add_entrance_animation",
+             "why": "appear/fade/wipe per shape; trigger='click' builds "
+                    "click groups, by_paragraph=True builds bullet lists "
+                    "line by line"},
+            {"tool": "list_animations",
+             "why": "verify play order, triggers, and targets after "
+                    "authoring"},
+            {"tool": "clear_animations", "optional": True,
+             "why": "reset a slide (or one shape) when a build sequence "
+                    "should start over"},
+        ],
+        "notes": [
+            "delete_shape prunes its own animation nodes; foreign effect "
+            "trees survive edits untouched and are listed honestly.",
+        ],
+    },
+    "review-cycle": {
+        "summary": (
+            "Run a comment-driven review pass: read every thread, reply, "
+            "resolve what is settled, and report the deck's review state."
+        ),
+        "packs": ["review-sweeps"],
+        "steps": [
+            {"tool": "enable_tools",
+             "why": "packs=['review-sweeps'] turns on modern threaded "
+                    "comments"},
+            {"tool": "comment_report",
+             "why": "the whole deck's threads grouped by slide, with a "
+                    "markdown rendering for review notes"},
+            {"tool": "add_comment",
+             "why": "new feedback anchored to a slide, a position, or a "
+                    "shape"},
+            {"tool": "reply_to_comment",
+             "why": "answer inside the thread; replies nest under the "
+                    "root"},
+            {"tool": "resolve_comment",
+             "why": "mark settled threads; resolved=False reopens"},
+            {"tool": "delete_comment", "optional": True,
+             "why": "remove a thread (cascade_replies=True) or a single "
+                    "reply once it is truly obsolete"},
+        ],
+        "notes": [
+            "Decks with classic (legacy) comments are read-only here: the "
+            "two comment systems never mix in one file.",
+        ],
+    },
+    "live-session": {
+        "summary": (
+            "Edit a deck WHILE the user has it open in PowerPoint: route "
+            "edits live, show the user, save only on request."
+        ),
+        "packs": ["com"],
+        "steps": [
+            {"tool": "enable_tools",
+             "why": "packs=['com'] turns on live_save, "
+                    "live_scroll_to, and live_status"},
+            {"tool": "live_status",
+             "why": "confirm PowerPoint is responsive and the target file "
+                    "is open (and not read-only) before editing"},
+            {"tool": "get_text",
+             "why": "dual-mode reads route to the open copy automatically "
+                    "when the file is locked (live='auto', the default)"},
+            {"tool": "set_placeholder_text",
+             "why": "dual-mode edits land in the OPEN copy and stay "
+                    "unsaved; the user sees them immediately"},
+            {"tool": "live_scroll_to",
+             "why": "bring the edited slide into the user's view without "
+                    "touching their selection"},
+            {"tool": "live_save",
+             "why": "the explicit save; nothing writes the user's file "
+                    "until this call (or the user's own Ctrl+S)"},
+        ],
+        "notes": [
+            "Eleven file tools are dual-mode (get_text, get_slide_info, "
+            "search_and_replace, set_placeholder_text, insert_textbox, "
+            "format_text, insert_shape, set_shape, insert_slide, "
+            "delete_slide, set_notes); live='off' pins them file-only.",
+            "Regex replace, character-range formatting, and other "
+            "file-only parameters refuse loudly on the live path.",
+        ],
+    },
+    "cross-deck-assembly": {
+        "summary": (
+            "Assemble a deck from slides living in other presentations, "
+            "keeping either the destination design or the source's."
+        ),
+        "packs": ["assembly-export", "design"],
+        "steps": [
+            {"tool": "enable_tools",
+             "why": "packs=['assembly-export','design'] turns on the "
+                    "cross-deck copy plus ordering and validation"},
+            {"tool": "get_presentation_info",
+             "why": "inventory both decks first: slide ids, sizes, and "
+                    "section layout"},
+            {"tool": "copy_slide_between",
+             "why": "pull a source slide in; design='link' restyles onto "
+                    "the destination layout with appearance carried, "
+                    "'import' keeps the source design family"},
+            {"tool": "move_slide",
+             "why": "place the arrival in the running order"},
+            {"tool": "validate",
+             "why": "cross-package surgery earns a real opens-clean check "
+                    "before anyone presents the result"},
+        ],
+        "notes": [
+            "Slide-size mismatches copy with a warning and no rescaling; "
+            "check the seams with export_slide_image.",
+            "Same-file copies refuse by design; duplicate_slide covers "
+            "that case.",
+        ],
+    },
+    "rebrand-pipeline": {
+        "summary": (
+            "Move a deck onto a new brand COMPLETELY: theme first, then "
+            "the literal colors and fonts the theme cannot reach."
+        ),
+        "packs": ["design", "review-sweeps"],
+        "steps": [
+            {"tool": "enable_tools",
+             "why": "packs=['design','review-sweeps'] turns on brand "
+                    "transfer and "
+                    "the deck-wide sweeps"},
+            {"tool": "extract_brand",
+             "why": "read the SOURCE deck's palette: theme slots, fonts, "
+                    "and the most-used literal hex fills"},
+            {"tool": "apply_brand",
+             "why": "write the palette onto the target's theme(s); "
+                    "theme-linked content re-resolves, literals do not"},
+            {"tool": "font_inventory",
+             "why": "census what actually remains: literal typefaces, "
+                    "chart fonts, phantom declarations"},
+            {"tool": "replace_colors",
+             "why": "to_theme=True converts leftover literal hex to theme "
+                    "references so they follow future edits; plain "
+                    "hex-to-hex remaps work too"},
+            {"tool": "replace_fonts",
+             "why": "swap stray typefaces everywhere, charts and phantom "
+                    "declarations included"},
+            {"tool": "check_layout", "optional": True,
+             "why": "contrast check after recoloring; new brand colors can "
+                    "sink text into backgrounds"},
+        ],
+        "notes": [
+            "apply_brand's result says honestly which slots and fonts it "
+            "set; the sweeps close the literal-value gap it reports.",
+        ],
+    },
+    "master-restyle": {
+        "summary": (
+            "Restyle a deck at the ROOT: edit the master and layout "
+            "placeholders, decorations, and backgrounds every slide "
+            "inherits."
+        ),
+        "packs": ["design"],
+        "steps": [
+            {"tool": "enable_tools",
+             "why": "packs=['design'] turns on the master/layout editors"},
+            {"tool": "list_master_elements",
+             "why": "the orientation read: placeholders, layouts, slide "
+                    "usage, txStyles defaults, background ownership"},
+            {"tool": "set_master_placeholder",
+             "why": "deck-wide text defaults ('all titles 28pt') and "
+                    "geometry on the master placeholder"},
+            {"tool": "set_layout_placeholder", "optional": True,
+             "why": "per-layout overrides sitting between master and "
+                    "slides"},
+            {"tool": "insert_master_shape", "optional": True,
+             "why": "logo box, footer bar, or rule line rendered by every "
+                    "derived slide"},
+            {"tool": "set_master_background", "optional": True,
+             "why": "master- or layout-level background; slides with their "
+                    "OWN background are flagged, not overwritten"},
+            {"tool": "check_layout",
+             "why": "verify the inherited result on real slides before "
+                    "calling the restyle done"},
+        ],
+        "notes": [
+            "Slides carrying explicit run formatting keep it; every edit "
+            "reports affected_slides so surprises are visible.",
+            "create_layout clones or builds new layouts when the deck "
+            "needs a variant instead of an edit.",
+        ],
+    },
+    "deck-merge": {
+        "summary": (
+            "Combine whole presentations into one deck with sections, an "
+            "agenda, and a validation gate."
+        ),
+        "packs": ["assembly-export"],
+        "steps": [
+            {"tool": "enable_tools",
+             "why": "packs=['assembly-export'] turns on merge, agenda, "
+                    "stats, and validation"},
+            {"tool": "get_presentation_info",
+             "why": "inventory the destination first: slide count, size, "
+                    "existing sections"},
+            {"tool": "merge_decks",
+             "why": "append each source deck in order; design='link' "
+                    "restyles onto the destination, 'import' keeps source "
+                    "designs; sections wrap each source"},
+            {"tool": "generate_agenda_slide", "optional": True,
+             "why": "a jump-linked agenda built from the sections the "
+                    "merge just created"},
+            {"tool": "deck_statistics", "optional": True,
+             "why": "size and speaking-time estimate of the combined deck"},
+            {"tool": "validate",
+             "why": "cross-package surgery earns a real opens-clean check"},
+        ],
+        "notes": [
+            "split_deck is the inverse: one file per section or range, "
+            "dependencies kept per piece.",
+            "For single slides use copy_slide_between (cross-deck-assembly "
+            "recipe) instead of merging a whole deck.",
+        ],
+    },
+    "accessibility-pass": {
+        "summary": (
+            "Audit a deck for screen-reader readiness and repair what the "
+            "audit finds, with named fixes."
+        ),
+        "packs": ["design", "assembly-export"],
+        "steps": [
+            {"tool": "enable_tools",
+             "why": "packs=['design','assembly-export'] turns on the audit, "
+                    "the repair tools, and rendering"},
+            {"tool": "audit_accessibility",
+             "why": "one read: missing alt text, headerless tables, "
+                    "reading-order mismatches, missing titles, contrast; "
+                    "each finding names its repairing call"},
+            {"tool": "export_slide_image", "optional": True,
+             "why": "LOOK at flagged slides before describing images; alt "
+                    "text written blind is worse than none"},
+            {"tool": "set_alt_text",
+             "why": "describe each flagged shape (empty string clears a "
+                    "stale description)"},
+            {"tool": "set_reading_order", "optional": True,
+             "why": "rewrite a slide's shape order for screen readers; "
+                    "z-order changes are reported for review"},
+            {"tool": "audit_accessibility",
+             "why": "re-run to confirm the findings list is empty or "
+                    "consciously accepted"},
+        ],
+        "notes": [
+            "Table header semantics come from create_table/apply_table_"
+            "style first_row flags (tables-charts pack).",
+            "Reading order IS z-order in PowerPoint; reordering can change "
+            "overlaps, which the result reports.",
+        ],
+    },
+    "equation-authoring": {
+        "summary": (
+            "Put real, editable math on slides from LaTeX, then verify it "
+            "reads back and renders."
+        ),
+        "packs": ["graphics", "assembly-export"],
+        "steps": [
+            {"tool": "enable_tools",
+             "why": "packs=['graphics','assembly-export'] turns on the "
+                    "equation tools and the render loop"},
+            {"tool": "insert_equation",
+             "why": "LaTeX in, native PowerPoint math out (editable in the "
+                    "equation editor, not an image), in a new box"},
+            {"tool": "add_equation_to_shape", "optional": True,
+             "why": "append a math paragraph inside an existing text "
+                    "shape at a chosen position"},
+            {"tool": "list_equations",
+             "why": "THE read path for math: equations never appear in "
+                    "get_text/find_text output"},
+            {"tool": "export_slide_image",
+             "why": "render and LOOK; spacing and symbol fidelity are "
+                    "visual judgments"},
+        ],
+        "notes": [
+            "Conversion failures refuse with the converter's message and "
+            "leave the file untouched.",
+            "Equations survive duplicate_slide and cross-deck copies as "
+            "opaque math XML.",
+        ],
+    },
+}
+
+
+def get_workflows(task: str | None = None) -> dict:
+    """Serve one workflow by name, or the index of all of them."""
+    if task is None:
+        return {
+            "workflows": {
+                name: {"summary": wf["summary"], "packs": wf["packs"]}
+                for name, wf in WORKFLOWS.items()
+            },
+            "note": (
+                "call get_workflows(task=<name>) for the full step sequence; "
+                "enable_tools lists every pack with token costs"
+            ),
+        }
+    if task not in WORKFLOWS:
+        raise PptMcpError(
+            f"unknown workflow {task!r}; available: {sorted(WORKFLOWS)}"
+        )
+    return {"task": task, **WORKFLOWS[task]}
