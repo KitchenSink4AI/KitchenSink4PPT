@@ -69,6 +69,7 @@ import colorsys
 
 from lxml import etree
 
+from ..core import budget as _budget
 from ..core.errors import PptMcpError, UnsupportedStructure
 from ..core.package import PptxPackage, qn, resolve_target
 from .design import COLOR_SLOTS, _theme_part_of
@@ -1213,7 +1214,8 @@ _SEV_RANK = {"error": 0, "warning": 1, "info": 2}
 # ================================================================ public API
 
 
-def check_layout(pkg: PptxPackage, slide=None, checks=None) -> dict:
+def check_layout(pkg: PptxPackage, slide=None, checks=None, *,
+                 limit=None, offset: int = 0) -> dict:
     """Run the design guardrail battery over `slide` (a selector, a list of
     selectors, or None for the whole deck). `checks` selects and tunes the
     battery: None = everything with defaults; entries are check names
@@ -1236,7 +1238,10 @@ def check_layout(pkg: PptxPackage, slide=None, checks=None) -> dict:
     summary: dict[str, int] = {}
     for f in findings:
         summary[f["check"]] = summary.get(f["check"], 0) + 1
-    return {
+    # The counts and the per-check summary are the sweep's whole value and
+    # stay complete; only the finding list pages. On the heaviest corpus
+    # deck this call used to return 1.4 million characters.
+    header = {
         "slides_checked": len(recs),
         "checks_run": [name for name, _o in plan],
         "finding_count": len(findings),
@@ -1245,10 +1250,24 @@ def check_layout(pkg: PptxPackage, slide=None, checks=None) -> dict:
             for sev in ("error", "warning", "info")
         },
         "by_check": summary,
-        "findings": findings,
+    }
+    tail = {
         "caveats": {name: CHECKS[name][1] for name, _o in plan},
         "note": (
             "static-XML heuristics, not a renderer; for final visual "
             "verification use export_slide_images and look at the PNGs"
         ),
     }
+    kept, page = _budget.page_items(
+        findings, limit=limit, offset=offset,
+        # the caveats and the note are measured, not guessed: they run to
+        # nearly a thousand characters and a guess put the answer over.
+        overhead=_budget.overhead_of({**header, **tail}),
+        unit="findings",
+        narrow_hint="narrow with slide=<index> or checks=[<one check>]",
+        shrink=_budget.shrink_record,
+    )
+    result = {**header, "findings": kept, **tail}
+    if page is not None:
+        result["page"] = page
+    return result

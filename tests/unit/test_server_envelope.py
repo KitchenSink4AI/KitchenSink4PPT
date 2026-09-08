@@ -129,12 +129,19 @@ def test_docstring_budget_and_no_em_dashes():
         "get_workflows", "diagnose", "validate", "manage_section",
         "generate_diagram", "manage_custom_show",
     }
+    # These four readers answer under an output budget and page, and a
+    # description that did not say so would be lying by omission on exactly
+    # the decks where it matters. They get room for the paging contract and
+    # nothing more; they land at 151 to 175, so this ceiling still bites.
+    paged_readers = {
+        "get_presentation_view", "get_text", "find_text", "get_slide_info",
+    }
     for name, tool in server.mcp._tool_manager._tools.items():
         desc = tool.description or ""
         assert desc, f"{name} has no description"
         assert "\u2014" not in desc, f"{name} description has an em dash"
         tokens = len(desc) / 4
-        cap = 350 if name in multiplex else 130
+        cap = 350 if name in multiplex else (180 if name in paged_readers else 130)
         assert 60 <= tokens <= cap, (
             f"{name} description is ~{tokens:.0f} tokens, "
             f"outside [60, {cap}]"

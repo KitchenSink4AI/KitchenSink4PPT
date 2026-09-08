@@ -464,13 +464,6 @@ def _ensure_tcpr(tc: etree._Element) -> etree._Element:
     return tcpr
 
 
-def _new_cell() -> etree._Element:
-    tc = etree.Element(qn("a:tc"))
-    tc.append(_cell_txbody("", None))
-    etree.SubElement(tc, qn("a:tcPr"))
-    return tc
-
-
 def _clone_cell_shell(ref: etree._Element) -> etree._Element:
     """New a:tc carrying a deep copy of ref's tcPr (formatting) but empty
     text and no merge attributes."""

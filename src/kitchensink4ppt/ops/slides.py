@@ -1461,14 +1461,6 @@ def manage_section(
 # =====================================================================
 
 
-def _resolve_slide_rec(pkg: PptxPackage, slide) -> dict:
-    """Local selector resolution (index or {"slide_id": N}) mirroring
-    ops/read.py, kept self-contained inside the append-only band."""
-    from .read import resolve_slide
-
-    return resolve_slide(pkg, slide)
-
-
 def set_slide_background(pkg: PptxPackage, slide, fill) -> dict:
     """Set or clear ONE slide's background (the p:bg override).
 

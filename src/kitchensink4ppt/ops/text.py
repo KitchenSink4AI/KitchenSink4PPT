@@ -34,6 +34,7 @@ import re as _stdlib_re
 
 from lxml import etree
 
+from ..core import budget as _budget
 from ..core.errors import (
     AmbiguousTarget,
     PptMcpError,
@@ -1248,7 +1249,8 @@ def _autofit_slide_records(pkg: PptxPackage, rec: dict) -> list[dict]:
     return shapes
 
 
-def get_autofit_state(pkg: PptxPackage, slide=None, shape=None) -> dict:
+def get_autofit_state(pkg: PptxPackage, slide=None, shape=None, *,
+                      limit=None, offset: int = 0) -> dict:
     """Autofit state of one shape, every text-bearing shape on a slide, or
     (slide=None) every text-bearing shape on EVERY slide: the bodyPr autofit
     mode (normAutofit with fontScale/lnSpcReduction, spAutoFit, none, or
@@ -1270,7 +1272,18 @@ def get_autofit_state(pkg: PptxPackage, slide=None, shape=None) -> dict:
             }
             for rec in slides_in_scope(pkg, None)
         ]
-        return {"caveat": _AUTOFIT_CAVEAT, "slides": slides_out}
+        # Deck-wide, this is one record per text-bearing shape on every
+        # slide: 880,000 characters on the heaviest corpus deck.
+        kept, page = _budget.page_items(
+            slides_out, limit=limit, offset=offset,
+            overhead=_budget.overhead_of({"caveat": _AUTOFIT_CAVEAT}),
+            unit="slides",
+            narrow_hint="narrow with slide=<index>",
+        )
+        out = {"caveat": _AUTOFIT_CAVEAT, "slides": kept}
+        if page is not None:
+            out["page"] = page
+        return out
     rec = resolve_slide(pkg, slide)
     if shape is not None:
         elem, kind = _resolve_shape(pkg, rec, shape)
@@ -1278,11 +1291,22 @@ def get_autofit_state(pkg: PptxPackage, slide=None, shape=None) -> dict:
         shapes = [_autofit_record(elem)]
     else:
         shapes = _autofit_slide_records(pkg, rec)
-    return {
+    header = {
         "slide_index": rec["index"],
         "slide_id": rec["slide_id"],
         "caveat": _AUTOFIT_CAVEAT,
-        "shapes": shapes,
+    }
+    kept, page = _budget.page_items(
+        shapes, limit=limit, offset=offset,
+        overhead=_budget.overhead_of(header),
+        unit="shapes",
+        narrow_hint="narrow with shape=<id>",
+        shrink=_budget.shrink_record,
+    )
+    return {
+        **header,
+        "shapes": kept,
+        **({"page": page} if page is not None else {}),
     }
 
 

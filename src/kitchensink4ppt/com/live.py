@@ -45,7 +45,7 @@ from ..core.errors import (
 from . import dialogs as _dialogs
 from . import serial as _serial
 from . import xproc as _xproc
-from .bridge import powerpnt_count, powerpnt_pids
+from .bridge import powerpnt_count
 
 # HRESULTs (as signed ints, the way pywin32 surfaces them) — COM-level, not
 # app-level; the table and classification port verbatim from KS4W live.py.

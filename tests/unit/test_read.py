@@ -343,11 +343,23 @@ def test_military_brief_full_read_layer_stress(tmp_path):
         "images", "notes", "sections", "layouts", "masters",
     ):
         out = read.list_elements(pkg, kind)
-        assert out["count"] == len(out["items"])
+        # count is the deck's true total; on this deck the shape list is
+        # far larger than one answer may carry, so the page block accounts
+        # for the difference rather than the list silently being short.
+        page = out.get("page")
+        if page is None:
+            assert out["count"] == len(out["items"])
+        else:
+            assert out["count"] == len(out["items"]) + page["omitted"]
+            assert page["next_offset"] == len(out["items"])
     for i in range(info["slide_count"]):
         si = read.get_slide_info(pkg, i)
         assert si["index"] == i
     text = read.get_text(pkg, include_notes=True)
     assert text["slide_count"] == info["slide_count"]
     found = read.find_text(pkg, "the")
-    assert found["count"] == len(found["matches"])
+    fpage = found.get("page")
+    if fpage is None:
+        assert found["count"] == len(found["matches"])
+    else:
+        assert found["count"] == len(found["matches"]) + fpage["omitted"]

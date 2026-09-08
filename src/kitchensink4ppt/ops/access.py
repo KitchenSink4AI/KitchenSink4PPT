@@ -34,6 +34,7 @@ from __future__ import annotations
 
 from lxml import etree
 
+from ..core import budget as _budget
 from ..core.errors import PptMcpError, TargetNotFound, UnsupportedStructure
 from ..core.package import PptxPackage, qn
 from .design_check import CHECKS as _DC_CHECKS
@@ -319,7 +320,8 @@ def _check_reading_order(pkg: PptxPackage, srec: dict) -> list[dict]:
 # =============================================================== public API
 
 
-def audit_accessibility(pkg: PptxPackage, scope=None) -> dict:
+def audit_accessibility(pkg: PptxPackage, scope=None, *,
+                        limit=None, offset: int = 0) -> dict:
     """One-stop accessibility audit over `scope` (None = whole deck, a slide
     selector, or a list of selectors).
 
@@ -356,7 +358,9 @@ def audit_accessibility(pkg: PptxPackage, scope=None) -> dict:
     caveats = dict(_CAVEATS)
     for name in _DELEGATED_CHECKS:
         caveats[name] = _DC_CHECKS[name][1]
-    return {
+    # Counts and the per-check summary stay complete: they are the audit's
+    # answer. Only the finding list pages.
+    header = {
         "slides_checked": len(recs),
         "checks_run": list(ALL_CHECKS),
         "finding_count": len(findings),
@@ -365,7 +369,17 @@ def audit_accessibility(pkg: PptxPackage, scope=None) -> dict:
             for sev in ("error", "warning", "info")
         },
         "by_check": by_check,
-        "findings": findings,
+    }
+    kept, page = _budget.page_items(
+        findings, limit=limit, offset=offset,
+        overhead=_budget.overhead_of(header) + len(str(caveats)) + 300,
+        unit="findings",
+        narrow_hint="narrow with scope=<slide index or list of indexes>",
+        shrink=_budget.shrink_record,
+    )
+    result = {
+        **header,
+        "findings": kept,
         "caveats": caveats,
         "note": (
             "static-XML checks; missing_title and contrast come from "
@@ -373,6 +387,9 @@ def audit_accessibility(pkg: PptxPackage, scope=None) -> dict:
             "is one-stop). reading_order is a labeled heuristic."
         ),
     }
+    if page is not None:
+        result["page"] = page
+    return result
 
 
 def set_alt_text(pkg: PptxPackage, slide, shape: int, text: str) -> dict:

@@ -31,7 +31,7 @@ from pathlib import Path
 
 from lxml import etree
 
-from ..core.errors import PptMcpError, TargetNotFound, UnsupportedStructure
+from ..core.errors import PptMcpError, UnsupportedStructure
 from ..core.package import PptxPackage, qn, rels_name
 from ..core.sandbox import check_path
 from . import geometry as g

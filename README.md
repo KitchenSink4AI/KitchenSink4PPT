@@ -1,10 +1,18 @@
 <!-- mcp-name: io.github.nometalalchemist/kitchensink4ppt -->
-# KitchenSink4PPT
+# 🖌️ KitchenSink4PPT
+
+[![Tests](https://github.com/nometalalchemist/KitchenSink4PPT/actions/workflows/tests.yml/badge.svg)](https://github.com/nometalalchemist/KitchenSink4PPT/actions/workflows/tests.yml)
+[![PyPI](https://img.shields.io/pypi/v/kitchensink4ppt)](https://pypi.org/project/kitchensink4ppt/)
+[![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue)](LICENSE)
+
+[Landing page](https://nometalalchemist.github.io/KitchenSink4PPT/) · [llms.txt](https://nometalalchemist.github.io/KitchenSink4PPT/llms.txt) (machine-readable capability manifest for agents and LLM crawlers)
 
 Everything plus the kitchen sink for Microsoft PowerPoint: an MCP server for
 .pptx files, engineered not to corrupt. Slides, text, tables, charts, notes,
 export, and the one thing no other server in the ecosystem does: arbitrary
 vector graphics as native, editable PowerPoint shapes.
+
+New here? Start with the [Quickstart](docs/QUICKSTART.md).
 
 ## The headline: real graphics, not pictures of graphics
 
@@ -26,20 +34,46 @@ fix it.
 
 ## Install
 
+### Claude Desktop: one click
+
+Download `kitchensink4ppt.mcpb` from the
+[latest release](https://github.com/nometalalchemist/KitchenSink4PPT/releases/latest)
+and double-click it, or drag it into the Claude Desktop window. Desktop adds
+it as an extension and the sink is connected. Nothing to type, nothing to
+configure. The bundle launches the server with
+[uv](https://docs.astral.sh/uv/), so uv needs to be on your PATH
+(`pip install uv`); if Desktop does not pick the file up on a double-click,
+use Settings > Extensions > Advanced settings > Install extension.
+
+### Claude Code: one line
+
+```
+claude mcp add powerpoint -s user -- uvx kitchensink4ppt
+```
+
+That fetches and runs the server for you, so there is nothing to install
+first.
+
+### For developers: pip, source, other MCP clients
+
+Install the package and point any MCP client at the executable:
+
 ```
 pip install kitchensink4ppt
 ```
 
-MCP config (Claude Desktop, Claude Code, or any MCP client):
-
 ```json
-{
-  "mcpServers": {
-    "powerpoint": {
-      "command": "ppt-mcp"
-    }
-  }
-}
+{"mcpServers": {"powerpoint": {"command": "kitchensink4ppt"}}}
+```
+
+The `ppt-mcp` executable is an equivalent entry point. From a clone:
+
+```
+git clone https://github.com/nometalalchemist/KitchenSink4PPT
+cd KitchenSink4PPT
+python -m venv .venv
+.venv\Scripts\pip install -e .
+claude mcp add powerpoint -s user -- <absolute-path>\.venv\Scripts\ppt-mcp.exe
 ```
 
 Requires Python 3.12+. Everything file-based runs on any OS; PDF and image
@@ -48,9 +82,9 @@ headless where available. Nothing ever needs a network connection.
 
 ## Tiered loading: start light, grow mid-session
 
-The server starts in lite mode: 24 tools, roughly 4.7k tokens of tool
+The server starts in lite mode: 24 tools, roughly 5.2k tokens of tool
 context, covering reading, slide CRUD, text, hyperlinks, batch editing,
-backups, and diagnostics. The other 114 tools are registered but disabled
+backups, and diagnostics. The other 117 tools are registered but disabled
 until asked for:
 
 ```
@@ -71,16 +105,15 @@ Environment pins for hosts and power users:
 | `KS4P_ALL_TOOLS` | `true` loads every pack at startup; `false` or empty keeps lite. `KS4P_MODE` wins when set |
 | `KS4P_LOCK_TOOLS` | `true` fixes the surface at startup; `false` or empty leaves it adjustable. `KS4P_PACK_POLICY` wins when set |
 | `KS4P_ALLOWED_ROOTS` | opt-in path sandbox; tools refuse to touch files outside these roots |
-| `KS4P_NO_UPDATE_CHECK` | `1` or `true` turns the update check off completely: no network call, no cache file |
+| `KS4P_UPDATE_CHECK` | `off` turns the update check off completely: no network call, no cache file (the older `KS4P_NO_UPDATE_CHECK=1` still works) |
 
-The server checks PyPI, the package index it was installed from, at most once
-every 14 days to see whether a newer version exists; the check sends nothing
-but a standard HTTP request for that package's public JSON, and setting
-`KS4P_NO_UPDATE_CHECK=1` turns it off entirely. It runs on a background thread
-at startup, so it never delays a call, and it fails silently: a timeout or an
-offline machine leaves no error anywhere. When a newer release exists,
-`diagnose` adds one line saying so. That is the only place it ever appears,
-and the server never downloads or installs anything on its own.
+**Update check.** The server looks for a newer release on PyPI only when you
+call `diagnose`, never at startup and never on a timer, at most one request
+every seven days, capped at two seconds. The check is a single plain HTTPS
+GET to pypi.org that sends nothing but the request itself. A failed check is
+reported with its reason rather than hidden. Set `KS4P_UPDATE_CHECK=off` to turn it off
+completely (the older `KS4P_NO_UPDATE_CHECK=1` still works). The server never
+downloads or installs anything.
 
 The last two are the checkboxes the `.mcpb` bundle shows in Claude Desktop:
 "Load every tool at startup" and "Lock the tool set at startup". Both take
@@ -92,19 +125,19 @@ Tip: in Claude Desktop's Tool permissions, set the Read-only tools group to
 Always Allow: those tools cannot change anything, and it stops most
 permission prompts.
 
-## Pack inventory (138 tools total)
+## Pack inventory (141 tools total)
 
 | Pack | Tools | ~Tokens | What is in it |
 |---|---|---|---|
-| lite core (always on) | 24 | 4.7k | anchored deck view, atomic batch edits, get/find/replace text (live-aware, SmartArt text included), slide insert/delete/duplicate/reorder, placeholder text, hyperlinks (set/remove/list with broken-link detection), info and enumeration, copy, snapshots, backups, diagnose, workflows, enable/disable_tools |
-| graphics | 24 | 6.2k | shapes, glued connectors, SVG compiler, one-call diagram generators (timeline, org chart, matrix, cycle, comparison), images, video/audio embed, groups, align/distribute, z-order, text boxes, run formatting, bullets, format painter (copy_format/copy_position), native LaTeX equations |
+| lite core (always on) | 24 | 5.2k | anchored deck view, atomic batch edits, get/find/replace text (live-aware, SmartArt text included), slide insert/delete/duplicate/reorder, placeholder text, hyperlinks (set/remove/list with broken-link detection), info and enumeration, copy, snapshots, backups, diagnose, workflows, enable/disable_tools |
+| graphics | 27 | 7.1k | shapes, glued connectors, SVG compiler, one-call diagram generators (timeline, org chart, matrix, cycle, comparison), images, video/audio embed, groups, align/distribute, z-order, text boxes, run formatting, bullets, format painter (copy_format/copy_position), native LaTeX equations |
 | tables-charts | 19 | 4.0k | create table, bulk cells, merge/unmerge, row and column insert/delete, borders and fills, widths/heights, 74 built-in styles, CSV/JSON export/import, bar/line/pie/scatter/combo charts with editable data workbooks, chart formatting and data readback |
-| design | 25 | 4.8k | create presentation FROM template, apply layouts, theme read AND write (colors, fonts), brand extract/apply, layout guardrail checks, slide size, hide/move slide, autofit report, slide and master/layout backgrounds, full master and layout editing (placeholders, decoration shapes, create_layout), accessibility audit and repair |
-| assembly-export | 28 | 4.9k | speaker notes, sections, footers and slide numbers, PDF/PNG/handout export, engine detection, opens-clean validation, text extraction, cross-deck slide copy, deck merge and split, agenda slides, deck statistics, document properties, anonymize, slide-show setup and custom shows, slide transitions (fade/push/wipe/split/cut/random, millisecond durations, auto-advance) and bounded entrance animations (appear/fade/wipe, click builds, by-paragraph) |
+| design | 25 | 4.9k | create presentation FROM template, apply layouts, theme read AND write (colors, fonts), brand extract/apply, layout guardrail checks, slide size, hide/move slide, autofit report, slide and master/layout backgrounds, full master and layout editing (placeholders, decoration shapes, create_layout), accessibility audit and repair |
+| assembly-export | 28 | 5.0k | speaker notes, sections, footers and slide numbers, PDF/PNG/handout export, engine detection, opens-clean validation, text extraction, cross-deck slide copy, deck merge and split, agenda slides, deck statistics, document properties, anonymize, slide-show setup and custom shows, slide transitions (fade/push/wipe/split/cut/random, millisecond durations, auto-advance) and bounded entrance animations (appear/fade/wipe, click builds, by-paragraph) |
 | review-sweeps | 13 | 2.3k | modern threaded comments (add, replies, resolve, cascade delete, dual-system listing), whole-deck review report, structural deck-to-deck diff (compare_decks), and the deck-wide sweeps: font inventory/replace (incl. charts and phantom declarations), color remap and literal-to-theme unification, proofing language, whole-deck logo replace, compress/purge |
 | com (Windows only) | 5 | 0.5k | PowerPoint status and zombie process check, plus editing the deck while it is OPEN in the user's PowerPoint: explicit save, scroll-to-slide, session status; eleven file tools route here automatically via `live='auto'` |
 
-Full surface: about 27.4k tokens if you pin `KS4P_MODE=full` (numbers from
+Full surface: about 29.1k tokens if you pin `KS4P_MODE=full` (numbers from
 `scripts/measure_surface.py`, not hand-math).
 
 v1.1 consolidated nine packs into six. The v1.0 names
@@ -145,7 +178,7 @@ The same discipline as KitchenSink4Word, applied from day one:
 
 Beta. The file layer (packages, slides, text, graphics, tables, charts,
 comments, animations, themes, links, media, notes, masters, equations,
-accessibility, deck assembly, sweeps, export) is covered by an 885-test
+accessibility, deck assembly, sweeps, export) is covered by a 1,241-test
 suite, including validation that generated decks open clean in real
 PowerPoint, and the server passes a raw stdio protocol round-trip suite.
 Live editing of decks open in PowerPoint runs every call through one

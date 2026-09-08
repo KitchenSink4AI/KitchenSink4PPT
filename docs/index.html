@@ -5,11 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <!--
   SHIPPED NUMBERS (v1.1, 2026-09-04; re-derive before any deploy):
-    138   registered tools (scripts/measure_surface.py) - masthead catalog no., specs strip, colophon
-    885   tests (python -m pytest tests/unit --co -q) - specs strip, comparison foot-note
+    141   registered tools (scripts/measure_surface.py) - masthead catalog no., specs strip, colophon
+    1241  tests (python -m pytest tests/unit --co -q) - specs strip, comparison foot-note
     1646  adversarial stress calls across three raw-stdio rounds (400 + 881 + 365) - specs strip, foot-note
   Also re-verify the comparison-table survey date line before ship.
-  COUNT DOCTRINE: 138 is the ONLY tool total stated on this page; the inventory deliberately
+  COUNT DOCTRINE: 141 is the ONLY tool total stated on this page; the inventory deliberately
   carries no per-pack counts except the lite core's "24" (which also appears in DEPT. 04; keep them
   identical). If per-pack counts are ever added, they must visibly sum to the stated total, or a
   careful reader will do the math and get two answers (this happened on the KS4W page).
@@ -20,13 +20,18 @@
   strokes, and the page carries exactly one drip (off the tale label). --glow #e0a43c is the
   wet-paint state: the pull-chain raises the WET PAINT sign. Chip names ACCOMPANY the pack names,
   they never replace them; a reader ignoring the theme still reads every feature.
-  The pendant lamp and its pull-chain are the family's inherited fixture for this shelf and stay
-  exactly as they are; the copy talks about finishing a room, not about light.
+  FIXTURE (author-directed 2026-09-06): the hanging brush is the fixture; the electric identity
+  moved to Excel with the electrical aisle. Same cord, same pull-chain button, same aria-pressed
+  toggle, per visit, not stored. The pull-chain is THE EVENING COAT: it repaints the page in its
+  evening colors (body.dusk stock swap unchanged). Flicker keyframes removed; the ambient motion
+  is a slow hanging sway, guarded by the reduced-motion block. The light pool is now a small
+  paint pool under the brush; the WET PAINT sign stays. XL's plug references are Excel's own
+  and stay untouched. The copy talks about finishing a room, not about light.
   STOREFRONT: live at https://nometalalchemist.github.io/
 -->
 <title>KitchenSink4PPT: Everything plus the kitchen sink for Microsoft PowerPoint</title>
-<meta name="description" content="138-tool MCP server for Microsoft PowerPoint. Native editable diagrams from SVG with glued connectors (move the node, the arrows follow), file-based table surgery, slide duplication done right, template-aware deck creation, six capability packs with tiered loading from a 24-tool core. Live editing of an open deck, serialized and dialog-aware. Engineered not to corrupt.">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💡</text></svg>">
+<meta name="description" content="141-tool MCP server for Microsoft PowerPoint. Native editable diagrams from SVG with glued connectors (move the node, the arrows follow), file-based table surgery, slide duplication done right, template-aware deck creation, six capability packs with tiered loading from a 24-tool core. Live editing of an open deck, serialized and dialog-aware. Engineered not to corrupt.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🖌️</text></svg>">
 <link rel="llms" href="llms.txt" type="text/plain">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -55,7 +60,7 @@ body{
     radial-gradient(ellipse at 20% -10%, var(--dusk-tint), transparent 55%),
     repeating-linear-gradient(0deg, transparent 0 27px, rgba(30,53,80,.035) 27px 28px);
 }
-/* dusk mode: the pull-chain swaps the paper stock for evening light (per visit, not stored) */
+/* the evening coat: the pull-chain repaints the page in its evening colors (per visit, not stored) */
 body.dusk{
   --paper:#daddc7; --paper-deep:#c6cfb6; --pool-op:.85;
   --dusk-tint:rgba(224,164,60,.16);
@@ -127,14 +132,14 @@ a:hover{text-decoration-style:wavy;text-decoration-thickness:1px;text-underline-
 .tagline{font-family:'Fraunces',"Fraunces Fallback",Georgia,serif;font-style:italic;font-size:clamp(18px,2.6vw,26px);
   color:var(--ink-soft);margin:22px auto 0;max-width:660px}
 
-/* the pendant lamp (family fixture: Word owns the faucet, PPT owns the light over the bench) */
-.pendant{display:inline-block;position:relative;animation:sway 7s ease-in-out infinite;transform-origin:top center}
+/* the hanging brush (family fixture: Word owns the faucet, PPT hangs the brush over the bench) */
+.pendant{display:inline-block;position:relative;animation:sway 9s ease-in-out infinite;transform-origin:top center}
 .pendant .cord{display:block;width:2px;height:38px;background:var(--ink);margin:0 auto;position:relative}
 .pendant .cord:before{content:"";position:absolute;top:-2px;left:-5px;width:12px;height:5px;
   background:var(--ink);border-radius:0 0 3px 3px}
 .pendant .bulb{font-size:clamp(48px,7vw,72px);line-height:1;display:block;
-  transform:rotate(180deg);filter:sepia(.25) saturate(.85);
-  animation:flicker 5.5s linear infinite;transition:filter .6s}
+  transform:rotate(-45deg);filter:sepia(.25) saturate(.85);
+  transition:filter .6s}
 .pendant .chain{position:absolute;top:34px;right:-16px;width:20px;height:44px;background:none;
   border:none;cursor:pointer;padding:0}
 .pendant .chain:before{content:"";position:absolute;top:0;left:9px;width:2px;height:30px;
@@ -147,9 +152,10 @@ a:hover{text-decoration-style:wavy;text-decoration-thickness:1px;text-underline-
 @keyframes pull{0%{transform:translateY(0)}45%{transform:translateY(7px)}100%{transform:translateY(0)}}
 .chain-hint{display:block;font-size:9px;letter-spacing:.22em;text-transform:uppercase;
   color:var(--ink-soft);opacity:.55;margin-top:6px}
-.pool{width:120px;height:16px;margin:2px auto 0;border-radius:50%;
-  background:radial-gradient(ellipse, rgba(224,164,60,var(--pool-op)), transparent 70%);
-  animation:flicker 5.5s linear infinite;transition:transform .6s}
+/* the paint pool: a small puddle under the brush tip, sharp-edged like a spill, not a glow */
+.pool{width:72px;height:12px;margin:2px auto 0;border-radius:50%;
+  background:radial-gradient(ellipse, rgba(224,164,60,var(--pool-op)) 0 58%, transparent 66%);
+  transition:transform .6s}
 body.dusk .pool{transform:scaleX(1.5) scaleY(1.25)}
 body.dusk .dept:before, body.dusk .spec:before, body.dusk .sec-head .no:before{
   background-image:linear-gradient(180deg, rgba(255,255,255,.38), rgba(255,255,255,0) 65%)}
@@ -157,8 +163,8 @@ body.dusk .dept:before, body.dusk .spec:before, body.dusk .sec-head .no:before{
   text-transform:uppercase;color:var(--stamp);border:1.5px solid var(--stamp);padding:2px 9px;
   border-radius:3px;transform:rotate(-2deg);opacity:0;transition:opacity .5s}
 body.dusk .wetpaint{opacity:.95}
-@keyframes sway{0%,100%{transform:rotate(0deg)}25%{transform:rotate(1.6deg)}75%{transform:rotate(-1.6deg)}}
-@keyframes flicker{0%,4%{opacity:.25}5%,7%{opacity:1}8%{opacity:.4}9%,100%{opacity:1}}
+/* the slow hanging sway is the fixture's only ambient motion (flicker retired with the lamp) */
+@keyframes sway{0%,100%{transform:rotate(0deg)}25%{transform:rotate(1.4deg)}75%{transform:rotate(-1.4deg)}}
 
 .specs-strip{display:flex;justify-content:center;gap:0;margin:44px auto 0;
   border:2px solid var(--ink);max-width:720px;background:var(--paper-deep);
@@ -488,13 +494,13 @@ footer a{color:var(--patina)}
 <div class="wrap masthead rev d1">
   <span data-i18n="m.left"><b>PAINT DEPARTMENT</b> &middot; AISLE P</span>
   <nav class="lang-toggle" id="langToggle" aria-label="Language"></nav>
-  <span><span data-i18n="m.catalog">CATALOG № 138</span> · <a href="https://nometalalchemist.github.io/" data-i18n="m.family">FAMILY</a> · <a href="#service" data-i18n="m.service">SERVICE</a> · <a href="https://github.com/nometalalchemist/KitchenSink4PPT">GITHUB</a> · <a href="https://pypi.org/project/kitchensink4ppt/">PYPI</a> · <a href="llms.txt">LLMS.TXT</a></span>
+  <span><span data-i18n="m.catalog">CATALOG № 141</span> · <a href="https://nometalalchemist.github.io/" data-i18n="m.family">FAMILY</a> · <a href="#service" data-i18n="m.service">SERVICE</a> · <a href="https://github.com/nometalalchemist/KitchenSink4PPT">GITHUB</a> · <a href="https://pypi.org/project/kitchensink4ppt/">PYPI</a> · <a href="llms.txt">LLMS.TXT</a></span>
 </div>
 
 <div class="switchbar">
   <span class="lbl">THE KITCHENSINK WORKS</span>
   <a href="https://nometalalchemist.github.io/KitchenSink4Word/">🚰 KitchenSink4Word</a>
-  <span class="here">💡 KitchenSink4PPT <span data-i18n="sw.here">(you are here)</span></span>
+  <span class="here">🖌️ KitchenSink4PPT <span data-i18n="sw.here">(you are here)</span></span>
   <a href="https://nometalalchemist.github.io/KitchenSink4XL/">🔌 KitchenSink4XL</a>
   <a href="https://nometalalchemist.github.io/">🏪 <span data-i18n="sw.store">The storefront</span></a>
 </div>
@@ -503,11 +509,11 @@ footer a{color:var(--patina)}
   <div class="stamp rev d4" data-i18n="hero.stamp">SHAPES,<br>NOT SCREENSHOTS</div>
   <div class="rev d1">
     <span class="pendant">
-      <span class="cord"></span><span class="bulb">💡</span>
-      <button class="chain" id="pullChain" type="button" aria-pressed="false" aria-label="Pull the lamp chain to toggle dusk lighting"><span class="bead"></span></button>
+      <span class="cord"></span><span class="bulb">🖌️</span>
+      <button class="chain" id="pullChain" type="button" aria-pressed="false" aria-label="Pull the cord to repaint the page in its evening coat"><span class="bead"></span></button>
     </span>
     <div class="pool"></div>
-    <span class="chain-hint" data-i18n="hero.chain">pull the chain</span>
+    <span class="chain-hint" data-i18n="hero.chain">pull for a fresh coat</span>
     <span class="wetpaint" data-i18n="state.wet" aria-hidden="true">WET PAINT</span>
   </div>
   <div class="catalog-no rev d2" data-i18n="hero.catno">Model Context Protocol · Server for Microsoft PowerPoint</div>
@@ -515,8 +521,8 @@ footer a{color:var(--patina)}
   <p class="tagline rev d3" data-i18n="hero.tagline">Everything <em>plus</em> the kitchen sink for Microsoft&nbsp;PowerPoint: the .pptx&nbsp;MCP&nbsp;server that builds diagrams your hands can still move.</p>
   <p class="idiom-note rev d3" data-i18n="hero.idiom"></p>
   <div class="specs-strip rev d4">
-    <div class="spec"><span class="n">138</span><span class="l" data-i18n="spec.tools">Tools</span></div>
-    <div class="spec"><span class="n">885</span><span class="l" data-i18n="spec.tests">Tests</span></div>
+    <div class="spec"><span class="n">141</span><span class="l" data-i18n="spec.tools">Tools</span></div>
+    <div class="spec"><span class="n">1,241</span><span class="l" data-i18n="spec.tests">Tests</span></div>
     <div class="spec"><span class="n">1,646</span><span class="l" data-i18n="spec.stress">Stress calls</span></div>
     <div class="spec"><span class="n">0</span><span class="l" data-i18n="spec.corr">Corruptions</span></div>
   </div>
@@ -637,7 +643,7 @@ footer a{color:var(--patina)}
     <p class="for-lead" data-i18n="cmp.lead">Feature grids flatter everybody. Here it is instead as seven things you would actually ask an agent for, and what happens next.</p>
     <div class="ticked"><div class="tablewrap">
       <table class="scenario">
-        <tr><th data-i18n="cmp.h1">"Hey, could you…"</th><th class="us">💡 KitchenSink4PPT</th><th data-i18n="cmp.h3">GongRzhe (archived)<span class="stars">1,851 GitHub stars&dagger;</span></th><th data-i18n="cmp.h4">COM tier*<span class="stars">Ayushmaniar 113 &middot; ykuwai 58&dagger;</span></th></tr>
+        <tr><th data-i18n="cmp.h1">"Hey, could you…"</th><th class="us">🖌️ KitchenSink4PPT</th><th data-i18n="cmp.h3">GongRzhe (archived)<span class="stars">1,851 GitHub stars&dagger;</span></th><th data-i18n="cmp.h4">COM tier*<span class="stars">Ayushmaniar 113 &middot; ykuwai 58&dagger;</span></th></tr>
         <tr><td data-i18n="cr1.q">"Draw me a flowchart I can edit afterward."</td><td class="us yes" data-i18n="cr1.us">✔ grouped native shapes with glued connectors, any diagram SVG can describe</td><td class="nd">n/d</td><td class="part" data-i18n="cr1.com">fixed SmartArt layouts, Windows with PowerPoint running</td></tr>
         <tr><td data-i18n="cr2.q">"Now move that box, keep the arrows attached."</td><td class="us yes" data-i18n="cr2.us">✔ drag it, or have the agent move it by name; the arrows follow</td><td class="no" data-i18n="cr2.pop">✘ nothing to move</td><td class="part" data-i18n="cr2.com">inside SmartArt only</td></tr>
         <tr><td data-i18n="cr3.q">"Merge these two cells in the table on slide 6."</td><td class="us yes" data-i18n="cr3.us">✔ straight in the file, the first server anywhere to do it</td><td class="no">✘</td><td class="yes" data-i18n="cr3.com">✔ with PowerPoint running</td></tr>
@@ -647,17 +653,17 @@ footer a{color:var(--patina)}
         <tr><td data-i18n="cr7.q">"Reply to the reviewer's comment."</td><td class="us yes" data-i18n="cr7.us">threaded replies, verified rendering in PowerPoint itself</td><td class="no">✘</td><td class="no" data-i18n="cr7.com">✘ reply exists in no PowerPoint MCP server today</td></tr>
       </table>
     </div></div>
-    <p class="foot-note" data-i18n="cmp.note">Capability survey as of 2026-08-31, compiled from public repositories, documentation, and issue trackers. n/d: not documented in the sources surveyed (not a claimed absence). The most popular server is GongRzhe/Office-PowerPoint-MCP-Server, archived since March 2026. * COM tier: the servers that automate a running PowerPoint on Windows (Ayushmaniar/powerpoint-mcp 113, ykuwai/ppt-mcp 58, trsdn/mcp-server-ppt 36, sbroenne/mcp-server-powerpoint 19); capable, but Windows-locked and unavailable without the application. &dagger; Star counts read from the GitHub API on 2026-09-04, shown for context: stars say how long a shelf has been in view, not what is on it. The 1,851-star leader has been archived since March 2026 and still cannot take a slide back out. Test and stress evidence lives in the specs strip up top (885 tests, over 1,500 adversarial transport calls, 0 corruptions). Corrections welcome: open an issue.</p>
+    <p class="foot-note" data-i18n="cmp.note">Capability survey as of 2026-08-31, compiled from public repositories, documentation, and issue trackers. n/d: not documented in the sources surveyed (not a claimed absence). The most popular server is GongRzhe/Office-PowerPoint-MCP-Server, archived since March 2026. * COM tier: the servers that automate a running PowerPoint on Windows (Ayushmaniar/powerpoint-mcp 113, ykuwai/ppt-mcp 58, trsdn/mcp-server-ppt 36, sbroenne/mcp-server-powerpoint 19); capable, but Windows-locked and unavailable without the application. &dagger; Star counts read from the GitHub API on 2026-09-04, shown for context: stars say how long a shelf has been in view, not what is on it. The 1,851-star leader has been archived since March 2026 and still cannot take a slide back out. Test and stress evidence lives in the specs strip up top (1,241 tests, over 1,500 adversarial transport calls, 0 corruptions). Corrections welcome: open an issue.</p>
   </div>
 </section>
 
 <section id="efficiency">
   <div class="wrap">
     <div class="sec-head"><span class="no" data-i18n="no4">DEPT. 04</span><h2 data-i18n="h2.eff">The context bill</h2></div>
-    <p class="for-lead" data-i18n="eff.lead">Every MCP server takes up part of an AI's working memory before any work starts, the way every fixture on the floor draws power whether anyone is looking or not. This one starts small on purpose: a light core to begin, and when a job needs more, the agent switches on the right pack by name, mid-session, like flipping on the aisle you're standing in. Your assistant stays fast and cheap until the moment it genuinely needs to be big.</p>
+    <p class="for-lead" data-i18n="eff.lead">Every MCP server takes up part of an AI's working memory before any work starts, the way every fixture on the floor takes up floor space whether anyone is browsing it or not. This one starts small on purpose: a lean core to begin, and when a job needs more, the agent opens the pack it needs by name, mid-session, like pulling one more can off the shelf. Your assistant stays fast and cheap until the moment it genuinely needs to be big.</p>
     <div class="specs-strip" style="margin-top:26px">
       <div class="spec"><span class="n">24</span><span class="l" data-i18n="eff.s1">Tools in the lite core</span></div>
-      <div class="spec"><span class="n">4.7k</span><span class="l" data-i18n="eff.s2">Tokens, lite core up front</span></div>
+      <div class="spec"><span class="n">5.2k</span><span class="l" data-i18n="eff.s2">Tokens, lite core up front</span></div>
       <div class="spec"><span class="n">1</span><span class="l" data-i18n="eff.s3">Call to the whole sink</span></div>
     </div>
     <div class="term" style="margin-top:26px"><div><span class="c"># an agent in lite mode tries structural table work</span>
@@ -682,7 +688,7 @@ footer a{color:var(--patina)}
           <div class="term"><div><span class="p">$</span> pip install kitchensink4ppt</div></div>
         </div>
         <div>
-          <h3 data-i18n="inst.s2">② WIRE IT UP (Claude Code)</h3>
+          <h3 data-i18n="inst.s2">② MIX IT IN (Claude Code)</h3>
           <div class="term"><div><span class="p">$</span> claude mcp add ppt -s user -- kitchensink4ppt</div></div>
         </div>
       </div>
@@ -724,7 +730,7 @@ footer a{color:var(--patina)}
         <span class="go" data-i18n="svc1.g">File a bug report →</span>
       </a>
       <a class="counter" href="https://github.com/nometalalchemist/KitchenSink4PPT/issues/new?template=feature_request.yml">
-        <span class="icon">🔌</span>
+        <span class="icon">🪣</span>
         <h3 data-i18n="svc2.t">Missing an attachment?</h3>
         <p data-i18n="svc2.p">A PowerPoint capability the sink should also have. Describe the real task behind it and it goes on the workbench.</p>
         <span class="go" data-i18n="svc2.g">Request a feature →</span>
@@ -780,10 +786,10 @@ footer a{color:var(--patina)}
 <footer>
   <div class="wrap row">
     <span data-i18n="f.left">&copy; 2026 &middot; <b>AGPL-3.0</b>: free for individuals and personal use.<br>Companies building it into their own products need a commercial license; <a href='https://github.com/nometalalchemist/KitchenSink4PPT/issues/new?template=commercial_license.yml'>open an issue</a> and we will talk it through.</span>
-    <span style="text-align:right" data-i18n="f.right"><a href='https://github.com/nometalalchemist/KitchenSink4PPT'>github.com/nometalalchemist/KitchenSink4PPT</a> · <a href='https://github.com/nometalalchemist/KitchenSink4PPT/issues/new/choose'>report a glitch</a><br>Built on the KitchenSink4Word safety core, prototyped with Claude Code, and hardened through adversarial rounds until the test agents ran out of complaints. That's a well-dressed room! 💡</span>
+    <span style="text-align:right" data-i18n="f.right"><a href='https://github.com/nometalalchemist/KitchenSink4PPT'>github.com/nometalalchemist/KitchenSink4PPT</a> · <a href='https://github.com/nometalalchemist/KitchenSink4PPT/issues/new/choose'>report a glitch</a><br>Built on the KitchenSink4Word safety core, prototyped with Claude Code, and hardened through adversarial rounds until the test agents ran out of complaints. That's a well-dressed room! 🖌️</span>
   </div>
   <div class="wrap" style="text-align:center;padding:10px 0"><img src="https://visitor-badge.laobi.icu/badge?page_id=nometalalchemist.KitchenSink4PPT&left_color=%231e3550&right_color=%232e6e55&left_text=views" alt="views" height="18" style="vertical-align:middle"></div>
-<div class="wrap colophon">SET IN FRAUNCES &amp; IBM PLEX MONO · CATALOG № 138</div>
+<div class="wrap colophon">SET IN FRAUNCES &amp; IBM PLEX MONO · CATALOG № 141</div>
 </footer>
 
 <script>
@@ -911,11 +917,11 @@ en: {
 "state.pot": "SAMPLE POT",
 "dev.label": "TRADE COUNTER",
 "sec.mixed": "MIXED ON PREMISES",
-"m.catalog": "CATALOG № 138",
+"m.catalog": "CATALOG № 141",
 "m.family": "FAMILY",
 "m.service": "SERVICE",
 "hero.stamp": "SHAPES,<br>NOT SCREENSHOTS",
-"hero.chain": "pull the chain",
+"hero.chain": "pull for a fresh coat",
 "hero.catno": "Model Context Protocol · Server for Microsoft PowerPoint",
 "hero.tagline": "Everything <em>plus</em> the kitchen sink for Microsoft&nbsp;PowerPoint: the .pptx&nbsp;MCP&nbsp;server that builds diagrams your hands can still move.",
 "hero.idiom": "",
@@ -1004,9 +1010,9 @@ en: {
 "cr7.q": "\"Reply to the reviewer's comment.\"",
 "cr7.us": "threaded replies, verified rendering in PowerPoint itself",
 "cr7.com": "✘ reply exists in no PowerPoint MCP server today",
-"cmp.note": "Capability survey as of 2026-08-31, compiled from public repositories, documentation, and issue trackers. n/d: not documented in the sources surveyed (not a claimed absence). The most popular server is GongRzhe/Office-PowerPoint-MCP-Server, archived since March 2026. * COM tier: the servers that automate a running PowerPoint on Windows (Ayushmaniar/powerpoint-mcp 113, ykuwai/ppt-mcp 58, trsdn/mcp-server-ppt 36, sbroenne/mcp-server-powerpoint 19); capable, but Windows-locked and unavailable without the application. &dagger; Star counts read from the GitHub API on 2026-09-04, shown for context: stars say how long a shelf has been in view, not what is on it. The 1,851-star leader has been archived since March 2026 and still cannot take a slide back out. Test and stress evidence lives in the specs strip up top (885 tests, over 1,500 adversarial transport calls, 0 corruptions). Corrections welcome: open an issue.",
+"cmp.note": "Capability survey as of 2026-08-31, compiled from public repositories, documentation, and issue trackers. n/d: not documented in the sources surveyed (not a claimed absence). The most popular server is GongRzhe/Office-PowerPoint-MCP-Server, archived since March 2026. * COM tier: the servers that automate a running PowerPoint on Windows (Ayushmaniar/powerpoint-mcp 113, ykuwai/ppt-mcp 58, trsdn/mcp-server-ppt 36, sbroenne/mcp-server-powerpoint 19); capable, but Windows-locked and unavailable without the application. &dagger; Star counts read from the GitHub API on 2026-09-04, shown for context: stars say how long a shelf has been in view, not what is on it. The 1,851-star leader has been archived since March 2026 and still cannot take a slide back out. Test and stress evidence lives in the specs strip up top (1,241 tests, over 1,500 adversarial transport calls, 0 corruptions). Corrections welcome: open an issue.",
 "h2.eff": "The context bill",
-"eff.lead": "Every MCP server takes up part of an AI's working memory before any work starts, the way every fixture on the floor draws power whether anyone is looking or not. This one starts small on purpose: a light core to begin, and when a job needs more, the agent switches on the right pack by name, mid-session, like flipping on the aisle you're standing in. Your assistant stays fast and cheap until the moment it genuinely needs to be big.",
+"eff.lead": "Every MCP server takes up part of an AI's working memory before any work starts, the way every fixture on the floor takes up floor space whether anyone is browsing it or not. This one starts small on purpose: a lean core to begin, and when a job needs more, the agent opens the pack it needs by name, mid-session, like pulling one more can off the shelf. Your assistant stays fast and cheap until the moment it genuinely needs to be big.",
 "eff.s1": "Tools in the lite core",
 "eff.s2": "Tokens, lite core up front",
 "eff.s3": "Call to the whole sink",
@@ -1014,7 +1020,7 @@ en: {
 "h2.install": "Wiring it in",
 "inst.form": "ORDER FORM № KS4P-1",
 "inst.s1": "① GET THE FIXTURE",
-"inst.s2": "② WIRE IT UP (Claude Code)",
+"inst.s2": "② MIX IT IN (Claude Code)",
 "inst.note": "File-based tools, which are the large majority, need no PowerPoint installation and run cross-platform. The export and validation tools borrow the PowerPoint already installed on the machine when one is there, to render, export, and double-check its own work. Full setup in the <a href='https://github.com/nometalalchemist/KitchenSink4PPT#install'>README</a>.",
 "inst.lead": "Three ways in, shortest first. Most people only need the first.",
 "h2.svc": "Customer service",
@@ -1039,7 +1045,7 @@ en: {
 "fam3.p": "The whole hardware store on one page: every KitchenSink server, its fixture, and its counter, plus a shelf or two that are not empty by accident.",
 "fam3.g": "Browse the store →",
 "f.left": "&copy; 2026 &middot; <b>AGPL-3.0</b>: free for individuals and personal use.<br>Companies building it into their own products need a commercial license; <a href='https://github.com/nometalalchemist/KitchenSink4PPT/issues/new?template=commercial_license.yml'>open an issue</a> and we will talk it through.",
-"f.right": "<a href='https://github.com/nometalalchemist/KitchenSink4PPT'>github.com/nometalalchemist/KitchenSink4PPT</a> · <a href='https://github.com/nometalalchemist/KitchenSink4PPT/issues/new/choose'>report a glitch</a><br>Built on the KitchenSink4Word safety core, prototyped with Claude Code, and hardened through adversarial rounds until the test agents ran out of complaints. That's a well-dressed room! 💡",
+"f.right": "<a href='https://github.com/nometalalchemist/KitchenSink4PPT'>github.com/nometalalchemist/KitchenSink4PPT</a> · <a href='https://github.com/nometalalchemist/KitchenSink4PPT/issues/new/choose'>report a glitch</a><br>Built on the KitchenSink4Word safety core, prototyped with Claude Code, and hardened through adversarial rounds until the test agents ran out of complaints. That's a well-dressed room! 🖌️",
 "inst.dev": "For developers: pip, source, other MCP clients",
 "inst.dp1": "Install the package and point any MCP client at the executable:",
 "inst.dp2": "Running from a clone works the same way; point the command at the <code>ppt-mcp</code> executable in the clone's virtual environment. Full setup is in the <a href='https://github.com/nometalalchemist/KitchenSink4PPT#install'>README</a>.",
@@ -1062,11 +1068,11 @@ ko: {
 "state.pot": "샘플 팟",
 "dev.label": "전문가 카운터",
 "sec.mixed": "매장에서 직접 조색",
-"m.catalog": "카탈로그 № 138",
+"m.catalog": "카탈로그 № 141",
 "m.family": "제품군",
 "m.service": "서비스",
 "hero.stamp": "스크린샷이 아닌<br>진짜 도형",
-"hero.chain": "줄을 당겨 보세요",
+"hero.chain": "당기면 새로 한 겹 칠해집니다",
 "hero.catno": "Model Context Protocol · Microsoft PowerPoint용 서버",
 "hero.tagline": "Microsoft&nbsp;PowerPoint 도구라면 정말 <em>없는 게 없습니다</em>. 손으로 직접 움직일 수 있는 다이어그램을 만들어 주는 .pptx&nbsp;MCP&nbsp;서버. “Everything <em>plus</em> the kitchen sink.”",
 "hero.idiom": "영어 관용구 “everything but the kitchen sink”는 ‘생각할 수 있는 모든 것’이라는 뜻입니다. 이 카탈로그에는 그 싱크대까지 들어 있습니다.",
@@ -1155,9 +1161,9 @@ ko: {
 "cr7.q": "“검토자 메모에 답글 달아 줘.”",
 "cr7.us": "스레드형 답글, PowerPoint 본체에서 렌더링 검증 완료",
 "cr7.com": "✘ 답글 기능은 오늘날 어떤 PowerPoint MCP 서버에도 없음",
-"cmp.note": "2026-08-31 기준 기능 조사. 공개 저장소, 문서, 이슈 트래커에서 취합했습니다. n/d: 조사한 자료에서 확인되지 않음(없다는 주장이 아닙니다). 최다 인기 서버는 GongRzhe/Office-PowerPoint-MCP-Server이며 2026년 3월부터 보관 상태입니다. * COM 계열: Windows에서 실행 중인 PowerPoint를 자동화하는 서버들(Ayushmaniar/powerpoint-mcp 113, ykuwai/ppt-mcp 58, trsdn/mcp-server-ppt 36, sbroenne/mcp-server-powerpoint 19)로, 유능하지만 Windows에 묶여 있고 애플리케이션 없이는 쓸 수 없습니다. &dagger; 스타 수는 2026-09-04에 GitHub API로 읽은 값이며 참고용입니다. 스타는 그 선반이 얼마나 오래 눈에 띄었는지를 보여줄 뿐, 그 위에 무엇이 놓였는지는 말해 주지 않습니다. 스타 1,851개의 선두 제품은 2026년 3월부터 보관 상태이고, 지금도 슬라이드를 도로 빼내지 못합니다. 테스트와 스트레스 근거는 상단 사양 띠에 있습니다(테스트 885건, 적대적 전송 호출 1,500건 이상, 손상 0건). 정정은 환영합니다. 이슈를 열어 주세요.",
+"cmp.note": "2026-08-31 기준 기능 조사. 공개 저장소, 문서, 이슈 트래커에서 취합했습니다. n/d: 조사한 자료에서 확인되지 않음(없다는 주장이 아닙니다). 최다 인기 서버는 GongRzhe/Office-PowerPoint-MCP-Server이며 2026년 3월부터 보관 상태입니다. * COM 계열: Windows에서 실행 중인 PowerPoint를 자동화하는 서버들(Ayushmaniar/powerpoint-mcp 113, ykuwai/ppt-mcp 58, trsdn/mcp-server-ppt 36, sbroenne/mcp-server-powerpoint 19)로, 유능하지만 Windows에 묶여 있고 애플리케이션 없이는 쓸 수 없습니다. &dagger; 스타 수는 2026-09-04에 GitHub API로 읽은 값이며 참고용입니다. 스타는 그 선반이 얼마나 오래 눈에 띄었는지를 보여줄 뿐, 그 위에 무엇이 놓였는지는 말해 주지 않습니다. 스타 1,851개의 선두 제품은 2026년 3월부터 보관 상태이고, 지금도 슬라이드를 도로 빼내지 못합니다. 테스트와 스트레스 근거는 상단 사양 띠에 있습니다(테스트 1,241건, 적대적 전송 호출 1,500건 이상, 손상 0건). 정정은 환영합니다. 이슈를 열어 주세요.",
 "h2.eff": "컨텍스트 청구서",
-"eff.lead": "모든 MCP 서버는 일이 시작되기도 전에 AI의 작업 기억 일부를 차지합니다. 매장에 달린 조명 하나하나가 아무도 보지 않아도 전력을 먹는 것과 같습니다. 이 서버는 일부러 작게 시작합니다. 처음에는 가벼운 코어로 열고, 일이 더 필요해지면 에이전트가 세션 도중에 알맞은 팩을 이름으로 켭니다. 지금 서 있는 통로의 불을 켜는 것과 같습니다. 어시스턴트는 정말로 커져야 하는 순간까지 빠르고 저렴한 상태로 남습니다.",
+"eff.lead": "모든 MCP 서버는 일이 시작되기도 전에 AI의 작업 기억 일부를 차지합니다. 매장에 놓인 집기 하나하나가 아무도 구경하지 않아도 바닥 자리를 차지하는 것과 같습니다. 이 서버는 일부러 작게 시작합니다. 처음에는 가벼운 코어로 열고, 일이 더 필요해지면 에이전트가 세션 도중에 필요한 팩을 이름으로 엽니다. 선반에서 페인트 통 하나를 더 꺼내 오는 것과 같습니다. 어시스턴트는 정말로 커져야 하는 순간까지 빠르고 저렴한 상태로 남습니다.",
 "eff.s1": "라이트 코어의 도구 수",
 "eff.s2": "토큰, 라이트 코어 선로드",
 "eff.s3": "싱크대 전체까지 호출 수",
@@ -1165,7 +1171,7 @@ ko: {
 "h2.install": "설치와 배선",
 "inst.form": "주문서 № KS4P-1",
 "inst.s1": "① 기구 받기",
-"inst.s2": "② 배선 연결 (Claude Code)",
+"inst.s2": "② 섞어 넣기 (Claude Code)",
 "inst.note": "대다수를 차지하는 파일 기반 도구는 PowerPoint 설치가 필요 없고 크로스 플랫폼으로 돌아갑니다. 내보내기와 검증 도구는 컴퓨터에 이미 설치된 PowerPoint가 있으면 그것을 빌려서, 자기 작업물을 렌더링하고 내보내고 다시 확인합니다. 전체 설정은 <a href='https://github.com/nometalalchemist/KitchenSink4PPT#install'>README</a>에 있습니다.",
 "inst.lead": "들어오는 길은 세 갈래, 짧은 것부터입니다. 대부분은 첫 번째면 충분합니다.",
 "h2.svc": "고객 서비스",
@@ -1190,7 +1196,7 @@ ko: {
 "fam3.p": "철물점 전체를 한 페이지에: 모든 KitchenSink 서버와 그 설비, 그 창구, 그리고 우연히 비어 있는 게 아닌 선반 한두 개까지.",
 "fam3.g": "매장 둘러보기 →",
 "f.left": "&copy; 2026 &middot; <b>AGPL-3.0</b>: 개인과 개인적 용도에는 무료.<br>자사 제품에 넣어 만드는 회사에는 상업용 라이선스가 필요합니다. <a href='https://github.com/nometalalchemist/KitchenSink4PPT/issues/new?template=commercial_license.yml'>이슈를 열어</a> 주시면 함께 이야기하겠습니다.",
-"f.right": "<a href='https://github.com/nometalalchemist/KitchenSink4PPT'>github.com/nometalalchemist/KitchenSink4PPT</a> · <a href='https://github.com/nometalalchemist/KitchenSink4PPT/issues/new/choose'>오작동 신고</a><br>KitchenSink4Word 안전 코어 위에 세우고, Claude Code로 프로토타입을 만들고, 테스트 에이전트가 불평거리를 다 소진할 때까지 적대적 라운드로 단련했습니다. 이만하면 방 하나 잘 꾸몄죠! 💡",
+"f.right": "<a href='https://github.com/nometalalchemist/KitchenSink4PPT'>github.com/nometalalchemist/KitchenSink4PPT</a> · <a href='https://github.com/nometalalchemist/KitchenSink4PPT/issues/new/choose'>오작동 신고</a><br>KitchenSink4Word 안전 코어 위에 세우고, Claude Code로 프로토타입을 만들고, 테스트 에이전트가 불평거리를 다 소진할 때까지 적대적 라운드로 단련했습니다. 이만하면 방 하나 잘 꾸몄죠! 🖌️",
 "inst.dev": "개발자용: pip, 소스, 다른 MCP 클라이언트",
 "inst.dp1": "패키지를 설치하고 원하는 MCP 클라이언트가 실행 파일을 가리키게 하면 됩니다:",
 "inst.dp2": "클론에서 실행할 때도 같은 방식이며, 클론의 가상 환경에 있는 <code>ppt-mcp</code> 실행 파일을 가리키면 됩니다. 전체 설정은 <a href='https://github.com/nometalalchemist/KitchenSink4PPT#install'>README</a>에 있습니다.",
@@ -1213,11 +1219,11 @@ ja: {
 "state.pot": "見本缶",
 "dev.label": "業者用カウンター",
 "sec.mixed": "店内で調色",
-"m.catalog": "カタログ № 138",
+"m.catalog": "カタログ № 141",
 "m.family": "ファミリー",
 "m.service": "サービス",
 "hero.stamp": "スクショではなく<br>図形を",
-"hero.chain": "チェーンを引いてみて",
+"hero.chain": "引くとひと塗り",
 "hero.catno": "Model Context Protocol · Microsoft PowerPoint 用サーバー",
 "hero.tagline": "Microsoft&nbsp;PowerPoint のためなら<em>何でも揃う</em>、まさに至れり尽くせり。手でまだ動かせる図を組み立てる .pptx&nbsp;MCP&nbsp;サーバー。“Everything <em>plus</em> the kitchen sink.”",
 "hero.idiom": "英語の慣用句 “everything but the kitchen sink” は「考えつく限りのすべて」という意味。このカタログには、その流しまで入っています。",
@@ -1306,9 +1312,9 @@ ja: {
 "cr7.q": "「校閲者のコメントに返信して。」",
 "cr7.us": "スレッド返信、PowerPoint 本体での描画を検証済み",
 "cr7.com": "✘ 返信は今日どの PowerPoint MCP サーバーにも存在しない",
-"cmp.note": "2026-08-31 時点の機能調査。公開リポジトリ、ドキュメント、Issue トラッカーから集約しました。n/d:調査した資料では確認できず(欠如の断定ではありません)。最人気サーバーは GongRzhe/Office-PowerPoint-MCP-Server で、2026年3月からアーカイブ済みです。* COM 系:Windows 上で起動中の PowerPoint を自動化するサーバー群(Ayushmaniar/powerpoint-mcp 113、ykuwai/ppt-mcp 58、trsdn/mcp-server-ppt 36、sbroenne/mcp-server-powerpoint 19)。有能ですが Windows に縛られ、アプリケーションなしでは使えません。&dagger; スター数は 2026-09-04 に GitHub API から取得した参考値です。スターはその棚がどれだけ長く目に触れてきたかを示すもので、棚に何が載っているかを示すものではありません。スター1,851の売れ筋は2026年3月からアーカイブ済みで、いまだにスライドを取り下げることができません。テストと負荷の証跡は上部のスペック帯に(テスト885件、敵対的トランスポート呼び出し1,500件超、破損0件)。訂正歓迎、Issue をどうぞ。",
+"cmp.note": "2026-08-31 時点の機能調査。公開リポジトリ、ドキュメント、Issue トラッカーから集約しました。n/d:調査した資料では確認できず(欠如の断定ではありません)。最人気サーバーは GongRzhe/Office-PowerPoint-MCP-Server で、2026年3月からアーカイブ済みです。* COM 系:Windows 上で起動中の PowerPoint を自動化するサーバー群(Ayushmaniar/powerpoint-mcp 113、ykuwai/ppt-mcp 58、trsdn/mcp-server-ppt 36、sbroenne/mcp-server-powerpoint 19)。有能ですが Windows に縛られ、アプリケーションなしでは使えません。&dagger; スター数は 2026-09-04 に GitHub API から取得した参考値です。スターはその棚がどれだけ長く目に触れてきたかを示すもので、棚に何が載っているかを示すものではありません。スター1,851の売れ筋は2026年3月からアーカイブ済みで、いまだにスライドを取り下げることができません。テストと負荷の証跡は上部のスペック帯に(テスト1,241件、敵対的トランスポート呼び出し1,500件超、破損0件)。訂正歓迎、Issue をどうぞ。",
 "h2.eff": "コンテキストの請求書",
-"eff.lead": "どの MCP サーバーも、仕事が始まる前から AI の作業記憶の一部を占めています。売り場の照明が、誰も見ていなくても電力を食うのと同じです。このサーバーは意図して小さく始めます。はじめは軽いコアで、仕事に足りなくなればエージェントがセッションの途中で必要なパックを名前で点けます。いま自分が立っている通路の明かりを点けるようなものです。アシスタントは、本当に大きくなる必要が生じるその瞬間まで、速くて安いままでいられます。",
+"eff.lead": "どの MCP サーバーも、仕事が始まる前から AI の作業記憶の一部を占めています。売り場の什器が、誰も見て回らなくても床の場所を取るのと同じです。このサーバーは意図して小さく始めます。はじめは身軽なコアで、仕事に足りなくなればエージェントがセッションの途中で必要なパックを名前で開けます。棚から缶をもうひとつ下ろすようなものです。アシスタントは、本当に大きくなる必要が生じるその瞬間まで、速くて安いままでいられます。",
 "eff.s1": "ライトコアのツール数",
 "eff.s2": "トークン(ライトコア先読み)",
 "eff.s3": "流し一式までの呼び出し",
@@ -1316,7 +1322,7 @@ ja: {
 "h2.install": "取り付けと配線",
 "inst.form": "注文書 № KS4P-1",
 "inst.s1": "① 器具を入手",
-"inst.s2": "② 配線をつなぐ (Claude Code)",
+"inst.s2": "② 混ぜ込む (Claude Code)",
 "inst.note": "大多数を占めるファイルベースのツールに PowerPoint のインストールは不要で、クロスプラットフォームで動きます。書き出しと検証のツールは、そのマシンにすでに入っている PowerPoint があればそれを借りて、自分の仕事を描画し、書き出し、確かめ直します。詳しい設定は <a href='https://github.com/nometalalchemist/KitchenSink4PPT#install'>README</a> へ。",
 "inst.lead": "入り口は三つ、短いものから並べています。たいていの方は最初のひとつで足ります。",
 "h2.svc": "カスタマーサービス",
@@ -1341,7 +1347,7 @@ ja: {
 "fam3.p": "金物屋まるごと1ページに:すべての KitchenSink サーバーとその器具、その窓口、そして偶然ではなく空けてある棚が一つ二つ。",
 "fam3.g": "店内を見る →",
 "f.left": "&copy; 2026 &middot; <b>AGPL-3.0</b>:個人利用と私的な用途は無料。<br>自社製品に組み込む企業には商用ライセンスが必要です。<a href='https://github.com/nometalalchemist/KitchenSink4PPT/issues/new?template=commercial_license.yml'>Issue を開いて</a>いただければ、そこから話を進めます。",
-"f.right": "<a href='https://github.com/nometalalchemist/KitchenSink4PPT'>github.com/nometalalchemist/KitchenSink4PPT</a> · <a href='https://github.com/nometalalchemist/KitchenSink4PPT/issues/new/choose'>不具合を報告</a><br>KitchenSink4Word の安全コアの上に築き、Claude Code でプロトタイプを作り、テストエージェントが文句を言い尽くすまで敵対的ラウンドで鍛えました。これで部屋はすっかり整いました!💡",
+"f.right": "<a href='https://github.com/nometalalchemist/KitchenSink4PPT'>github.com/nometalalchemist/KitchenSink4PPT</a> · <a href='https://github.com/nometalalchemist/KitchenSink4PPT/issues/new/choose'>不具合を報告</a><br>KitchenSink4Word の安全コアの上に築き、Claude Code でプロトタイプを作り、テストエージェントが文句を言い尽くすまで敵対的ラウンドで鍛えました。これで部屋はすっかり整いました!🖌️",
 "inst.dev": "開発者向け: pip、ソース、その他の MCP クライアント",
 "inst.dp1": "パッケージを入れて、任意の MCP クライアントから実行ファイルを指すだけです:",
 "inst.dp2": "クローンから動かす場合も同じで、クローンの仮想環境にある <code>ppt-mcp</code> 実行ファイルを指してください。設定の全体は <a href='https://github.com/nometalalchemist/KitchenSink4PPT#install'>README</a> にあります。",
@@ -1364,11 +1370,11 @@ zh: {
 "state.pot": "样品罐",
 "dev.label": "专业柜台",
 "sec.mixed": "本店现调",
-"m.catalog": "目录 № 138",
+"m.catalog": "目录 № 141",
 "m.family": "家族",
 "m.service": "服务",
 "hero.stamp": "是图形,<br>不是截图",
-"hero.chain": "拉一下灯绳",
+"hero.chain": "拉一下,刷层新漆",
 "hero.catno": "Model Context Protocol · Microsoft PowerPoint 专用服务器",
 "hero.tagline": "为 Microsoft&nbsp;PowerPoint 而备,<em>应有尽有</em>。一台 .pptx&nbsp;MCP&nbsp;服务器,画出的图表你的手仍然拖得动。“Everything <em>plus</em> the kitchen sink.”",
 "hero.idiom": "英语习语 “everything but the kitchen sink” 意为“能想到的一切”。这份目录连那个水槽也一并收录。",
@@ -1457,9 +1463,9 @@ zh: {
 "cr7.q": "“回复审阅人的批注。”",
 "cr7.us": "多层回复,渲染已在 PowerPoint 本尊里验证",
 "cr7.com": "✘ 回复功能今天不存在于任何 PowerPoint MCP 服务器",
-"cmp.note": "能力调查,截至 2026-08-31,汇总自公开仓库、文档与 issue 跟踪器。n/d:在所查资料中未见记载(并非断言其没有)。最流行的服务器是 GongRzhe/Office-PowerPoint-MCP-Server,自 2026 年 3 月起已归档。* COM 阵营:在 Windows 上自动化运行中 PowerPoint 的那些服务器(Ayushmaniar/powerpoint-mcp 113、ykuwai/ppt-mcp 58、trsdn/mcp-server-ppt 36、sbroenne/mcp-server-powerpoint 19);有本事,但被锁在 Windows 上,没有应用就没法用。&dagger; 星标数于 2026-09-04 通过 GitHub API 读取,仅供参考:星标说明一个货架被人看了多久,而不是架上摆着什么。那位 1,851 星的领头货自 2026 年 3 月起归档,至今仍然没法把一张幻灯片撤下来。测试与压力证据在顶部规格条里(885 项测试,1,500 余次对抗性传输调用,0 次损坏)。欢迎指正,请开 issue。",
+"cmp.note": "能力调查,截至 2026-08-31,汇总自公开仓库、文档与 issue 跟踪器。n/d:在所查资料中未见记载(并非断言其没有)。最流行的服务器是 GongRzhe/Office-PowerPoint-MCP-Server,自 2026 年 3 月起已归档。* COM 阵营:在 Windows 上自动化运行中 PowerPoint 的那些服务器(Ayushmaniar/powerpoint-mcp 113、ykuwai/ppt-mcp 58、trsdn/mcp-server-ppt 36、sbroenne/mcp-server-powerpoint 19);有本事,但被锁在 Windows 上,没有应用就没法用。&dagger; 星标数于 2026-09-04 通过 GitHub API 读取,仅供参考:星标说明一个货架被人看了多久,而不是架上摆着什么。那位 1,851 星的领头货自 2026 年 3 月起归档,至今仍然没法把一张幻灯片撤下来。测试与压力证据在顶部规格条里(1,241 项测试,1,500 余次对抗性传输调用,0 次损坏)。欢迎指正,请开 issue。",
 "h2.eff": "上下文账单",
-"eff.lead": "每个 MCP 服务器都在开工之前就占掉 AI 一部分工作记忆,就像卖场里的每一盏灯,没人看也照样耗电。这一台是故意从小处起步的:开场只点一个轻内核,活儿需要更多时,智能体在会话中途按名字打开对的能力包,就像你站在哪条通道就把那条通道的灯打开。你的助手一直又快又便宜,直到它真的需要变大的那一刻。",
+"eff.lead": "每个 MCP 服务器都在开工之前就占掉 AI 一部分工作记忆,就像卖场里的每一件陈设,没人逛也照样占着地方。这一台是故意从小处起步的:开场只带一个精简内核,活儿需要更多时,智能体在会话中途按名字打开要用的包,就像从货架上再取下一罐漆。你的助手一直又快又便宜,直到它真的需要变大的那一刻。",
 "eff.s1": "精简内核的工具数",
 "eff.s2": "token,精简内核预载",
 "eff.s3": "到整台水槽的调用数",
@@ -1467,7 +1473,7 @@ zh: {
 "h2.install": "装上,接好",
 "inst.form": "订购单 № KS4P-1",
 "inst.s1": "① 领取器具",
-"inst.s2": "② 接好线路(Claude Code)",
+"inst.s2": "② 调进去(Claude Code)",
 "inst.note": "占大多数的基于文件的工具无需安装 PowerPoint,并且跨平台运行。导出与校验工具在机器上已经装好 PowerPoint 时会借来一用,用来渲染、导出并复核自己的成果。完整设置见 <a href='https://github.com/nometalalchemist/KitchenSink4PPT#install'>README</a>。",
 "inst.lead": "三条路进来,先短后长。多数人只需要第一条。",
 "h2.svc": "客户服务",
@@ -1492,7 +1498,7 @@ zh: {
 "fam3.p": "整间五金店放在一页里:每台 KitchenSink 服务器、它的设备、它的柜台,外加一两个绝非碰巧空着的货架。",
 "fam3.g": "逛逛店里 →",
 "f.left": "&copy; 2026 &middot; <b>AGPL-3.0</b>:个人和个人用途免费。<br>把它做进自家产品的公司需要商业许可,<a href='https://github.com/nometalalchemist/KitchenSink4PPT/issues/new?template=commercial_license.yml'>开一个 issue</a>,我们细谈。",
-"f.right": "<a href='https://github.com/nometalalchemist/KitchenSink4PPT'>github.com/nometalalchemist/KitchenSink4PPT</a> · <a href='https://github.com/nometalalchemist/KitchenSink4PPT/issues/new/choose'>报告故障</a><br>建在 KitchenSink4Word 的安全内核之上,用 Claude Code 做出原型,再经一轮轮对抗测试打磨,直到测试智能体挑不出毛病。这屋子算是布置齐了!💡",
+"f.right": "<a href='https://github.com/nometalalchemist/KitchenSink4PPT'>github.com/nometalalchemist/KitchenSink4PPT</a> · <a href='https://github.com/nometalalchemist/KitchenSink4PPT/issues/new/choose'>报告故障</a><br>建在 KitchenSink4Word 的安全内核之上,用 Claude Code 做出原型,再经一轮轮对抗测试打磨,直到测试智能体挑不出毛病。这屋子算是布置齐了!🖌️",
 "inst.dev": "开发者选项:pip、源码、其他 MCP 客户端",
 "inst.dp1": "安装这个包,然后让任意 MCP 客户端指向可执行文件:",
 "inst.dp2": "从克隆仓库运行的方式相同,指向克隆虚拟环境里的 <code>ppt-mcp</code> 可执行文件即可。完整设置见 <a href='https://github.com/nometalalchemist/KitchenSink4PPT#install'>README</a>。",
@@ -1515,11 +1521,11 @@ de: {
 "state.pot": "PROBEDOSE",
 "dev.label": "PROFI-THEKE",
 "sec.mixed": "IM HAUS ANGEMISCHT",
-"m.catalog": "KATALOG № 138",
+"m.catalog": "KATALOG № 141",
 "m.family": "FAMILIE",
 "m.service": "SERVICE",
 "hero.stamp": "FORMEN,<br>KEINE SCREENSHOTS",
-"hero.chain": "an der Kette ziehen",
+"hero.chain": "ziehen für einen frischen Anstrich",
 "hero.catno": "Model Context Protocol · Server für Microsoft PowerPoint",
 "hero.tagline": "Für Microsoft&nbsp;PowerPoint, <em>mit allem Drum und Dran</em>: der .pptx-MCP-Server, dessen Diagramme sich noch von Hand verschieben lassen. “Everything <em>plus</em> the kitchen sink.”",
 "hero.idiom": "Die englische Redewendung “everything but the kitchen sink” bedeutet: wirklich alles. Dieser Katalog liefert die Spüle gleich mit.",
@@ -1608,9 +1614,9 @@ de: {
 "cr7.q": "„Antworte auf den Kommentar des Prüfers.“",
 "cr7.us": "Antworten im Thread, Darstellung in PowerPoint selbst verifiziert",
 "cr7.com": "✘ Antworten gibt es heute in keinem PowerPoint-MCP-Server",
-"cmp.note": "Fähigkeitserhebung, Stand 2026-08-31, zusammengetragen aus öffentlichen Repositories, Dokumentation und Issue-Trackern. n/d: in den gesichteten Quellen nicht dokumentiert (keine behauptete Abwesenheit). Der beliebteste Server ist GongRzhe/Office-PowerPoint-MCP-Server, seit März 2026 archiviert. * COM-Riege: die Server, die ein laufendes PowerPoint unter Windows automatisieren (Ayushmaniar/powerpoint-mcp 113, ykuwai/ppt-mcp 58, trsdn/mcp-server-ppt 36, sbroenne/mcp-server-powerpoint 19); fähig, aber Windows-gebunden und ohne die Anwendung nicht verfügbar. &dagger; Sternzahlen am 2026-09-04 über die GitHub-API gelesen, zur Einordnung: Sterne sagen, wie lange ein Regal schon zu sehen ist, nicht was darin steht. Der Spitzenreiter mit 1.851 Sternen ist seit März 2026 archiviert und bekommt eine Folie noch immer nicht wieder heraus. Test- und Stressbelege stehen oben im Spezifikationsstreifen (885 Tests, über 1.500 adversariale Transportaufrufe, 0 Beschädigungen). Korrekturen willkommen: einfach ein Issue öffnen.",
+"cmp.note": "Fähigkeitserhebung, Stand 2026-08-31, zusammengetragen aus öffentlichen Repositories, Dokumentation und Issue-Trackern. n/d: in den gesichteten Quellen nicht dokumentiert (keine behauptete Abwesenheit). Der beliebteste Server ist GongRzhe/Office-PowerPoint-MCP-Server, seit März 2026 archiviert. * COM-Riege: die Server, die ein laufendes PowerPoint unter Windows automatisieren (Ayushmaniar/powerpoint-mcp 113, ykuwai/ppt-mcp 58, trsdn/mcp-server-ppt 36, sbroenne/mcp-server-powerpoint 19); fähig, aber Windows-gebunden und ohne die Anwendung nicht verfügbar. &dagger; Sternzahlen am 2026-09-04 über die GitHub-API gelesen, zur Einordnung: Sterne sagen, wie lange ein Regal schon zu sehen ist, nicht was darin steht. Der Spitzenreiter mit 1.851 Sternen ist seit März 2026 archiviert und bekommt eine Folie noch immer nicht wieder heraus. Test- und Stressbelege stehen oben im Spezifikationsstreifen (1.241 Tests, über 1.500 adversariale Transportaufrufe, 0 Beschädigungen). Korrekturen willkommen: einfach ein Issue öffnen.",
 "h2.eff": "Die Kontextrechnung",
-"eff.lead": "Jeder MCP-Server belegt einen Teil des Arbeitsgedächtnisses einer KI, bevor irgendeine Arbeit beginnt, so wie jede Leuchte im Laden Strom zieht, ob jemand hinsieht oder nicht. Dieser hier startet mit Absicht klein: ein leichter Kern zu Beginn, und wenn ein Auftrag mehr braucht, schaltet der Agent mitten in der Sitzung das richtige Paket per Name zu, so wie man das Licht in dem Gang anmacht, in dem man gerade steht. Ihr Assistent bleibt schnell und günstig, bis zu dem Moment, in dem er wirklich groß sein muss.",
+"eff.lead": "Jeder MCP-Server belegt einen Teil des Arbeitsgedächtnisses einer KI, bevor irgendeine Arbeit beginnt, so wie jedes Möbelstück im Laden Stellfläche braucht, ob jemand davor steht oder nicht. Dieser hier startet mit Absicht klein: ein schlanker Kern zu Beginn, und wenn ein Auftrag mehr braucht, öffnet der Agent mitten in der Sitzung das benötigte Paket per Name, so wie man eine weitere Dose aus dem Regal nimmt. Ihr Assistent bleibt schnell und günstig, bis zu dem Moment, in dem er wirklich groß sein muss.",
 "eff.s1": "Werkzeuge im Lite-Kern",
 "eff.s2": "Token, Lite-Kern im Voraus",
 "eff.s3": "Aufruf bis zur ganzen Spüle",
@@ -1618,7 +1624,7 @@ de: {
 "h2.install": "Montage und Anschluss",
 "inst.form": "BESTELLSCHEIN № KS4P-1",
 "inst.s1": "① DIE ARMATUR BESORGEN",
-"inst.s2": "② VERKABELN (Claude Code)",
+"inst.s2": "② EINRÜHREN (Claude Code)",
 "inst.note": "Dateibasierte Werkzeuge, die große Mehrheit, brauchen kein installiertes PowerPoint und laufen plattformübergreifend. Die Export- und Prüfwerkzeuge leihen sich das PowerPoint, das auf dem Rechner schon installiert ist, wenn eines da ist, um ihre eigene Arbeit zu rendern, zu exportieren und noch einmal zu prüfen. Vollständige Einrichtung im <a href='https://github.com/nometalalchemist/KitchenSink4PPT#install'>README</a>.",
 "inst.lead": "Drei Wege hinein, der kürzeste zuerst. Die meisten brauchen nur den ersten.",
 "h2.svc": "Kundendienst",
@@ -1643,7 +1649,7 @@ de: {
 "fam3.p": "Der ganze Baumarkt auf einer Seite: jeder KitchenSink-Server, seine Armatur und sein Schalter, dazu ein, zwei Regale, die nicht aus Versehen leer sind.",
 "fam3.g": "Den Laden durchstöbern →",
 "f.left": "&copy; 2026 &middot; <b>AGPL-3.0</b>: kostenlos für Privatpersonen und private Nutzung.<br>Unternehmen, die es in eigene Produkte einbauen, brauchen eine kommerzielle Lizenz; <a href='https://github.com/nometalalchemist/KitchenSink4PPT/issues/new?template=commercial_license.yml'>ein Issue öffnen</a>, dann klären wir das.",
-"f.right": "<a href='https://github.com/nometalalchemist/KitchenSink4PPT'>github.com/nometalalchemist/KitchenSink4PPT</a> · <a href='https://github.com/nometalalchemist/KitchenSink4PPT/issues/new/choose'>Störung melden</a><br>Auf dem Sicherheitskern von KitchenSink4Word errichtet, mit Claude Code prototypisiert und in adversarialen Runden gehärtet, bis den Test-Agenten die Beschwerden ausgingen. Das nennt man einen gut eingerichteten Raum! 💡",
+"f.right": "<a href='https://github.com/nometalalchemist/KitchenSink4PPT'>github.com/nometalalchemist/KitchenSink4PPT</a> · <a href='https://github.com/nometalalchemist/KitchenSink4PPT/issues/new/choose'>Störung melden</a><br>Auf dem Sicherheitskern von KitchenSink4Word errichtet, mit Claude Code prototypisiert und in adversarialen Runden gehärtet, bis den Test-Agenten die Beschwerden ausgingen. Das nennt man einen gut eingerichteten Raum! 🖌️",
 "inst.dev": "Für Entwickler: pip, Quellcode, andere MCP-Clients",
 "inst.dp1": "Paket installieren und einen beliebigen MCP-Client auf die ausführbare Datei zeigen lassen:",
 "inst.dp2": "Aus einem Klon heraus läuft es genauso, dann zeigt der Befehl auf die ausführbare Datei <code>ppt-mcp</code> in der virtuellen Umgebung des Klons. Die vollständige Einrichtung steht in der <a href='https://github.com/nometalalchemist/KitchenSink4PPT#install'>README</a>.",
@@ -1666,11 +1672,11 @@ fr: {
 "state.pot": "POT D'ESSAI",
 "dev.label": "COMPTOIR PRO",
 "sec.mixed": "MÉLANGÉ SUR PLACE",
-"m.catalog": "CATALOGUE № 138",
+"m.catalog": "CATALOGUE № 141",
 "m.family": "FAMILLE",
 "m.service": "SERVICE",
 "hero.stamp": "DES FORMES,<br>PAS DES CAPTURES",
-"hero.chain": "tirez sur la chaînette",
+"hero.chain": "tirez pour une couche fraîche",
 "hero.catno": "Model Context Protocol · Serveur pour Microsoft PowerPoint",
 "hero.tagline": "Pour Microsoft&nbsp;PowerPoint : <em>absolument tout, jusqu'au moindre détail</em>. Le serveur MCP .pptx qui construit des diagrammes que vos mains peuvent encore déplacer. “Everything <em>plus</em> the kitchen sink.”",
 "hero.idiom": "L'expression anglaise “everything but the kitchen sink” signifie « absolument tout ». Ce catalogue livre l'évier avec.",
@@ -1759,9 +1765,9 @@ fr: {
 "cr7.q": "« Réponds au commentaire du relecteur. »",
 "cr7.us": "réponses en fil, rendu vérifié dans PowerPoint lui-même",
 "cr7.com": "✘ la réponse n'existe aujourd'hui dans aucun serveur MCP PowerPoint",
-"cmp.note": "Recensement des capacités au 2026-08-31, compilé à partir des dépôts publics, de la documentation et des traqueurs de tickets. n/d : non documenté dans les sources consultées (ce n'est pas une absence affirmée). Le serveur le plus populaire est GongRzhe/Office-PowerPoint-MCP-Server, archivé depuis mars 2026. * Rang COM : les serveurs qui automatisent un PowerPoint en cours d'exécution sous Windows (Ayushmaniar/powerpoint-mcp 113, ykuwai/ppt-mcp 58, trsdn/mcp-server-ppt 36, sbroenne/mcp-server-powerpoint 19) ; capables, mais verrouillés sur Windows et indisponibles sans l'application. &dagger; Nombres d'étoiles relevés via l'API GitHub le 2026-09-04, à titre de contexte : les étoiles disent depuis combien de temps un rayon est visible, pas ce qu'il y a dessus. Le leader à 1 851 étoiles est archivé depuis mars 2026 et ne sait toujours pas retirer une diapositive. Les preuves de test et d'endurance vivent dans le bandeau de caractéristiques tout en haut (885 tests, plus de 1 500 appels de transport adversariaux, 0 corruption). Corrections bienvenues : ouvrez un ticket.",
+"cmp.note": "Recensement des capacités au 2026-08-31, compilé à partir des dépôts publics, de la documentation et des traqueurs de tickets. n/d : non documenté dans les sources consultées (ce n'est pas une absence affirmée). Le serveur le plus populaire est GongRzhe/Office-PowerPoint-MCP-Server, archivé depuis mars 2026. * Rang COM : les serveurs qui automatisent un PowerPoint en cours d'exécution sous Windows (Ayushmaniar/powerpoint-mcp 113, ykuwai/ppt-mcp 58, trsdn/mcp-server-ppt 36, sbroenne/mcp-server-powerpoint 19) ; capables, mais verrouillés sur Windows et indisponibles sans l'application. &dagger; Nombres d'étoiles relevés via l'API GitHub le 2026-09-04, à titre de contexte : les étoiles disent depuis combien de temps un rayon est visible, pas ce qu'il y a dessus. Le leader à 1 851 étoiles est archivé depuis mars 2026 et ne sait toujours pas retirer une diapositive. Les preuves de test et d'endurance vivent dans le bandeau de caractéristiques tout en haut (1 241 tests, plus de 1 500 appels de transport adversariaux, 0 corruption). Corrections bienvenues : ouvrez un ticket.",
 "h2.eff": "La facture de contexte",
-"eff.lead": "Chaque serveur MCP occupe une partie de la mémoire de travail d'une IA avant même que le travail commence, comme chaque luminaire du magasin tire du courant, que quelqu'un le regarde ou non. Celui-ci démarre petit à dessein : un noyau léger au départ, et quand un travail en demande plus, l'agent active le bon pack par son nom, en pleine session, comme on allume le rayon dans lequel on se tient. Votre assistant reste rapide et bon marché jusqu'au moment où il a vraiment besoin d'être grand.",
+"eff.lead": "Chaque serveur MCP occupe une partie de la mémoire de travail d'une IA avant même que le travail commence, comme chaque présentoir du magasin occupe de la surface, que quelqu'un s'y arrête ou non. Celui-ci démarre petit à dessein : un noyau allégé au départ, et quand un travail en demande plus, l'agent ouvre le pack qu'il lui faut par son nom, en pleine session, comme on descend un pot de plus de l'étagère. Votre assistant reste rapide et bon marché jusqu'au moment où il a vraiment besoin d'être grand.",
 "eff.s1": "Outils dans le noyau allégé",
 "eff.s2": "Tokens, noyau allégé chargé d'avance",
 "eff.s3": "Appel jusqu'à l'évier complet",
@@ -1769,7 +1775,7 @@ fr: {
 "h2.install": "Montage et raccordement",
 "inst.form": "BON DE COMMANDE № KS4P-1",
 "inst.s1": "① SE PROCURER LA ROBINETTERIE",
-"inst.s2": "② FAIRE LE BRANCHEMENT (Claude Code)",
+"inst.s2": "② L'AJOUTER AU MÉLANGE (Claude Code)",
 "inst.note": "Les outils sur fichier, la grande majorité, ne demandent aucune installation de PowerPoint et tournent sur toutes les plateformes. Les outils d'export et de validation empruntent le PowerPoint déjà installé sur la machine quand il y en a un, pour rendre, exporter et revérifier leur propre travail. Configuration complète dans le <a href='https://github.com/nometalalchemist/KitchenSink4PPT#install'>README</a>.",
 "inst.lead": "Trois façons d'entrer, la plus courte d'abord. La plupart des gens n'ont besoin que de la première.",
 "h2.svc": "Service client",
@@ -1794,7 +1800,7 @@ fr: {
 "fam3.p": "Toute la quincaillerie sur une page : chaque serveur KitchenSink, son installation et son comptoir, plus une étagère ou deux qui ne sont pas vides par hasard.",
 "fam3.g": "Parcourir la boutique →",
 "f.left": "&copy; 2026 &middot; <b>AGPL-3.0</b> : gratuit pour les particuliers et l'usage personnel.<br>Les entreprises qui l'intègrent dans leurs propres produits ont besoin d'une licence commerciale ; <a href='https://github.com/nometalalchemist/KitchenSink4PPT/issues/new?template=commercial_license.yml'>ouvrez un ticket</a> et nous en parlerons.",
-"f.right": "<a href='https://github.com/nometalalchemist/KitchenSink4PPT'>github.com/nometalalchemist/KitchenSink4PPT</a> · <a href='https://github.com/nometalalchemist/KitchenSink4PPT/issues/new/choose'>signaler un pépin</a><br>Bâti sur le noyau de sûreté de KitchenSink4Word, prototypé avec Claude Code et endurci par des manches adversariales jusqu'à ce que les agents de test soient à court de réclamations. Voilà une pièce bien décorée ! 💡",
+"f.right": "<a href='https://github.com/nometalalchemist/KitchenSink4PPT'>github.com/nometalalchemist/KitchenSink4PPT</a> · <a href='https://github.com/nometalalchemist/KitchenSink4PPT/issues/new/choose'>signaler un pépin</a><br>Bâti sur le noyau de sûreté de KitchenSink4Word, prototypé avec Claude Code et endurci par des manches adversariales jusqu'à ce que les agents de test soient à court de réclamations. Voilà une pièce bien décorée ! 🖌️",
 "inst.dev": "Pour les développeurs : pip, sources, autres clients MCP",
 "inst.dp1": "Installez le paquet, puis pointez n'importe quel client MCP sur l'exécutable :",
 "inst.dp2": "Depuis un clone, c'est identique : pointez la commande sur l'exécutable <code>ppt-mcp</code> de l'environnement virtuel du clone. Installation complète dans le <a href='https://github.com/nometalalchemist/KitchenSink4PPT#install'>README</a>.",
@@ -1817,11 +1823,11 @@ es: {
 "state.pot": "BOTE DE MUESTRA",
 "dev.label": "MOSTRADOR PROFESIONAL",
 "sec.mixed": "MEZCLADO EN LA TIENDA",
-"m.catalog": "CATÁLOGO № 138",
+"m.catalog": "CATÁLOGO № 141",
 "m.family": "FAMILIA",
 "m.service": "SERVICIO",
 "hero.stamp": "FORMAS,<br>NO CAPTURAS",
-"hero.chain": "tire de la cadenita",
+"hero.chain": "tire para una capa fresca",
 "hero.catno": "Model Context Protocol · Servidor para Microsoft PowerPoint",
 "hero.tagline": "Para Microsoft&nbsp;PowerPoint: <em>de todo, hasta lo que no imaginas</em>. El servidor MCP .pptx que construye diagramas que sus manos aún pueden mover. “Everything <em>plus</em> the kitchen sink.”",
 "hero.idiom": "La expresión inglesa “everything but the kitchen sink” significa «absolutamente todo». Este catálogo incluye hasta el fregadero.",
@@ -1910,9 +1916,9 @@ es: {
 "cr7.q": "«Responde al comentario del revisor.»",
 "cr7.us": "respuestas en hilo, representación verificada en el propio PowerPoint",
 "cr7.com": "✘ responder no existe hoy en ningún servidor MCP de PowerPoint",
-"cmp.note": "Estudio de capacidades a 2026-08-31, compilado de repositorios públicos, documentación y gestores de incidencias. n/d: no documentado en las fuentes consultadas (no es una ausencia afirmada). El servidor más popular es GongRzhe/Office-PowerPoint-MCP-Server, archivado desde marzo de 2026. * Nivel COM: los servidores que automatizan un PowerPoint en ejecución bajo Windows (Ayushmaniar/powerpoint-mcp 113, ykuwai/ppt-mcp 58, trsdn/mcp-server-ppt 36, sbroenne/mcp-server-powerpoint 19); capaces, pero atados a Windows e inservibles sin la aplicación. &dagger; Recuento de estrellas leído de la API de GitHub el 2026-09-04, a modo de contexto: las estrellas dicen cuánto tiempo lleva un estante a la vista, no lo que hay en él. El líder de 1.851 estrellas está archivado desde marzo de 2026 y sigue sin poder retirar una diapositiva. La evidencia de pruebas y estrés vive en la franja de especificaciones de arriba (885 pruebas, más de 1.500 llamadas de transporte adversariales, 0 corrupciones). Correcciones bienvenidas: abra un issue.",
+"cmp.note": "Estudio de capacidades a 2026-08-31, compilado de repositorios públicos, documentación y gestores de incidencias. n/d: no documentado en las fuentes consultadas (no es una ausencia afirmada). El servidor más popular es GongRzhe/Office-PowerPoint-MCP-Server, archivado desde marzo de 2026. * Nivel COM: los servidores que automatizan un PowerPoint en ejecución bajo Windows (Ayushmaniar/powerpoint-mcp 113, ykuwai/ppt-mcp 58, trsdn/mcp-server-ppt 36, sbroenne/mcp-server-powerpoint 19); capaces, pero atados a Windows e inservibles sin la aplicación. &dagger; Recuento de estrellas leído de la API de GitHub el 2026-09-04, a modo de contexto: las estrellas dicen cuánto tiempo lleva un estante a la vista, no lo que hay en él. El líder de 1.851 estrellas está archivado desde marzo de 2026 y sigue sin poder retirar una diapositiva. La evidencia de pruebas y estrés vive en la franja de especificaciones de arriba (1.241 pruebas, más de 1.500 llamadas de transporte adversariales, 0 corrupciones). Correcciones bienvenidas: abra un issue.",
 "h2.eff": "La factura de contexto",
-"eff.lead": "Todo servidor MCP ocupa una parte de la memoria de trabajo de una IA antes de que empiece cualquier trabajo, igual que cada lámpara de la tienda consume aunque nadie la mire. Este arranca pequeño a propósito: un núcleo ligero para empezar y, cuando un trabajo pide más, el agente enciende el paquete adecuado por su nombre, en plena sesión, como quien enciende la luz del pasillo en el que está de pie. Su asistente se mantiene rápido y barato hasta el momento en que de verdad necesita ser grande.",
+"eff.lead": "Todo servidor MCP ocupa una parte de la memoria de trabajo de una IA antes de que empiece cualquier trabajo, igual que cada mueble de la tienda ocupa suelo aunque nadie se pare a mirarlo. Este arranca pequeño a propósito: un núcleo ligero para empezar y, cuando un trabajo pide más, el agente abre el paquete que necesita por su nombre, en plena sesión, como quien baja otro bote del estante. Su asistente se mantiene rápido y barato hasta el momento en que de verdad necesita ser grande.",
 "eff.s1": "Herramientas en el núcleo ligero",
 "eff.s2": "Tokens, núcleo ligero por adelantado",
 "eff.s3": "Llamada hasta el fregadero entero",
@@ -1920,7 +1926,7 @@ es: {
 "h2.install": "Montaje y conexión",
 "inst.form": "HOJA DE PEDIDO № KS4P-1",
 "inst.s1": "① CONSIGA LA GRIFERÍA",
-"inst.s2": "② CONECTE EL CABLEADO (Claude Code)",
+"inst.s2": "② MÉZCLELO (Claude Code)",
 "inst.note": "Las herramientas basadas en archivo, la gran mayoría, no necesitan PowerPoint instalado y corren en cualquier plataforma. Las herramientas de exportación y validación toman prestado el PowerPoint ya instalado en la máquina cuando lo hay, para renderizar, exportar y comprobar de nuevo su propio trabajo. Configuración completa en el <a href='https://github.com/nometalalchemist/KitchenSink4PPT#install'>README</a>.",
 "inst.lead": "Tres formas de entrar, la más corta primero. La mayoría solo necesita la primera.",
 "h2.svc": "Atención al cliente",
@@ -1945,7 +1951,7 @@ es: {
 "fam3.p": "Toda la ferretería en una página: cada servidor KitchenSink, su accesorio y su mostrador, más un estante o dos que no están vacíos por casualidad.",
 "fam3.g": "Recorrer la tienda →",
 "f.left": "&copy; 2026 &middot; <b>AGPL-3.0</b>: gratis para particulares y uso personal.<br>Las empresas que lo integren en productos propios necesitan una licencia comercial; <a href='https://github.com/nometalalchemist/KitchenSink4PPT/issues/new?template=commercial_license.yml'>abra un issue</a> y lo hablamos.",
-"f.right": "<a href='https://github.com/nometalalchemist/KitchenSink4PPT'>github.com/nometalalchemist/KitchenSink4PPT</a> · <a href='https://github.com/nometalalchemist/KitchenSink4PPT/issues/new/choose'>informar de un fallo</a><br>Construido sobre el núcleo de seguridad de KitchenSink4Word, prototipado con Claude Code y endurecido en rondas adversariales hasta que los agentes de prueba se quedaron sin quejas. ¡Menuda sala tan bien decorada! 💡",
+"f.right": "<a href='https://github.com/nometalalchemist/KitchenSink4PPT'>github.com/nometalalchemist/KitchenSink4PPT</a> · <a href='https://github.com/nometalalchemist/KitchenSink4PPT/issues/new/choose'>informar de un fallo</a><br>Construido sobre el núcleo de seguridad de KitchenSink4Word, prototipado con Claude Code y endurecido en rondas adversariales hasta que los agentes de prueba se quedaron sin quejas. ¡Menuda sala tan bien decorada! 🖌️",
 "inst.dev": "Para desarrolladores: pip, código fuente, otros clientes MCP",
 "inst.dp1": "Instale el paquete y apunte cualquier cliente MCP al ejecutable:",
 "inst.dp2": "Desde un clon funciona igual: apunte el comando al ejecutable <code>ppt-mcp</code> del entorno virtual del clon. La instalación completa está en el <a href='https://github.com/nometalalchemist/KitchenSink4PPT#install'>README</a>.",
