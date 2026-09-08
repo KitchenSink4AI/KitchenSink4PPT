@@ -1,5 +1,11 @@
 <!-- mcp-name: io.github.nometalalchemist/kitchensink4ppt -->
-# KitchenSink4PPT
+# 🖌️ KitchenSink4PPT
+
+[![Tests](https://github.com/nometalalchemist/KitchenSink4PPT/actions/workflows/tests.yml/badge.svg)](https://github.com/nometalalchemist/KitchenSink4PPT/actions/workflows/tests.yml)
+[![PyPI](https://img.shields.io/pypi/v/kitchensink4ppt)](https://pypi.org/project/kitchensink4ppt/)
+[![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue)](LICENSE)
+
+[Landing page](https://nometalalchemist.github.io/KitchenSink4PPT/) · [llms.txt](https://nometalalchemist.github.io/KitchenSink4PPT/llms.txt) (machine-readable capability manifest for agents and LLM crawlers)
 
 Everything plus the kitchen sink for Microsoft PowerPoint: an MCP server for
 .pptx files, engineered not to corrupt. Slides, text, tables, charts, notes,
@@ -28,20 +34,46 @@ fix it.
 
 ## Install
 
+### Claude Desktop: one click
+
+Download `kitchensink4ppt.mcpb` from the
+[latest release](https://github.com/nometalalchemist/KitchenSink4PPT/releases/latest)
+and double-click it, or drag it into the Claude Desktop window. Desktop adds
+it as an extension and the sink is connected. Nothing to type, nothing to
+configure. The bundle launches the server with
+[uv](https://docs.astral.sh/uv/), so uv needs to be on your PATH
+(`pip install uv`); if Desktop does not pick the file up on a double-click,
+use Settings > Extensions > Advanced settings > Install extension.
+
+### Claude Code: one line
+
+```
+claude mcp add powerpoint -s user -- uvx kitchensink4ppt
+```
+
+That fetches and runs the server for you, so there is nothing to install
+first.
+
+### For developers: pip, source, other MCP clients
+
+Install the package and point any MCP client at the executable:
+
 ```
 pip install kitchensink4ppt
 ```
 
-MCP config (Claude Desktop, Claude Code, or any MCP client):
-
 ```json
-{
-  "mcpServers": {
-    "powerpoint": {
-      "command": "ppt-mcp"
-    }
-  }
-}
+{"mcpServers": {"powerpoint": {"command": "kitchensink4ppt"}}}
+```
+
+The `ppt-mcp` executable is an equivalent entry point. From a clone:
+
+```
+git clone https://github.com/nometalalchemist/KitchenSink4PPT
+cd KitchenSink4PPT
+python -m venv .venv
+.venv\Scripts\pip install -e .
+claude mcp add powerpoint -s user -- <absolute-path>\.venv\Scripts\ppt-mcp.exe
 ```
 
 Requires Python 3.12+. Everything file-based runs on any OS; PDF and image
