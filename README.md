@@ -178,7 +178,7 @@ The same discipline as KitchenSink4Word, applied from day one:
 
 Beta. The file layer (packages, slides, text, graphics, tables, charts,
 comments, animations, themes, links, media, notes, masters, equations,
-accessibility, deck assembly, sweeps, export) is covered by a 1,238-test
+accessibility, deck assembly, sweeps, export) is covered by a 1,241-test
 suite, including validation that generated decks open clean in real
 PowerPoint, and the server passes a raw stdio protocol round-trip suite.
 Live editing of decks open in PowerPoint runs every call through one

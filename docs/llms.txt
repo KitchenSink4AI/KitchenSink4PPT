@@ -62,7 +62,7 @@ Heavy editing with a safety net:
 - Byte-identical passthrough of anything not being edited: animations, media, embedded objects, and unrecognized parts pass through untouched.
 - Ambiguous targets are REFUSED with a candidate list; no tool ever acts on a first match.
 - Slide order is resolved through the presentation's slide list, never ZIP entry order.
-- Release evidence for v1.2: 1,238 tests, over 1,500 adversarial calls through the raw MCP stdio transport, zero corruptions, verified by opening outputs in invisible PowerPoint and failing on any repair prompt.
+- Release evidence for v1.2: 1,241 tests, over 1,500 adversarial calls through the raw MCP stdio transport, zero corruptions, verified by opening outputs in invisible PowerPoint and failing on any repair prompt.
 
 ## The KitchenSink family
 
