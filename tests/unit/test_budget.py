@@ -54,7 +54,31 @@ def _readers(pkg):
         "view": lambda: vw.get_presentation_view(pkg),
         "view(full)": lambda: vw.get_presentation_view(pkg, detail="full"),
         "view(outline)": lambda: vw.get_presentation_view(pkg, detail="outline"),
+        "get_slide_info(worst)": lambda: max(
+            (rd.get_slide_info(pkg, i) for i in range(len(rd.slide_table(pkg)))),
+            key=_chars,
+        ),
     }
+
+
+def test_one_crowded_slide_is_budgeted_too():
+    """A single slide is not automatically small: the heaviest corpus deck
+    has one whose shape inventory ran to 130,000 characters."""
+    pkg = PptxPackage(_deck(LARGE))
+    worst = max(
+        (rd.get_slide_info(pkg, i) for i in range(len(rd.slide_table(pkg)))),
+        key=_chars,
+    )
+    assert _chars(worst) <= budget.max_chars()
+    page = worst["page"]
+    assert page["unit"] == "shapes"
+    assert page["total"] == worst["shape_count"]
+    assert page["returned"] == len(worst["shapes"])
+    # the placeholder summary is never paged: it is the addressing surface
+    assert len(worst["placeholders"]) == sum(
+        1 for s in rd.list_elements(pkg, "placeholders",
+                                    scope=worst["index"])["items"]
+    )
 
 
 # ------------------------------------------------ pin 1: never exceeded

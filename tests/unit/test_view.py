@@ -74,7 +74,20 @@ def test_view_military_brief_all_details(detail, tmp_path):
     out = view.get_presentation_view(pkg, detail=detail)
     assert out["detail"] == detail
     headers = re.findall(r"^## Slide \d+ \[s:\d+\]", out["view"], re.M)
-    assert len(headers) == out["slide_count"] >= 30
+    assert out["slide_count"] >= 30
+    page = out.get("page")
+    if page is None:
+        assert len(headers) == out["slide_count"]
+    else:
+        # This deck is larger than one budgeted answer; whole slides come
+        # back and the page block accounts for the rest, so the header
+        # count and the omitted count still add up to the deck.
+        assert len(headers) == page["returned"]
+        assert page["returned"] + page["omitted"] == out["slide_count"]
+        rest = view.get_presentation_view(
+            pkg, detail=detail, offset=page["next_offset"]
+        )
+        assert rest["view"].startswith(out["view"].split("\n\n")[0].split("\n")[0])
 
 
 # ------------------------------------------------- anchors survive reorders

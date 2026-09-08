@@ -561,10 +561,16 @@ def get_presentation_info(pkg: PptxPackage) -> dict:
     }
 
 
-def get_slide_info(pkg: PptxPackage, slide) -> dict:
+def get_slide_info(pkg: PptxPackage, slide, *, limit=None, offset: int = 0) -> dict:
     """One slide in depth: layout, shape inventory (id, name, type, geometry
     in EMU + inches, z-position, group nesting), placeholder types, notes
-    and hidden flags. `slide` is a 0-based index or {"slide_id": N}."""
+    and hidden flags. `slide` is a 0-based index or {"slide_id": N}.
+
+    One slide is not automatically small: the heaviest corpus deck has a
+    slide whose inventory runs to 130,000 characters, so the shape list
+    answers under the output budget like the deck-wide readers do.
+    shape_count stays the slide's true total and the placeholder summary is
+    always complete; only `shapes` pages."""
     rec = resolve_slide(pkg, slide)
     part = rec["part"]
     root = pkg.root(part)
@@ -584,7 +590,17 @@ def get_slide_info(pkg: PptxPackage, slide) -> dict:
                 shape["cols"] = len(cells[0]) if cells else 0
             shapes.append(shape)
 
-    return {
+    placeholders = [
+        {
+            "id": s["id"],
+            "name": s["name"],
+            "type": s.get("placeholder_type"),
+            "idx": s.get("placeholder_idx"),
+        }
+        for s in shapes
+        if s["type"] == "placeholder"
+    ]
+    header = {
         "index": rec["index"],
         "slide_id": rec["slide_id"],
         "part": part,
@@ -593,18 +609,21 @@ def get_slide_info(pkg: PptxPackage, slide) -> dict:
         "hidden": _slide_hidden(root),
         "has_notes": notes_part_for(pkg, part) is not None,
         "shape_count": len(shapes),
-        "shapes": shapes,
-        "placeholders": [
-            {
-                "id": s["id"],
-                "name": s["name"],
-                "type": s.get("placeholder_type"),
-                "idx": s.get("placeholder_idx"),
-            }
-            for s in shapes
-            if s["type"] == "placeholder"
-        ],
     }
+    kept, page = _budget.page_items(
+        shapes,
+        limit=limit,
+        offset=offset,
+        # the placeholder summary is never paged, so it is spent overhead
+        overhead=_budget.overhead_of({**header, "placeholders": placeholders}),
+        unit="shapes",
+        narrow_hint="list one kind at a time with list_elements",
+        shrink=_budget.shrink_record,
+    )
+    result = {**header, "shapes": kept, "placeholders": placeholders}
+    if page is not None:
+        result["page"] = page
+    return result
 
 
 def list_elements(

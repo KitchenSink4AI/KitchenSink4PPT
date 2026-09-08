@@ -416,11 +416,11 @@ def get_presentation_view(
     cell addresses (1-based there; table tools take 0-based row/col),
     notes as quoted blocks. Feed the anchors to apply_edits. scope: None
     for all slides, an index, {"slide_id": N}, or a list. detail:
-    "outline", "text" (default), or "full" (geometry too). Answers under a
-    per-call output budget: on a deck too large to render whole, whole
-    slides come back and a "page" block names the total, the count
-    omitted, and the offset that continues. limit/offset page in slides.
-    Shape and diagram editing: enable_tools(packs=['graphics'])."""
+    "outline", "text" (default), or "full" (geometry too). Budgeted: a deck
+    too large to render whole returns whole slides plus a "page" block
+    giving the omitted count and the offset that continues; limit/offset
+    page in slides. Shape and diagram editing:
+    enable_tools(packs=['graphics'])."""
     return _vw.get_presentation_view(
         _load(file_path), scope, detail, limit=limit, offset=offset
     )
@@ -471,11 +471,11 @@ def get_text(
     """Plain text of the deck in reading order: shapes in spTree order,
     table cells tab-joined, fields rendering their cached text. scope: None
     for all slides, a 0-based index, {"slide_id": N}, or a list;
-    include_notes=True appends speaker notes. Answers under a per-call
-    output budget, paging in whole slides: slide_count stays the deck's
-    real total and a "page" block names what came back, what was left, and
-    the offset that continues. limit/offset page explicitly.
-    Rendered-appearance checks live in the assembly-export pack.
+    include_notes=True appends speaker notes. Budgeted, paging in whole
+    slides: slide_count stays the deck's true total and a "page" block
+    gives the omitted count and the next offset; limit/offset page
+    explicitly. Rendered-appearance checks live in the assembly-export
+    pack.
     live='auto' edits the open PowerPoint copy when the file is locked by
     it (UNSAVED until live_save, com pack); 'force' targets the open
     session; 'off' refuses locked files. For edit anchors, use
@@ -512,10 +512,9 @@ def find_text(
     query as a regular expression (guarded against catastrophic
     backtracking). Matches
     text as displayed, not raw XML, so search for & rather than &amp;.
-    count is always the true number of matches; when more matched than fit
-    the per-call output budget, a "page" block names how many were held
-    back and the offset that continues. compact=True returns matches as a
-    fields header plus one array each, roughly half the size.
+    count is always the true total; a "page" block gives the omitted
+    count and next offset when more matched than the budget fits.
+    compact=True returns matches as a fields header plus one array each.
     Formatting-aware replacement lives in the graphics pack:
     enable_tools(packs=['graphics']). Use this to locate text; to read it
     in order, use get_text."""
@@ -734,18 +733,25 @@ def fit_text(
 
 
 @_tool()
-def get_slide_info(file_path: str, slide: Any, live: str = "auto") -> dict:
+def get_slide_info(
+    file_path: str,
+    slide: Any,
+    limit: int | None = None,
+    offset: int = 0,
+    live: str = "auto",
+) -> dict:
     """One slide in depth: durable slide_id, layout, hidden flag, notes
     presence, and every shape with id, name, kind, geometry in inches,
     placeholder type, and text preview. Shape ids here are the addresses
     every editing tool takes; edit what it lists via the graphics pack.
-    slide: 0-based index or {"slide_id": N}. All slides:
-    get_presentation_view. live='auto' edits the open PowerPoint copy when
+    slide: 0-based index or {"slide_id": N}. Budgeted: a crowded slide
+    returns a "page" block with the omitted count and next offset.
+    All slides: get_presentation_view. live='auto' edits the open PowerPoint copy when
     the file is locked by it (UNSAVED until live_save, com pack); 'force'
     targets the open session; 'off' refuses locked files."""
     return _route_live(
         live,
-        lambda: _rd.get_slide_info(_load(file_path), slide),
+        lambda: _rd.get_slide_info(_load(file_path), slide, limit=limit, offset=offset),
         lambda: _lo.live_get_slide_info(file_path, slide),
     )
 
@@ -2302,15 +2308,22 @@ def create_presentation(
 
 @_tool("design")
 def get_autofit_state(
-    file_path: str, slide: Any = None, shape: Any = None
+    file_path: str,
+    slide: Any = None,
+    shape: Any = None,
+    limit: int | None = None,
+    offset: int = 0,
 ) -> dict:
     """Report text autofit and overflow risk without opening PowerPoint:
     per text shape, the autofit mode (normAutofit shrink, spAutoFit grow,
     or none), the current shrink percentages PowerPoint stored, and
     box-vs-text metrics. A shape already shrinking its text is the classic
     crowded-slide signal. scope by slide (all slides when None) or narrow
-    to one shape id."""
-    return _tx.get_autofit_state(_load(file_path), slide, shape)
+    to one shape id. Budgeted: a "page" block gives the omitted count and
+    next offset when the deck is too large to report whole."""
+    return _tx.get_autofit_state(
+        _load(file_path), slide, shape, limit=limit, offset=offset
+    )
 
 
 @_tool("design")
@@ -2400,7 +2413,11 @@ def get_theme(file_path: str, master: Any = None) -> dict:
 
 @_tool("design")
 def check_layout(
-    file_path: str, slide: Any = None, checks: Any = None
+    file_path: str,
+    slide: Any = None,
+    checks: Any = None,
+    limit: int | None = None,
+    offset: int = 0,
 ) -> dict:
     """Run the design guardrail battery over one slide, a list, or the
     whole deck (slide=None): overlap, off-slide, tiny text, contrast, and
@@ -2408,9 +2425,11 @@ def check_layout(
     {"check": "tiny_text", "body_min_pt": 12}); None runs everything with
     defaults. Findings carry severities, shape ids, a fix hint naming the
     exact tool call that repairs the problem, and per-check caveats; the
-    final authority is export_slide_image plus looking. Read-only;
-    nothing is modified."""
-    return _dck.check_layout(_load(file_path), slide, checks)
+    final authority is export_slide_image plus looking. Counts stay
+    complete; findings page. Read-only."""
+    return _dck.check_layout(
+        _load(file_path), slide, checks, limit=limit, offset=offset
+    )
 
 
 @_tool("design")
@@ -2745,15 +2764,23 @@ def set_master_background(
 
 
 @_tool("design")
-def audit_accessibility(file_path: str, scope: Any = None) -> dict:
+def audit_accessibility(
+    file_path: str,
+    scope: Any = None,
+    limit: int | None = None,
+    offset: int = 0,
+) -> dict:
     """One-stop accessibility audit over scope (None = whole deck, a slide
     selector, or a list): alt_text (graphical shapes without descriptions),
     table_headers (tables without header-row semantics), reading_order
     (spTree vs visual order, gross mismatches only, labeled heuristic),
     plus missing_title and contrast delegated to check_layout. Findings
     carry severity, shape ids, and a fix naming the exact repairing tool
-    call (set_alt_text, set_reading_order, ...). Read-only."""
-    return _acc.audit_accessibility(_load(file_path), scope)
+    call (set_alt_text, set_reading_order, ...). Counts stay complete;
+    the finding list pages. Read-only."""
+    return _acc.audit_accessibility(
+        _load(file_path), scope, limit=limit, offset=offset
+    )
 
 
 @_tool("design")
