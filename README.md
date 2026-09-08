@@ -71,16 +71,15 @@ Environment pins for hosts and power users:
 | `KS4P_ALL_TOOLS` | `true` loads every pack at startup; `false` or empty keeps lite. `KS4P_MODE` wins when set |
 | `KS4P_LOCK_TOOLS` | `true` fixes the surface at startup; `false` or empty leaves it adjustable. `KS4P_PACK_POLICY` wins when set |
 | `KS4P_ALLOWED_ROOTS` | opt-in path sandbox; tools refuse to touch files outside these roots |
-| `KS4P_NO_UPDATE_CHECK` | `1` or `true` turns the update check off completely: no network call, no cache file |
+| `KS4P_UPDATE_CHECK` | `off` turns the update check off completely: no network call, no cache file (the older `KS4P_NO_UPDATE_CHECK=1` still works) |
 
-The server checks PyPI, the package index it was installed from, at most once
-every 14 days to see whether a newer version exists; the check sends nothing
-but a standard HTTP request for that package's public JSON, and setting
-`KS4P_NO_UPDATE_CHECK=1` turns it off entirely. It runs on a background thread
-at startup, so it never delays a call, and it fails silently: a timeout or an
-offline machine leaves no error anywhere. When a newer release exists,
-`diagnose` adds one line saying so. That is the only place it ever appears,
-and the server never downloads or installs anything on its own.
+**Update check.** The server looks for a newer release on PyPI only when you
+call `diagnose`, never at startup and never on a timer, at most one request
+every seven days, capped at two seconds. The check is a single plain HTTPS
+GET to pypi.org that sends nothing but the request itself. A failed check is
+reported with its reason rather than hidden. Set `KS4P_UPDATE_CHECK=off` to turn it off
+completely (the older `KS4P_NO_UPDATE_CHECK=1` still works). The server never
+downloads or installs anything.
 
 The last two are the checkboxes the `.mcpb` bundle shows in Claude Desktop:
 "Load every tool at startup" and "Lock the tool set at startup". Both take

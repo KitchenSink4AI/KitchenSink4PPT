@@ -990,8 +990,9 @@ def diagnose(file_path: str | None = None, verbose: bool = False) -> dict:
     is PASTE-SAFE by default: no absolute paths, so it can go straight into
     a bug report; verbose=True adds the sandbox roots, engine locations,
     and full file path for local troubleshooting. Run it first when any
-    tool refuses unexpectedly or an export engine seems missing. The
-    validate tool (assembly-export pack) does the real opens-clean check in
+    tool refuses unexpectedly or an export engine seems missing. Reports
+    the update-check state; the only place the check runs. The validate
+    tool (assembly-export pack) does the real opens-clean check in
     PowerPoint."""
     out = _dg.diagnose(file_path, verbose=verbose)
     out["surface"] = _packs.surface_report()
