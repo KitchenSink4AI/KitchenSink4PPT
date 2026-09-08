@@ -40,6 +40,7 @@ from __future__ import annotations
 import hashlib
 import re
 
+from ..core import budget as _budget
 from ..core.errors import AmbiguousTarget, PptMcpError, TargetNotFound
 from ..core.package import PptxPackage, qn
 from . import read as _read
@@ -257,10 +258,25 @@ def _slide_title(pkg: PptxPackage, part: str) -> str | None:
 # ------------------------------------------------------------------ public
 
 
-def get_presentation_view(pkg: PptxPackage, scope=None, detail: str = "text") -> dict:
+def get_presentation_view(
+    pkg: PptxPackage,
+    scope=None,
+    detail: str = "text",
+    *,
+    limit=None,
+    offset: int = 0,
+) -> dict:
     """The anchored markdown projection (module docstring has the scheme).
     scope: None = whole deck, or a slide selector / list of selectors.
-    detail: "outline" | "text" (default) | "full"."""
+    detail: "outline" | "text" (default) | "full".
+
+    The projection is assembled slide by slide under the output budget
+    (core/budget.py). A deck that fits renders whole, exactly as before. A
+    deck that does not renders as many whole slides as fit and carries a
+    `page` block naming the total, the count rendered, the count omitted,
+    and the offset that continues; slides are never cut mid-way, so every
+    anchor in the view is a complete, usable one. `anchor_count` counts the
+    anchors actually rendered."""
     if detail not in _DETAILS:
         raise PptMcpError(
             f"unknown detail {detail!r}; one of: {', '.join(_DETAILS)}"
@@ -268,28 +284,35 @@ def get_presentation_view(pkg: PptxPackage, scope=None, detail: str = "text") ->
     slides = _read.slides_in_scope(pkg, scope)
     anchors = _display_anchors(_shape_map(pkg))
 
-    lines: list[str] = [
+    header: list[str] = [
         f"# {pkg.path.name} ({len(slides)} slide"
         f"{'s' if len(slides) != 1 else ''}, detail={detail})"
     ]
     if detail != "outline":
-        lines.append(
+        header.append(
             "Anchors: [s:N] slide id, [a:hex] shape, t:hex:rNcN table cell "
             "(rNcN is 1-based; row/col args to table tools are 0-based)."
         )
-    anchor_count = 0
+
+    blocks: list[str] = []
+    block_anchors: list[int] = []
 
     for rec in slides:
         part = rec["part"]
         root = pkg.root(part)
         hidden = " (hidden)" if _read._slide_hidden(root) else ""
-        lines.append("")
-        lines.append(f"## Slide {rec['index'] + 1} [s:{rec['slide_id']}]{hidden}")
+        lines: list[str] = [
+            "",
+            f"## Slide {rec['index'] + 1} [s:{rec['slide_id']}]{hidden}",
+        ]
+        anchor_count = 0
 
         if detail == "outline":
             title = _slide_title(pkg, part)
             if title:
                 lines.append(title)
+            blocks.append("\n".join(lines))
+            block_anchors.append(anchor_count)
             continue
 
         _lp, layout_name = _read._layout_info(pkg, part)
@@ -332,9 +355,30 @@ def get_presentation_view(pkg: PptxPackage, scope=None, detail: str = "text") ->
             lines.append("Notes:")
             lines.extend("> " + ln for ln in notes.split("\n"))
 
-    return {
-        "view": "\n".join(lines),
+        blocks.append("\n".join(lines))
+        block_anchors.append(anchor_count)
+
+    head = "\n".join(header)
+    kept, page = _budget.page_blocks(
+        blocks,
+        limit=limit,
+        offset=offset,
+        overhead=_budget.overhead_of(
+            {"view": head, "slide_count": len(slides), "detail": detail,
+             "anchor_count": 0}
+        ),
+        unit="slides",
+        narrow_hint="narrow the read with scope=<slide index or list of indexes>",
+    )
+    start = page["offset"] if page else 0
+    rendered_anchors = sum(block_anchors[start : start + len(kept)])
+
+    result = {
+        "view": "\n".join([head, *kept]),
         "slide_count": len(slides),
         "detail": detail,
-        "anchor_count": anchor_count,
+        "anchor_count": rendered_anchors,
     }
+    if page is not None:
+        result["page"] = page
+    return result

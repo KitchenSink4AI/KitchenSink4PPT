@@ -121,11 +121,6 @@ def _folder_name_for(doc_name: str) -> str:
     return f"{doc_name[: _MAX_FOLDER_NAME - 9]}-{digest}"
 
 
-def backup_root(doc_path: str | os.PathLike) -> Path:
-    """The .ks4p-backups folder next to a presentation (not created)."""
-    return Path(doc_path).resolve().parent / BACKUP_DIR_NAME
-
-
 def slot_dir(doc_path: str | os.PathLike, *, create: bool = False) -> Path:
     """This file's slot folder inside .ks4p-backups (created on demand)."""
     p = Path(doc_path).resolve()

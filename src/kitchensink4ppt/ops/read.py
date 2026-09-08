@@ -21,6 +21,11 @@ Contract (binding for every function in this module):
   newlines; table cells join with tabs, table rows with newlines.
 - Caller-supplied regex (find_text with regex=True) always runs through
   ops/_regex.py (hard-timeout ReDoS guard); never through stdlib re.
+- The list-shaped readers (list_elements, get_text, find_text) answer under
+  the output budget in core/budget.py. A read that fits comes back exactly
+  as it always did; a read that does not comes back with a `page` block
+  naming the true total, what was returned, what was omitted, and the
+  offset that continues it. Nothing is ever dropped in silence.
 """
 
 from __future__ import annotations
@@ -29,6 +34,7 @@ import posixpath
 
 from lxml import etree
 
+from ..core import budget as _budget
 from ..core.errors import PptMcpError, TargetNotFound
 from ..core.package import NSMAP, PRESENTATION_PART, PptxPackage, qn, resolve_target
 
@@ -601,11 +607,27 @@ def get_slide_info(pkg: PptxPackage, slide) -> dict:
     }
 
 
-def list_elements(pkg: PptxPackage, kind: str, scope=None) -> dict:
+def list_elements(
+    pkg: PptxPackage,
+    kind: str,
+    scope=None,
+    *,
+    limit=None,
+    offset: int = 0,
+    compact: bool = False,
+) -> dict:
     """THE multiplex enumerator. kind is one of: slides, shapes,
     placeholders, tables, charts, images, diagrams, notes, sections,
     layouts, masters. Returns a flat item list; slide-scoped kinds honor `scope`
-    (None = all slides, a selector, or a list of selectors)."""
+    (None = all slides, a selector, or a list of selectors).
+
+    The answer stays under the output budget (core/budget.py). `limit` and
+    `offset` page through it explicitly; whenever anything is held back a
+    `page` block reports the true total, the count returned, the count
+    omitted, and the offset that continues the read. compact=True returns
+    the same data as a `fields` header plus one array per item, which drops
+    the repeated JSON key names that were two thirds of this tool's payload
+    on a large deck."""
     if kind not in _LIST_KINDS:
         raise PptMcpError(
             f"unknown element kind {kind!r}; one of: {', '.join(_LIST_KINDS)}"
@@ -757,13 +779,80 @@ def list_elements(pkg: PptxPackage, kind: str, scope=None) -> dict:
                         }
                     )
 
-    return {"kind": kind, "count": len(items), "items": items}
+    result: dict = {"kind": kind, "count": len(items)}
+    narrow = (
+        "narrow the read with scope=<slide index or list of indexes>"
+        if kind not in ("sections", "layouts", "masters")
+        else ""
+    )
+    if compact:
+        column = _budget.columnar(items)
+        kept, page = _budget.page_items(
+            column["rows"],
+            limit=limit,
+            offset=offset,
+            overhead=_budget.overhead_of(
+                {**result, "format": "rows", "fields": column["fields"]}
+            ),
+            narrow_hint=narrow,
+        )
+        result["format"] = "rows"
+        result["fields"] = column["fields"]
+        result["rows"] = kept
+    else:
+        kept, page = _budget.page_items(
+            items,
+            limit=limit,
+            offset=offset,
+            overhead=_budget.overhead_of(result),
+            narrow_hint=narrow,
+            shrink=_budget.shrink_record,
+        )
+        result["items"] = kept
+    if page is not None:
+        result["page"] = page
+    return result
 
 
-def get_text(pkg: PptxPackage, scope=None, *, include_notes: bool = False) -> dict:
+def _shrink_text_pair(pair, allowance: int):
+    """Cut one slide's text down when that single slide is larger than the
+    whole output budget. The entry and the joined block carry the same
+    characters, so both are cut by the same amount and the cut is stated in
+    the text itself."""
+    entry, block = pair
+    # Every character of this slide is emitted twice, once in the entry and
+    # once in the joined block, and notes double it again. Split the
+    # allowance across all the copies or the cut lands over the ceiling.
+    pieces = 2 if entry.get("notes") else 1
+    share = max(0, allowance // (2 * pieces) - 80)
+    new_entry = dict(entry)
+    text, dropped = _budget.truncate_text(entry.get("text", ""), share)
+    new_entry["text"] = text
+    if new_entry.get("notes"):
+        notes, more = _budget.truncate_text(new_entry["notes"], share)
+        new_entry["notes"] = notes
+        dropped += more
+    new_block, block_dropped = _budget.truncate_text(block, share * pieces)
+    return [new_entry, new_block], max(dropped, block_dropped)
+
+
+def get_text(
+    pkg: PptxPackage,
+    scope=None,
+    *,
+    include_notes: bool = False,
+    limit=None,
+    offset: int = 0,
+) -> dict:
     """Plain text in reading order (spTree order, groups and tables
     recursed). Per-slide entries plus a joined "text" (slides separated by
-    blank lines). include_notes=True appends each slide's speaker notes."""
+    blank lines). include_notes=True appends each slide's speaker notes.
+
+    Paged in SLIDES against the output budget: the deck's text appears
+    twice in this answer, once per slide and once joined, so the budget
+    counts both. When slides are held back, `page` names how many and the
+    offset that continues the read, and the joined "text" covers exactly
+    the slides that came back."""
     slides = []
     for rec in slides_in_scope(pkg, scope):
         parts = [t for _e, _k, t in _slide_texts(pkg, rec["part"]) if t]
@@ -782,11 +871,30 @@ def get_text(pkg: PptxPackage, scope=None, *, include_notes: bool = False) -> di
         if include_notes and s.get("notes"):
             block = (block + "\n" if block else "") + "[Notes] " + s["notes"]
         blocks.append(block)
-    return {
+
+    # Page over (entry, block) pairs so the budget sees the real wire cost:
+    # every character of slide text is emitted twice, in "slides" and again
+    # in the joined "text".
+    pairs = [[entry, block] for entry, block in zip(slides, blocks)]
+    kept, page = _budget.page_items(
+        pairs,
+        limit=limit,
+        offset=offset,
+        overhead=_budget.overhead_of({"slide_count": len(slides)}),
+        unit="slides",
+        narrow_hint="narrow the read with scope=<slide index or list of indexes>",
+        shrink=_shrink_text_pair,
+    )
+    kept_slides = [entry for entry, _b in kept]
+    kept_blocks = [block for _e, block in kept]
+    result = {
         "slide_count": len(slides),
-        "slides": slides,
-        "text": "\n\n".join(blocks),
+        "slides": kept_slides,
+        "text": "\n\n".join(kept_blocks),
     }
+    if page is not None:
+        result["page"] = page
+    return result
 
 
 def _snippet(text: str, start: int, end: int, radius: int = 30) -> str:
@@ -819,12 +927,20 @@ def find_text(
     regex: bool = False,
     scope=None,
     include_notes: bool = True,
+    limit=None,
+    offset: int = 0,
+    compact: bool = False,
 ) -> dict:
     """Search slide text and (by default) speaker notes. Each match carries
     slide index, slide_id, shape id, paragraph index (within the shape's
     text body), char offsets into that paragraph's plain text, and a
     context snippet. Table matches add row/col (0-based). regex=True runs
-    the pattern through the ReDoS guard (ops/_regex.py)."""
+    the pattern through the ReDoS guard (ops/_regex.py).
+
+    A common word on a large deck matches thousands of times, so the match
+    list answers under the output budget: `count` stays the true number of
+    matches, `page` names what came back and the offset that continues, and
+    compact=True returns matches as a `fields` header plus one array each."""
     if not query:
         raise PptMcpError("find_text needs a non-empty query")
     matches: list[dict] = []
@@ -898,7 +1014,37 @@ def find_text(
                             {**base, "shape_id": sid, "where": "notes", "paragraph": pi},
                         )
 
-    return {"query": query, "regex": regex, "count": len(matches), "matches": matches}
+    result: dict = {"query": query, "regex": regex, "count": len(matches)}
+    narrow = "narrow the search with scope=<slide index or list of indexes>"
+    if compact:
+        column = _budget.columnar(matches)
+        kept, page = _budget.page_items(
+            column["rows"],
+            limit=limit,
+            offset=offset,
+            overhead=_budget.overhead_of(
+                {**result, "format": "rows", "fields": column["fields"]}
+            ),
+            unit="matches",
+            narrow_hint=narrow,
+        )
+        result["format"] = "rows"
+        result["fields"] = column["fields"]
+        result["rows"] = kept
+    else:
+        kept, page = _budget.page_items(
+            matches,
+            limit=limit,
+            offset=offset,
+            overhead=_budget.overhead_of(result),
+            unit="matches",
+            narrow_hint=narrow,
+            shrink=_budget.shrink_record,
+        )
+        result["matches"] = kept
+    if page is not None:
+        result["page"] = page
+    return result
 
 
 # =====================================================================

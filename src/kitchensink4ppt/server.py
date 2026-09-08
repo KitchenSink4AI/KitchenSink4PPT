@@ -404,7 +404,11 @@ _MUT = "Saves atomically with two-slot backup; backup=False skips rotation."
 
 @_tool()
 def get_presentation_view(
-    file_path: str, scope: Any = None, detail: str = "text"
+    file_path: str,
+    scope: Any = None,
+    detail: str = "text",
+    limit: int | None = None,
+    offset: int = 0,
 ) -> dict:
     """The anchored markdown projection of a deck, THE cheap way to read
     it: slide headers with durable [s:id] anchors, one block per shape
@@ -412,9 +416,14 @@ def get_presentation_view(
     cell addresses (1-based there; table tools take 0-based row/col),
     notes as quoted blocks. Feed the anchors to apply_edits. scope: None
     for all slides, an index, {"slide_id": N}, or a list. detail:
-    "outline", "text" (default), or "full" (geometry too). Shape and
-    diagram editing: enable_tools(packs=['graphics'])."""
-    return _vw.get_presentation_view(_load(file_path), scope, detail)
+    "outline", "text" (default), or "full" (geometry too). Answers under a
+    per-call output budget: on a deck too large to render whole, whole
+    slides come back and a "page" block names the total, the count
+    omitted, and the offset that continues. limit/offset page in slides.
+    Shape and diagram editing: enable_tools(packs=['graphics'])."""
+    return _vw.get_presentation_view(
+        _load(file_path), scope, detail, limit=limit, offset=offset
+    )
 
 
 @_tool()
@@ -455,20 +464,30 @@ def get_text(
     file_path: str,
     scope: Any = None,
     include_notes: bool = False,
+    limit: int | None = None,
+    offset: int = 0,
     live: str = "auto",
 ) -> dict:
     """Plain text of the deck in reading order: shapes in spTree order,
     table cells tab-joined, fields rendering their cached text. scope: None
     for all slides, a 0-based index, {"slide_id": N}, or a list;
-    include_notes=True appends speaker notes. Rendered-appearance checks
-    live in the assembly-export pack. live='auto' edits the open PowerPoint
-    copy when the file is locked by it (UNSAVED until live_save, com
-    pack); 'force' targets the open session; 'off' refuses locked
-    files. For edit anchors, use get_presentation_view."""
+    include_notes=True appends speaker notes. Answers under a per-call
+    output budget, paging in whole slides: slide_count stays the deck's
+    real total and a "page" block names what came back, what was left, and
+    the offset that continues. limit/offset page explicitly.
+    Rendered-appearance checks live in the assembly-export pack.
+    live='auto' edits the open PowerPoint copy when the file is locked by
+    it (UNSAVED until live_save, com pack); 'force' targets the open
+    session; 'off' refuses locked files. For edit anchors, use
+    get_presentation_view."""
     return _route_live(
         live,
         lambda: _rd.get_text(
-            _load(file_path), scope, include_notes=include_notes
+            _load(file_path),
+            scope,
+            include_notes=include_notes,
+            limit=limit,
+            offset=offset,
         ),
         lambda: _lo.live_get_text(
             file_path, scope, include_notes=include_notes
@@ -483,6 +502,9 @@ def find_text(
     regex: bool = False,
     scope: Any = None,
     include_notes: bool = True,
+    limit: int | None = None,
+    offset: int = 0,
+    compact: bool = False,
 ) -> dict:
     """Search the deck's text. Returns every match with slide index, shape
     id, paragraph index, and character offsets, exactly the addresses
@@ -490,6 +512,10 @@ def find_text(
     query as a regular expression (guarded against catastrophic
     backtracking). Matches
     text as displayed, not raw XML, so search for & rather than &amp;.
+    count is always the true number of matches; when more matched than fit
+    the per-call output budget, a "page" block names how many were held
+    back and the offset that continues. compact=True returns matches as a
+    fields header plus one array each, roughly half the size.
     Formatting-aware replacement lives in the graphics pack:
     enable_tools(packs=['graphics']). Use this to locate text; to read it
     in order, use get_text."""
@@ -499,6 +525,9 @@ def find_text(
         regex=regex,
         scope=scope,
         include_notes=include_notes,
+        limit=limit,
+        offset=offset,
+        compact=compact,
     )
 
 
@@ -733,17 +762,31 @@ def get_presentation_info(file_path: str) -> dict:
 
 
 @_tool()
-def list_elements(file_path: str, kind: str, scope: Any = None) -> dict:
+def list_elements(
+    file_path: str,
+    kind: str,
+    scope: Any = None,
+    limit: int | None = None,
+    offset: int = 0,
+    compact: bool = False,
+) -> dict:
     """THE multiplex enumerator, one kind per call: slides, shapes,
     placeholders, tables, charts, images, diagrams (SmartArt frames with
     their editable nodes), notes, sections, layouts, masters. Returns a
     flat item list with ids and locations; slide-scoped
-    kinds honor scope (None = all slides, a selector, or a list). Use it to
-    find layout names for insert_slide and shape ids for editing. The packs
-    (enable_tools) hold the tools that edit what this lists. For one slide
-    in depth, use get_slide_info; for edit anchors, use
+    kinds honor scope (None = all slides, a selector, or a list). count is
+    always the true number found; a deck with more elements than fit the
+    per-call output budget returns a "page" block naming how many were held
+    back and the offset that continues, so nothing goes missing quietly.
+    limit/offset page explicitly, and compact=True returns a fields header
+    plus one array per item, about a third the size on large decks. Use it
+    to find layout names for insert_slide and shape ids for editing. The
+    packs (enable_tools) hold the tools that edit what this lists. For one
+    slide in depth, use get_slide_info; for edit anchors, use
     get_presentation_view."""
-    return _rd.list_elements(_load(file_path), kind, scope)
+    return _rd.list_elements(
+        _load(file_path), kind, scope, limit=limit, offset=offset, compact=compact
+    )
 
 
 @_tool()
