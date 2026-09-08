@@ -8,6 +8,7 @@ using the expected names below; decks with real layouts, tables, pictures,
 and speaker notes give the most meaningful coverage.
 """
 
+import os
 from pathlib import Path
 
 import pytest
@@ -35,6 +36,11 @@ def pytest_configure(config):
     """Missing corpus files are GENERATED as structural stand-ins (see
     tests/make_corpus.py), so the full suite runs anywhere, CI included.
     Real local decks, when present, always take precedence."""
+    # NO NETWORK IN TESTS. diagnose runs the on-demand update check, so the
+    # suite turns it off for every test by default; the update tests switch
+    # it back on for themselves and mock the fetch. setdefault, so a
+    # developer who exports the variable still wins.
+    os.environ.setdefault("KS4P_UPDATE_CHECK", "off")
     if set(EXPECTED) - _present():
         import make_corpus  # noqa: F401  (lives beside this file)
 
