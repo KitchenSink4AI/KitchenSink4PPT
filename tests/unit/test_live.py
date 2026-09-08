@@ -560,10 +560,17 @@ if mode == "edits":
     from kitchensink4ppt.ops import read as read_ops
 
     pkg = PptxPackage(deck)
-    text = read_ops.get_text(pkg, include_notes=True)["text"]
-    out["file_has_title"] = "Live Title Alpha" in text
-    out["file_has_replace"] = "REPLACED-OK" in text
-    out["file_has_notes"] = "Note line one" in text
+    # find_text, not get_text: this scenario parks a 70,000-character shape
+    # on slide 0, so a whole-deck text read answers under the output budget
+    # and the later slides do not come back in one call. find_text searches
+    # the whole deck and reports a true count whatever it returns, which is
+    # what "did the edit land on disk" actually asks.
+    def _on_disk(needle):
+        return read_ops.find_text(pkg, needle, include_notes=True)["count"] > 0
+
+    out["file_has_title"] = _on_disk("Live Title Alpha")
+    out["file_has_replace"] = _on_disk("REPLACED-OK")
+    out["file_has_notes"] = _on_disk("Note line one")
     out["file_slide_count"] = read_ops.get_presentation_info(pkg)["slide_count"]
 
 print("RESULT " + json.dumps(out))
