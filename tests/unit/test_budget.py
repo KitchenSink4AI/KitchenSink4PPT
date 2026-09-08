@@ -35,6 +35,113 @@ def _deck(name: str) -> Path:
     return path
 
 
+def _slide_xml_chars(path: Path, *, worst_slide: bool = False) -> int:
+    """Uncompressed size of the deck's slide XML, in characters.
+
+    Read straight out of the zip rather than through any reader, so this
+    measurement cannot be satisfied by the code path it is used to guard.
+    `worst_slide` returns the single heaviest slide instead of the total,
+    for the tests that need one crowded slide rather than a crowded deck.
+    """
+    with zipfile.ZipFile(path) as zf:
+        sizes = [
+            info.file_size
+            for info in zf.infolist()
+            if info.filename.startswith("ppt/slides/")
+            and info.filename.endswith(".xml")
+        ]
+    if not sizes:
+        return 0
+    return max(sizes) if worst_slide else sum(sizes)
+
+
+#: How many characters of slide XML a deck needs per character of ceiling
+#: before a read of it can plausibly overflow that ceiling.
+#:
+#: Slide XML is markup wrapped around the text a read returns, so the JSON
+#: payload comes out several times smaller than the XML that produced it.
+#: Measured on this corpus: `proposal_defense.pptx` carries 203,445
+#: characters of slide XML and every read of it lands under the
+#: 60,000-character default, which is what the small-read pins below
+#: assert, and the other decks sit at the same order of ratio. Four is
+#: picked to clear both edges by a wide margin at every ceiling these tests
+#: use: the synthetic stand-ins top out at 35,490 characters of slide XML
+#: and skip at all of them, while the real decks (6,912,608 for
+#: military_brief, 364,343 in its heaviest single slide) run at all of them.
+XML_TO_PAYLOAD_MARGIN = 4
+
+
+def _deck_that_can_overflow(name: str, *, worst_slide: bool = False) -> Path:
+    """A deck heavy enough that a read of it CAN exceed the ceiling in force.
+
+    WHY THIS GUARD EXISTS. The suite runs against a corpus of real decks
+    when one is present and against synthetic structural stand-ins when it
+    is not (see tests/conftest.py). The stand-ins are a few slides of
+    generated filler. Every test below pins the behaviour of a read that
+    had to be CUT SHORT, and a deck that fits under the ceiling is never
+    cut short, so on a stand-in these tests were not failing on a contract:
+    they were reaching for a `page` block that correctly did not exist.
+
+    THE THRESHOLD, DERIVED. The ceiling is `budget.max_chars()`, measured
+    in characters of serialized JSON, and it is asked for here rather than
+    hardcoded so a test that moves the ceiling moves this guard with it.
+    The deck is then measured in the one unit that is available without
+    running a read at all, its slide XML, and required to carry
+    XML_TO_PAYLOAD_MARGIN characters of it per character of ceiling; that
+    constant carries the measurement the factor comes from. Below the
+    threshold a read cannot reach the ceiling, so skipping there skips
+    nothing that could have run.
+
+    WHAT THIS DOES NOT DO. It does not skip when truncation fails to
+    happen. Above the threshold the test still runs and still requires the
+    `page` block, so a regression that stopped truncating turns these red
+    rather than quietly green, which is the whole hazard of a size-aware
+    skip and the reason the measurement is of the fixture and not of the
+    result.
+    """
+    path = _deck(name)
+    ceiling = budget.max_chars()
+    threshold = ceiling * XML_TO_PAYLOAD_MARGIN
+    weight = _slide_xml_chars(path, worst_slide=worst_slide)
+    what = "its heaviest single slide" if worst_slide else "its slide XML"
+    if weight < threshold:
+        pytest.skip(
+            f"{name} is too small to truncate: {what} runs to {weight:,} "
+            f"characters, under the {threshold:,} needed to overflow the "
+            f"{ceiling:,}-character output ceiling in force, so no read of "
+            f"it can be cut short. This is the synthetic stand-in rather "
+            f"than the real corpus deck; drop the real file into "
+            f"tests/corpus/ to run this pin."
+        )
+    return path
+
+
+def _deck_with_stored_media(name: str) -> Path:
+    """A deck that actually carries ZIP_STORED entries.
+
+    Same defect class as the guard above, in the save path rather than the
+    read path: the pin is that already-compressed media survives a save
+    byte-identical and still STORED, and a synthetic stand-in whose every
+    entry is deflated has no stored entry to preserve. Measured off the zip
+    directory, so the fixture is what is being checked and not the saver.
+    """
+    path = _deck(name)
+    with zipfile.ZipFile(path) as zf:
+        stored = [
+            info.filename
+            for info in zf.infolist()
+            if info.compress_type == zipfile.ZIP_STORED
+        ]
+    if not stored:
+        pytest.skip(
+            f"{name} carries no ZIP_STORED entries, so there is nothing for "
+            f"the save path to preserve uncompressed. This is the synthetic "
+            f"stand-in rather than the real corpus deck; drop the real file "
+            f"into tests/corpus/ to run this pin."
+        )
+    return path
+
+
 def _chars(obj) -> int:
     return len(json.dumps(obj, ensure_ascii=False, default=str))
 
@@ -64,7 +171,7 @@ def _readers(pkg):
 def test_one_crowded_slide_is_budgeted_too():
     """A single slide is not automatically small: the heaviest corpus deck
     has one whose shape inventory ran to 130,000 characters."""
-    pkg = PptxPackage(_deck(LARGE))
+    pkg = PptxPackage(_deck_that_can_overflow(LARGE, worst_slide=True))
     worst = max(
         (rd.get_slide_info(pkg, i) for i in range(len(rd.slide_table(pkg)))),
         key=_chars,
@@ -99,7 +206,7 @@ def test_no_read_ever_exceeds_the_output_budget(monkeypatch, deck, ceiling):
 
 def test_a_truncated_read_names_its_total_and_its_continuation(monkeypatch):
     monkeypatch.setenv(budget.ENV_MAX_CHARS, "20000")
-    pkg = PptxPackage(_deck(LARGE))
+    pkg = PptxPackage(_deck_that_can_overflow(LARGE))
     result = rd.list_elements(pkg, "shapes")
     page = result["page"]
     assert page["truncated"] is True
@@ -113,7 +220,7 @@ def test_a_truncated_read_names_its_total_and_its_continuation(monkeypatch):
 
 def test_paging_through_a_truncated_read_reaches_every_item(monkeypatch):
     monkeypatch.setenv(budget.ENV_MAX_CHARS, "20000")
-    pkg = PptxPackage(_deck(LARGE))
+    pkg = PptxPackage(_deck_that_can_overflow(LARGE))
     seen = 0
     offset = 0
     pages = 0
@@ -133,7 +240,7 @@ def test_paging_through_a_truncated_read_reaches_every_item(monkeypatch):
 
 def test_get_text_pages_in_slides_and_says_which_ones(monkeypatch):
     monkeypatch.setenv(budget.ENV_MAX_CHARS, "12000")
-    pkg = PptxPackage(_deck(LARGE))
+    pkg = PptxPackage(_deck_that_can_overflow(LARGE))
     first = rd.get_text(pkg)
     assert first["page"]["unit"] == "slides"
     assert first["slide_count"] > len(first["slides"])
@@ -145,7 +252,7 @@ def test_get_text_pages_in_slides_and_says_which_ones(monkeypatch):
 
 def test_view_pages_in_whole_slides_never_mid_slide(monkeypatch):
     monkeypatch.setenv(budget.ENV_MAX_CHARS, "20000")
-    pkg = PptxPackage(_deck(LARGE))
+    pkg = PptxPackage(_deck_that_can_overflow(LARGE))
     result = vw.get_presentation_view(pkg)
     assert result["page"]["omitted"] > 0
     # every slide header that opened also closed: the count of headers
@@ -155,7 +262,8 @@ def test_view_pages_in_whole_slides_never_mid_slide(monkeypatch):
 
 def test_a_single_slide_larger_than_the_budget_is_cut_and_says_so(monkeypatch):
     monkeypatch.setenv(budget.ENV_MAX_CHARS, "2000")
-    pkg = PptxPackage(_deck("pmr_tables.pptx"))
+    pkg = PptxPackage(
+        _deck_that_can_overflow("pmr_tables.pptx", worst_slide=True))
     result = rd.get_text(pkg, include_notes=True)
     assert _chars(result) <= 2000
     page = result["page"]
@@ -254,7 +362,7 @@ def _compress_map(path: Path) -> dict[str, int]:
 
 
 def test_media_the_source_stored_is_stored_back_byte_identical(tmp_path):
-    src = _deck(STORED_MEDIA)
+    src = _deck_with_stored_media(STORED_MEDIA)
     before = _compress_map(src)
     stored = [n for n, c in before.items() if c == zipfile.ZIP_STORED]
     assert stored, "fixture no longer carries stored entries"
