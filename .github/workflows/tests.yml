@@ -22,3 +22,5 @@ jobs:
         run: pip install -e ".[dev]"
       - name: Run test suite (synthetic corpus auto-generated)
         run: python -m pytest tests/unit -q
+      - name: Site guard (published figures must match the code)
+        run: python -X utf8 scripts/check_site.py
