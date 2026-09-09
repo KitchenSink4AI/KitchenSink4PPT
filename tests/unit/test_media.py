@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from kitchensink4ppt import packs
 from kitchensink4ppt.core.errors import (
     PptMcpError,
     TargetNotFound,
@@ -345,12 +346,12 @@ def test_list_images_reports_bytes_and_px(make_deck):
 
 
 def test_server_insert_image_envelope(make_deck, tmp_path):
-    from kitchensink4ppt import server
+    from kitchensink4ppt import server  # noqa: F401  (the import registers tools)
 
     deck = make_deck("img17.pptx")
     png = tmp_path / "s.png"
     png.write_bytes(png_bytes())
-    fn = server.mcp._tool_manager._tools["insert_image"].fn
+    fn = packs.tool_objects()["insert_image"].fn
     out = fn(file_path=str(deck), slide=0, image=str(png), x=1.0, y=1.0, w=2.0)
     assert out["ok"] is True
     assert out["changed"]["shape_id"] > 0

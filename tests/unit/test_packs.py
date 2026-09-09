@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from kitchensink4ppt import packs, server
@@ -11,18 +13,17 @@ from kitchensink4ppt.core.errors import PptMcpError
 @pytest.fixture(autouse=True)
 def _restore_surface():
     """Pack state is process-global; snapshot and restore around each test."""
-    tools = server.mcp._tool_manager._tools
-    before = {name: tool.enabled for name, tool in tools.items()}
+    before = dict(packs._ENABLED)
     yield
-    for name, tool in tools.items():
-        if tool.enabled != before[name]:
-            tool.enable() if before[name] else tool.disable()
+    packs._ENABLED.clear()
+    packs._ENABLED.update(before)
+    server._PENDING_VISIBILITY.clear()
 
 
 def test_registry_matches_fastmcp():
     """Every registered pack tool exists on the server, and every server
     tool belongs to exactly one pack (or lite)."""
-    tools = server.mcp._tool_manager._tools
+    tools = packs.tool_objects()
     seen = set()
     for pack, names in packs.tool_names().items():
         for name in names:
@@ -33,12 +34,13 @@ def test_registry_matches_fastmcp():
 
 
 def test_lite_is_enabled_and_packs_are_not():
-    tools = server.mcp._tool_manager._tools
     for name in packs.tool_names()["lite"]:
-        assert tools[name].enabled, f"lite tool {name} should start enabled"
+        assert packs.is_tool_enabled(name), (
+            f"lite tool {name} should start enabled"
+        )
     for pack in packs.pack_names():
         for name in packs.tool_names()[pack]:
-            assert not tools[name].enabled, (
+            assert not packs.is_tool_enabled(name), (
                 f"{pack} tool {name} should start disabled"
             )
 
@@ -107,8 +109,8 @@ def test_locked_policy_refuses(monkeypatch):
     with pytest.raises(PptMcpError):
         packs.disable(["graphics"])
     # the server tool returns the envelope, not a raw exception
-    out = server.mcp._tool_manager._tools["enable_tools"].fn(
-        packs=["graphics"]
+    out = asyncio.run(
+        packs.tool_objects()["enable_tools"].fn(packs=["graphics"])
     )
     assert out["ok"] is False
     assert out["error"]["code"] == "CONFLICT"
@@ -132,13 +134,12 @@ def test_startup_mode_full(monkeypatch):
 def test_startup_mode_pack_list(monkeypatch):
     monkeypatch.setenv("KS4P_MODE", "graphics, com")
     packs.apply_startup_mode()
-    tools = server.mcp._tool_manager._tools
     assert all(
-        tools[n].enabled for n in packs.tool_names()["graphics"]
+        packs.is_tool_enabled(n) for n in packs.tool_names()["graphics"]
     )
-    assert all(tools[n].enabled for n in packs.tool_names()["com"])
+    assert all(packs.is_tool_enabled(n) for n in packs.tool_names()["com"])
     assert not any(
-        tools[n].enabled for n in packs.tool_names()["tables-charts"]
+        packs.is_tool_enabled(n) for n in packs.tool_names()["tables-charts"]
     )
 
 
@@ -204,5 +205,4 @@ def test_v1_0_pack_names_still_resolve(old, new):
 def test_old_name_in_startup_mode(monkeypatch):
     monkeypatch.setenv("KS4P_MODE", "com-live")
     packs.apply_startup_mode()
-    tools = server.mcp._tool_manager._tools
-    assert all(tools[n].enabled for n in packs.tool_names()["com"])
+    assert all(packs.is_tool_enabled(n) for n in packs.tool_names()["com"])

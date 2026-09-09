@@ -16,17 +16,16 @@ _CLOSED_CODES = {
 
 
 def _fn(name: str):
-    return server.mcp._tool_manager._tools[name].fn
+    return packs.tool_objects()[name].fn
 
 
 @pytest.fixture(autouse=True)
 def _restore_surface():
-    tools = server.mcp._tool_manager._tools
-    before = {name: tool.enabled for name, tool in tools.items()}
+    before = dict(packs._ENABLED)
     yield
-    for name, tool in tools.items():
-        if tool.enabled != before[name]:
-            tool.enable() if before[name] else tool.disable()
+    packs._ENABLED.clear()
+    packs._ENABLED.update(before)
+    server._PENDING_VISIBILITY.clear()
 
 
 def test_mutation_success_envelope(make_deck):
@@ -136,7 +135,7 @@ def test_docstring_budget_and_no_em_dashes():
     paged_readers = {
         "get_presentation_view", "get_text", "find_text", "get_slide_info",
     }
-    for name, tool in server.mcp._tool_manager._tools.items():
+    for name, tool in packs.tool_objects().items():
         desc = tool.description or ""
         assert desc, f"{name} has no description"
         assert "\u2014" not in desc, f"{name} description has an em dash"
@@ -150,7 +149,7 @@ def test_docstring_budget_and_no_em_dashes():
 
 def test_mutating_tools_carry_contract_sentence():
     contract = "Saves atomically with two-slot backup"
-    for name, tool in server.mcp._tool_manager._tools.items():
+    for name, tool in packs.tool_objects().items():
         params = (tool.parameters or {}).get("properties", {})
         if "backup" in params:
             desc = " ".join((tool.description or "").split())
@@ -171,7 +170,7 @@ def test_lite_docstrings_advertise_packs():
     for name in packs.tool_names()["lite"]:
         if name in exempt:
             continue
-        desc = server.mcp._tool_manager._tools[name].description or ""
+        desc = packs.tool_objects()[name].description or ""
         assert (
             "enable_tools" in desc or "pack" in desc
         ), f"lite tool {name} never mentions the packs"

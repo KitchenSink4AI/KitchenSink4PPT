@@ -66,7 +66,7 @@ def main() -> int:
     import pythoncom
     import win32com.client
 
-    from kitchensink4ppt import server
+    from kitchensink4ppt import packs, server
     from kitchensink4ppt.com import serial as com_serial
     from kitchensink4ppt.core import errors as err
 
@@ -75,7 +75,7 @@ def main() -> int:
         function as a FastMCP FunctionTool, so .fn is the callable the
         MCP client ultimately reaches; calling it is what makes this a
         SERVER-layer hammer rather than a com-layer one."""
-        t = server.mcp._tool_manager._tools.get(name)
+        t = packs.tool_objects().get(name)
         if t is None:
             raise SystemExit(f"tool {name!r} is not registered")
         return t.fn

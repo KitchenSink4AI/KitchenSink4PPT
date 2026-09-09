@@ -31,7 +31,7 @@ _SVG_NS = 'xmlns="http://www.w3.org/2000/svg"'
 
 
 def _fn(name: str):
-    return server.mcp._tool_manager._tools[name].fn
+    return packs.tool_objects()[name].fn
 
 
 def _md5(path) -> str:
@@ -40,12 +40,11 @@ def _md5(path) -> str:
 
 @pytest.fixture(autouse=True)
 def _restore_surface():
-    tools = server.mcp._tool_manager._tools
-    before = {name: tool.enabled for name, tool in tools.items()}
+    before = dict(packs._ENABLED)
     yield
-    for name, tool in tools.items():
-        if tool.enabled != before[name]:
-            tool.enable() if before[name] else tool.disable()
+    packs._ENABLED.clear()
+    packs._ENABLED.update(before)
+    server._PENDING_VISIBILITY.clear()
 
 
 # ------------------------------------------------- C1/C2/M3: coordinate ceiling
@@ -342,8 +341,7 @@ def test_m5_mode_list_containing_lite_tolerated(monkeypatch):
     monkeypatch.setenv("KS4P_MODE", "lite,graphics")
     mode = packs.apply_startup_mode()  # must not raise (was a startup brick)
     assert mode == "lite,graphics"
-    tool = packs._REGISTRY["graphics"]["insert_shape"]
-    assert getattr(tool, "enabled", False) is True
+    assert packs.is_tool_enabled("insert_shape") is True
 
 
 def test_m5_mode_only_lite_in_list(monkeypatch):
@@ -429,7 +427,7 @@ def test_m9_a4_and_letter_presets_accepted(make_deck):
 
 
 def test_l1_atomic_documented_and_still_guarded(make_deck):
-    desc = server.mcp._tool_manager._tools["apply_edits"].description or ""
+    desc = packs.tool_objects()["apply_edits"].description or ""
     assert "atomic must stay True" in desc
     deck = make_deck("l1.pptx")
     out = _fn("apply_edits")(

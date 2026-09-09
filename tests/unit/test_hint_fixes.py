@@ -30,12 +30,11 @@ from kitchensink4ppt.ops import view as view_ops
 
 @pytest.fixture(autouse=True)
 def _restore_surface():
-    tools = server.mcp._tool_manager._tools
-    before = {name: tool.enabled for name, tool in tools.items()}
+    before = dict(packs._ENABLED)
     yield
-    for name, tool in tools.items():
-        if tool.enabled != before[name]:
-            tool.enable() if before[name] else tool.disable()
+    packs._ENABLED.clear()
+    packs._ENABLED.update(before)
+    server._PENDING_VISIBILITY.clear()
 
 
 def _table_loc(pkg: PptxPackage) -> tuple[int, int]:
@@ -199,5 +198,5 @@ def test_view_states_both_cell_conventions(make_deck):
 
 
 def test_view_docstring_states_both_conventions():
-    desc = server.mcp._tool_manager._tools["get_presentation_view"].description
+    desc = packs.tool_objects()["get_presentation_view"].description
     assert "1-based" in desc and "0-based" in desc

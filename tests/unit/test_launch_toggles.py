@@ -46,12 +46,11 @@ def _clean_env(monkeypatch):
 def _restore_surface():
     """Pack state is process-global and apply_startup_mode flips real
     FastMCP tools, so snapshot and restore around every test."""
-    tools = server.mcp._tool_manager._tools
-    before = {name: tool.enabled for name, tool in tools.items()}
+    before = dict(packs._ENABLED)
     yield
-    for name, tool in tools.items():
-        if tool.enabled != before[name]:
-            tool.enable() if before[name] else tool.disable()
+    packs._ENABLED.clear()
+    packs._ENABLED.update(before)
+    server._PENDING_VISIBILITY.clear()
 
 
 # --------------------------------------------------------- 1. polarity
@@ -235,16 +234,15 @@ def test_master_toggle_applies_for_real(monkeypatch):
     """End to end through apply_startup_mode: the master checkbox alone
     opens every pack."""
     monkeypatch.setenv(packs.ENV_ALL_TOOLS, "true")
-    registry = server.mcp._tool_manager._tools
     for pack in packs.PACK_SUMMARIES:
         for name in packs.tool_names()[pack]:
-            registry[name].disable()
+            packs._ENABLED[name] = False
     assert packs.apply_startup_mode() == "full"
     for pack in packs.PACK_SUMMARIES:
         names = packs.tool_names()[pack]
         assert names, f"{pack} registered no tools; the check would be vacuous"
         for name in names:
-            assert registry[name].enabled, f"{pack}/{name}"
+            assert packs.is_tool_enabled(name), f"{pack}/{name}"
 
 
 # ------------------------------------------- 7. manifest <-> code parity

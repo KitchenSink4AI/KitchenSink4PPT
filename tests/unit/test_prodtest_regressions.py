@@ -36,7 +36,7 @@ from kitchensink4ppt.ops.read import get_slide_info
 
 
 def _fn(name: str):
-    return server.mcp._tool_manager._tools[name].fn
+    return packs.tool_objects()[name].fn
 
 
 @pytest.fixture()
@@ -405,7 +405,7 @@ def test_fit_text_bad_min_size_refuses(deck):
 def test_fit_text_registered_in_lite():
     """Overflow is universal: fit_text ships in the always-on core."""
     assert "fit_text" in packs.tool_names()["lite"]
-    assert server.mcp._tool_manager._tools["fit_text"].enabled
+    assert packs.is_tool_enabled("fit_text")
 
 
 # --------------------------------------------- 9. contrast tinted fills
@@ -440,14 +440,14 @@ def test_contrast_opaque_fill_still_flags(deck):
 
 
 def test_set_placeholder_text_documents_paragraph_schema():
-    desc = server.mcp._tool_manager._tools["set_placeholder_text"].description
+    desc = packs.tool_objects()["set_placeholder_text"].description
     assert '"level"' in desc or "level" in desc
     assert '"text"' in desc or "paragraphs" in desc
     assert "body" in desc and "content" in desc
 
 
 def test_fit_text_docstring_carries_honesty():
-    desc = server.mcp._tool_manager._tools["fit_text"].description
+    desc = packs.tool_objects()["fit_text"].description
     assert "heuristic" in desc.lower() or "estimate" in desc.lower()
     assert "export_slide_images" in desc
 
