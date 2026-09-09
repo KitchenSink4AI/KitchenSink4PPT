@@ -3,7 +3,7 @@
   "name": "io.github.nometalalchemist/kitchensink4ppt",
   "title": "KitchenSink4PPT",
   "description": "Everything plus the kitchen sink for PowerPoint: native editable diagrams, live editing, 141 tools.",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "websiteUrl": "https://kitchensink4ai.github.io/KitchenSink4PPT/",
   "repository": {
     "url": "https://github.com/KitchenSink4AI/KitchenSink4PPT",
@@ -13,7 +13,7 @@
     {
       "registryType": "pypi",
       "identifier": "kitchensink4ppt",
-      "version": "1.2.0",
+      "version": "1.2.1",
       "transport": {
         "type": "stdio"
       }

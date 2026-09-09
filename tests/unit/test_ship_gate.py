@@ -146,7 +146,7 @@ FIGURE_SURFACES = (
 PUBLISHED_FIGURES = (
     ('141', 'tools', 'scripts/measure_surface.py'),
     ('1,241', 'tests', 'pytest --collect-only'),
-    ('5.2k', 'tokens in the lite core', 'scripts/measure_surface.py'),
+    ('5.3k', 'tokens in the lite core', 'scripts/measure_surface.py'),
 )
 
 #: (string, what it used to mean). Absent from every FIGURE_SURFACES file at

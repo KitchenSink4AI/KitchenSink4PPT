@@ -34,7 +34,7 @@ from pathlib import Path
 
 import pytest
 
-from kitchensink4ppt import server
+from kitchensink4ppt import packs, server
 from kitchensink4ppt.core.errors import PptMcpError
 from kitchensink4ppt.ops import assembly as asm
 from kitchensink4ppt.ops import equations as eqn
@@ -43,7 +43,7 @@ from kitchensink4ppt.ops import geometry as g
 
 
 def _fn(name: str):
-    return server.mcp._tool_manager._tools[name].fn
+    return packs.tool_objects()[name].fn
 
 
 def _md5(path) -> str:
@@ -52,16 +52,17 @@ def _md5(path) -> str:
 
 @pytest.fixture(autouse=True)
 def _restore_surface():
-    tools = server.mcp._tool_manager._tools
-    before = {name: tool.enabled for name, tool in tools.items()}
+    before = dict(packs._ENABLED)
     yield
-    for name, tool in tools.items():
-        if tool.enabled != before[name]:
-            tool.enable() if before[name] else tool.disable()
+    packs._ENABLED.clear()
+    packs._ENABLED.update(before)
+    server._PENDING_VISIBILITY.clear()
 
 
 def _assert_refused(out, deck=None, before=None, code="BAD_PARAMS"):
-    assert isinstance(out, dict), out
+    # Not isinstance(out, dict): under fastmcp 3.x _RefusalResult serves the
+    # mapping protocol off structured_content instead of subclassing dict.
+    assert "ok" in out and "error" in out, out
     assert out["ok"] is False, out
     assert out["error"]["code"] == code, out
     if deck is not None and before is not None:

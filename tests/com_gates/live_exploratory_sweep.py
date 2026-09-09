@@ -52,13 +52,13 @@ def main() -> int:
         print("RESULT " + json.dumps(out))
         return 0
 
-    from kitchensink4ppt import server
+    from kitchensink4ppt import packs, server
     from kitchensink4ppt.core import errors as err
 
     missing_tools: list = []
 
     def tool(name):
-        t = server.mcp._tool_manager._tools.get(name)
+        t = packs.tool_objects().get(name)
         if t is None:
             missing_tools.append(name)
             raise err.PptMcpError(f"no tool registered as {name!r}")

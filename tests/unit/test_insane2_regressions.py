@@ -31,7 +31,7 @@ from kitchensink4ppt.ops import themes as thm
 
 
 def _fn(name: str):
-    return server.mcp._tool_manager._tools[name].fn
+    return packs.tool_objects()[name].fn
 
 
 def _md5(path) -> str:
@@ -40,12 +40,11 @@ def _md5(path) -> str:
 
 @pytest.fixture(autouse=True)
 def _restore_surface():
-    tools = server.mcp._tool_manager._tools
-    before = {name: tool.enabled for name, tool in tools.items()}
+    before = dict(packs._ENABLED)
     yield
-    for name, tool in tools.items():
-        if tool.enabled != before[name]:
-            tool.enable() if before[name] else tool.disable()
+    packs._ENABLED.clear()
+    packs._ENABLED.update(before)
+    server._PENDING_VISIBILITY.clear()
 
 
 # ---------------------------------------------------- H1: float overflow

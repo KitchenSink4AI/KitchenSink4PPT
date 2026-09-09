@@ -6,7 +6,7 @@ import hashlib
 
 import pytest
 
-from kitchensink4ppt import server
+from kitchensink4ppt import packs, server  # noqa: F401  (the import registers tools)
 from kitchensink4ppt.core.errors import PptMcpError
 from kitchensink4ppt.core.package import PptxPackage
 from kitchensink4ppt.ops import batch as _bt
@@ -44,7 +44,7 @@ def test_multi_op_batch_applies_and_maps_changed(make_deck):
     pkg = PptxPackage(deck)
     anchor_a = _anchor_for(pkg, 0, id_a)
 
-    out = server.mcp._tool_manager._tools["apply_edits"].fn(
+    out = packs.tool_objects()["apply_edits"].fn(
         file_path=str(deck),
         edits=[
             {"op": "set_text", "anchor": anchor_a, "text": "ALPHA EDITED"},
@@ -69,7 +69,7 @@ def test_stale_anchor_refuses_whole_batch(make_deck):
     anchor_a = _anchor_for(pkg, 0, id_a)
     before = _md5(deck)
 
-    out = server.mcp._tool_manager._tools["apply_edits"].fn(
+    out = packs.tool_objects()["apply_edits"].fn(
         file_path=str(deck),
         edits=[
             {"op": "set_text", "anchor": anchor_a, "text": "should not land"},
@@ -87,7 +87,7 @@ def test_stale_anchor_refuses_whole_batch(make_deck):
 def test_bad_op_refuses_whole_batch_with_index(make_deck):
     deck, (id_a, _), _ = _prep_deck(make_deck)
     before = _md5(deck)
-    out = server.mcp._tool_manager._tools["apply_edits"].fn(
+    out = packs.tool_objects()["apply_edits"].fn(
         file_path=str(deck),
         edits=[
             {"op": "set_shape", "slide": 0, "shape": id_a, "dx": 1.0},
@@ -104,7 +104,7 @@ def test_bad_op_refuses_whole_batch_with_index(make_deck):
 def test_unknown_param_refused_before_mutation(make_deck):
     deck, (id_a, _), _ = _prep_deck(make_deck)
     before = _md5(deck)
-    out = server.mcp._tool_manager._tools["apply_edits"].fn(
+    out = packs.tool_objects()["apply_edits"].fn(
         file_path=str(deck),
         edits=[{"op": "delete_shape", "slide": 0, "shape": id_a,
                 "cascade": True}],
@@ -116,7 +116,7 @@ def test_unknown_param_refused_before_mutation(make_deck):
 
 def test_atomic_false_refused(make_deck):
     deck, (id_a, _), _ = _prep_deck(make_deck)
-    out = server.mcp._tool_manager._tools["apply_edits"].fn(
+    out = packs.tool_objects()["apply_edits"].fn(
         file_path=str(deck),
         edits=[{"op": "set_shape", "slide": 0, "shape": id_a, "dx": 1.0}],
         atomic=False,

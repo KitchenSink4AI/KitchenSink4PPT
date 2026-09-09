@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from kitchensink4ppt import packs, server
+from kitchensink4ppt import packs, server  # noqa: F401  (the import registers tools)
 from kitchensink4ppt.core.errors import PptMcpError
 from kitchensink4ppt.ops import workflows as _wf
 from kitchensink4ppt.ops.diagnostics import diagnose
@@ -19,7 +19,7 @@ def test_index_lists_all_workflows():
 
 
 def test_every_step_names_a_registered_tool():
-    registered = set(server.mcp._tool_manager._tools)
+    registered = set(packs.tool_objects())
     for name, wf in _wf.WORKFLOWS.items():
         for step in wf["steps"]:
             assert step["tool"] in registered, (
@@ -85,6 +85,6 @@ def test_diagnose_missing_file(tmp_path):
 
 
 def test_diagnose_server_tool_adds_surface():
-    out = server.mcp._tool_manager._tools["diagnose"].fn()
+    out = packs.tool_objects()["diagnose"].fn()
     assert "surface" in out
     assert out["surface"]["active_tools"] >= len(packs.tool_names()["lite"])

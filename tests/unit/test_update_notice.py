@@ -25,11 +25,14 @@ The properties pinned:
 
 from __future__ import annotations
 
+import asyncio
+import inspect
+
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from kitchensink4ppt import __version__, server
+from kitchensink4ppt import __version__, packs, server  # noqa: F401  (the import registers tools)
 from kitchensink4ppt.core import update_check as uc
 
 
@@ -66,8 +69,13 @@ class _Counter:
 
 def _call(name, *args, **kwargs):
     """Invoke a registered tool in process (the pptx suite convention: the
-    module attribute is the FunctionTool, the raw callable is .fn)."""
-    return server.mcp._tool_manager._tools[name].fn(*args, **kwargs)
+    registry holds the FunctionTool, the raw callable is .fn). The pack
+    toggles are async since the fastmcp 3.x port, so a coroutine result is
+    driven here rather than at every call site."""
+    out = packs.tool_objects()[name].fn(*args, **kwargs)
+    if inspect.iscoroutine(out):
+        return asyncio.run(out)
+    return out
 
 
 def _landmine(*args, **kwargs):
