@@ -12,7 +12,12 @@ keywords = [
 ]
 requires-python = ">=3.12"
 dependencies = [
-    "fastmcp>=2.14,<3",  # Tool.enable()/disable() queue tools/list_changed (tiered loading relies on it; verified on 2.14.7)
+    # PINNED, and the pin is a floor not a shrug: 3.4 is where the
+    # visibility API tiered loading rides (global Visibility transform at
+    # startup, session-scoped ctx.enable_components/disable_components
+    # mid-session, list_changed per toggle) settled. 2.14's
+    # Tool.enable()/disable() is gone in 3.x; see packs.py.
+    "fastmcp>=3.4,<4",
     "lxml",
     "regex",
     "packaging",  # version comparison for the startup update check

@@ -24,6 +24,7 @@ PptxPackage and never touch disk; _edit owns the lock + load + save cycle.
 from __future__ import annotations
 
 import functools
+import inspect as _inspect
 import json as _json
 from typing import Any
 from xml.etree.ElementTree import ParseError as _XmlParseError
@@ -31,10 +32,12 @@ from xml.etree.ElementTree import ParseError as _XmlParseError
 from fastmcp import FastMCP
 from fastmcp.exceptions import NotFoundError as _FmcpNotFound
 from fastmcp.exceptions import ToolError as _FmcpToolError
+from fastmcp.server.context import Context as _Context
 from fastmcp.server.middleware import Middleware as _FmcpMiddleware
+from fastmcp.server.transforms.visibility import Visibility as _Visibility
+from fastmcp.tools.function_tool import FunctionTool as _FunctionTool
 from fastmcp.tools.tool import ToolResult as _FmcpToolResult
 from lxml import etree as _lxml_etree
-from mcp.types import CallToolResult as _McpCallToolResult
 
 from . import __version__
 
@@ -224,8 +227,7 @@ def _pack_hint(exc: BaseException) -> str | None:
         pack = _packs.pack_of(name)
         if pack in (None, "lite"):
             continue
-        tool = _packs._REGISTRY[pack][name]
-        if not getattr(tool, "enabled", True):
+        if not _packs.is_tool_enabled(name):
             needed[name] = pack
     if not needed:
         return None
@@ -266,30 +268,52 @@ def _refusal(exc: BaseException) -> dict:
     return {"ok": False, "error": error}
 
 
-class _RefusalResult(dict, _FmcpToolResult):
-    """A structured refusal that is BOTH the {ok: false, error: ...} dict
-    (in-process callers and the test harness index it directly) AND a
-    FastMCP ToolResult whose MCP serialization sets isError=true, so
+class _RefusalResult(_FmcpToolResult):
+    """A structured refusal that is BOTH indexable like the
+    {ok: false, error: ...} dict (in-process callers and the test harness)
+    AND a FastMCP ToolResult whose MCP serialization sets isError=true, so
     spec-compliant clients see the failure flag (production-test finding:
     refusals rode out as isError=false successes). The JSON payload stays
     intact in the content AND in structuredContent; only the flag changes.
-    FunctionTool.run returns ToolResult instances untouched, and the MCP
-    lowlevel server passes a CallToolResult through verbatim, skipping
-    output-schema validation, which is exactly the contract we want."""
+
+    fastmcp 3.x shape: v1.2 inherited from BOTH dict and ToolResult, but
+    3.x made ToolResult a pydantic model and the dual base is an instance
+    lay-out conflict. The class now subclasses ToolResult alone, passes
+    is_error=True at construction (3.x carries the flag itself, so the
+    hand-rolled to_mcp_result override is gone), and serves the mapping
+    protocol off structured_content, which keeps both halves of the old
+    contract."""
 
     def __init__(self, payload: dict):
-        dict.__init__(self, payload)
         text = _json.dumps(payload, indent=2, ensure_ascii=False)
-        _FmcpToolResult.__init__(
-            self, content=text, structured_content=payload
+        super().__init__(
+            content=text, structured_content=payload, is_error=True
         )
 
-    def to_mcp_result(self) -> _McpCallToolResult:
-        return _McpCallToolResult(
-            content=self.content,
-            structuredContent=self.structured_content,
-            isError=True,
-        )
+    # Mapping protocol over the payload, replacing the 2.14 dict base.
+    def __getitem__(self, key):
+        return self.structured_content[key]
+
+    def __contains__(self, key) -> bool:
+        return key in self.structured_content
+
+    def __iter__(self):
+        return iter(self.structured_content)
+
+    def __len__(self) -> int:
+        return len(self.structured_content)
+
+    def get(self, key, default=None):
+        return self.structured_content.get(key, default)
+
+    def keys(self):
+        return self.structured_content.keys()
+
+    def values(self):
+        return self.structured_content.values()
+
+    def items(self):
+        return self.structured_content.items()
 
 
 class _DisabledToolSignpost(_FmcpMiddleware):
@@ -303,15 +327,13 @@ class _DisabledToolSignpost(_FmcpMiddleware):
         except _FmcpNotFound as exc:
             name = getattr(context.message, "name", "")
             pack = _packs.pack_of(name)
-            if pack and pack != "lite":
-                tool = _packs._REGISTRY[pack].get(name)
-                if tool is not None and not getattr(tool, "enabled", True):
-                    raise _FmcpToolError(
-                        f"tool {name!r} exists but is currently disabled: it "
-                        f"belongs to the {pack!r} pack. Call "
-                        f"enable_tools(packs=['{pack}']) to turn it on, "
-                        "then retry this call."
-                    ) from exc
+            if pack and pack != "lite" and not _packs.is_tool_enabled(name):
+                raise _FmcpToolError(
+                    f"tool {name!r} exists but is currently disabled: it "
+                    f"belongs to the {pack!r} pack. Call "
+                    f"enable_tools(packs=['{pack}']) to turn it on, "
+                    "then retry this call."
+                ) from exc
             raise
 
 
@@ -325,26 +347,43 @@ def _tool(pack: str | None = None):
     Every tool also carries the readOnlyHint its core/readonly.py
     classification gives it. An unclassified tool raises HERE, at import,
     rather than reaching tools/list without anyone having decided whether
-    it can change a deck."""
+    it can change a deck.
+
+    fastmcp 3.x: the MCP-registered callable is the boundary wrapper and
+    the module attribute stays the RAW function, because mcp.tool() no
+    longer hands back the Tool object it built (it returns the function),
+    and the packs registry needs the real Tool for the token math. The
+    startup enabled=False that 2.14 took here is gone with Tool.enable();
+    main() hides the non-lite names with one global visibility transform
+    instead."""
 
     def deco(fn):
-        @functools.wraps(fn)
-        def wrapper(*args, **kwargs):
-            try:
-                return fn(*args, **kwargs)
-            except _CATCHABLE as exc:
-                return _RefusalResult(_refusal(exc))
+        if _inspect.iscoroutinefunction(fn):
+            @functools.wraps(fn)
+            async def wrapper(*args, **kwargs):
+                try:
+                    return await fn(*args, **kwargs)
+                except _CATCHABLE as exc:
+                    return _RefusalResult(_refusal(exc))
+        else:
+            @functools.wraps(fn)
+            def wrapper(*args, **kwargs):
+                try:
+                    return fn(*args, **kwargs)
+                except _CATCHABLE as exc:
+                    return _RefusalResult(_refusal(exc))
 
-        tool_obj = mcp.tool(
-            wrapper,
-            enabled=(pack is None),
-            tags={pack or "lite"},
-            annotations={
-                "readOnlyHint": _readonly.read_only_hint(fn.__name__)
-            },
+        tool_obj = mcp.add_tool(
+            _FunctionTool.from_function(
+                wrapper,
+                tags={pack or "lite"},
+                annotations={
+                    "readOnlyHint": _readonly.read_only_hint(fn.__name__)
+                },
+            )
         )
         _packs.register(fn.__name__, pack, tool_obj)
-        return tool_obj
+        return fn
 
     return deco
 
@@ -1024,8 +1063,39 @@ def get_workflows(task: str | None = None) -> dict:
     return _wf.get_workflows(task)
 
 
+_PENDING_VISIBILITY: list[tuple[set[str], bool]] = []
+
+
+def _record_visibility(names: set[str], enabled: bool) -> None:
+    """packs.py visibility hook: bookkeeping flips queue here; the async
+    enable_tools/disable_tools bodies apply them session-scoped, and main()
+    folds startup flips into the global transform instead."""
+    _PENDING_VISIBILITY.append((set(names), enabled))
+
+
+_packs.set_visibility_hook(_record_visibility)
+
+
+async def _apply_session_visibility(ctx) -> None:
+    """Session-scoped toggles: fastmcp 3.x session visibility rules
+    override the startup global transform (mark-based semantics, later
+    marks win) and send ToolListChangedNotification to this session only.
+    ctx=None (in-process callers, unit tests) drains the queue without
+    applying; packs bookkeeping stays authoritative for surface_report and
+    the disabled-tool signpost either way."""
+    pending = list(_PENDING_VISIBILITY)
+    _PENDING_VISIBILITY.clear()
+    if ctx is None:
+        return
+    for names, enabled in pending:
+        if enabled:
+            await ctx.enable_components(names=names)
+        else:
+            await ctx.disable_components(names=names)
+
+
 @_tool()
-def enable_tools(packs: list[str]) -> dict:
+async def enable_tools(packs: list[str], ctx: _Context | None = None) -> dict:
     """Switch on optional tool packs mid-session; the tool list grows and
     your client is notified to re-fetch it. Packs: 'graphics' (shapes,
     connectors, groups, align, z-order, SVG to native editable shapes,
@@ -1047,18 +1117,24 @@ def enable_tools(packs: list[str]) -> dict:
     names transitions-animations, review, sweeps, and com-live still
     resolve to their new homes. Idempotent; reports approx token cost
     added and the active surface. disable_tools reverses."""
-    return _packs.enable(packs)
+    result = _packs.enable(packs)
+    await _apply_session_visibility(ctx)
+    return result
 
 
 @_tool()
-def disable_tools(packs: list[str]) -> dict:
+async def disable_tools(
+    packs: list[str], ctx: _Context | None = None
+) -> dict:
     """Switch pack tools back off to shrink the tool surface (the lite core
     always stays on). Takes the same pack names as enable_tools, or
     'everything'. Idempotent: already-disabled packs are reported, not
     errors. Nothing about the presentation files changes; this only trims
     what this session's client has to carry. Reports the approx token cost
     removed and the remaining active surface."""
-    return _packs.disable(packs)
+    result = _packs.disable(packs)
+    await _apply_session_visibility(ctx)
+    return result
 
 
 # ================================================================= GRAPHICS
@@ -3810,8 +3886,27 @@ def live_status() -> dict:
 # ===================================================================== main
 
 
+def _startup_disabled_names() -> set[str]:
+    """Tool names hidden at startup under current packs bookkeeping."""
+    return {
+        name
+        for members in _packs.tool_names().values()
+        for name in members
+        if not _packs.is_tool_enabled(name)
+    }
+
+
 def main() -> None:
-    _packs.apply_startup_mode()  # KS4P_MODE; stdio stays clean, no prints
+    # KS4P_MODE startup surface: bookkeeping first (a typo in the env fails
+    # loudly BEFORE serving), then ONE global visibility transform hiding
+    # every tool not enabled at startup. Session rules laid down later by
+    # enable_tools/disable_tools override this transform. Applied here, not
+    # at import, so tests and measure_surface always see the full registry.
+    _packs.apply_startup_mode()  # stdio stays clean, no prints
+    _PENDING_VISIBILITY.clear()  # startup flips ride the global transform
+    disabled = _startup_disabled_names()
+    if disabled:
+        mcp.add_transform(_Visibility(False, names=disabled))
     # No update check here. It runs ON DEMAND, inside diagnose, and nowhere
     # else: startup starts no thread and asks PyPI nothing.
     mcp.run()
