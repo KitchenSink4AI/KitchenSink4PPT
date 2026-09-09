@@ -4,7 +4,7 @@
   "display_name": "KitchenSink4PPT",
   "description": "Lets Claude build and edit PowerPoint decks for you: slides, text, real vector diagrams, tables, charts, and speaker notes.",
   "long_description": "KitchenSink4PPT connects Claude to your presentations. Ask it to build slides, draw diagrams from real shapes you can still move, fill tables, or fix a deck due in the morning. Every change lands after an automatic backup, the work is checked when it saves, and nothing about your decks leaves your machine. Part of the KitchenSink4 family (Word, PowerPoint, Excel, Web) from KitchenSink4AI (kitchensink4.ai).",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "author": {
     "name": "nometalalchemist"
   },
@@ -30,7 +30,7 @@
     "mcp_config": {
       "command": "uvx",
       "args": [
-        "kitchensink4ppt==1.2.0"
+        "kitchensink4ppt==1.2.1"
       ],
       "env": {
         "KS4P_ALL_TOOLS": "${user_config.all_tools}",
