@@ -1,11 +1,24 @@
 """Tiered loading: the pack registry and the enable/disable machinery.
 
 Every tool is registered with FastMCP up front; non-lite tools start
-disabled (enabled=False) so a fresh session pays for ~24 tools, not the whole
-surface. enable_tools flips FastMCP Tool.enable(), which queues the
-notifications/tools/list_changed a client needs to re-fetch tools/list
-(verified against fastmcp 2.14: Tool.enable/disable call
-context._queue_tool_list_changed).
+disabled so a fresh session pays for ~24 tools, not the whole surface.
+enable_tools flips packs on mid-session; clients re-fetch tools/list on
+notifications/tools/list_changed.
+
+fastmcp 3.x adaptation (v1.2 rode fastmcp 2.14, where Tool.enable()/
+disable() flipped a per-tool flag and queued the list_changed notification;
+3.0 REMOVED both, and there is no per-tool enabled flag left to read back):
+this module now keeps its OWN per-tool enabled bookkeeping, authoritative
+for surface_report, the pack hint, and the informed-approval token math,
+and mirrors every change through an injectable visibility hook. server.py
+wires that hook to the fastmcp 3.x visibility API, the same route word-mcp
+and xlsx-mcp already ship:
+- startup surface: main() applies apply_startup_mode() to bookkeeping, then
+  ONE global transform, mcp.add_transform(Visibility(False, names=disabled));
+- mid-session toggles: session-scoped ctx.enable_components /
+  ctx.disable_components(names={...}), whose rules override the global
+  transform (mark-based, later marks win) and send
+  ToolListChangedNotification to the session that asked.
 
 Env contract:
 - KS4P_MODE: startup surface for clients without reliable list_changed.
@@ -36,7 +49,8 @@ belongs inside a neighbour unless it is gated on an environment the file
 packs do not share. PACK_ALIASES keeps every v1.0 name resolving.
 
 server.py populates the registry via register(); this module never imports
-FastMCP itself and holds only the Tool objects it is handed.
+FastMCP itself and holds only the Tool objects it is handed (for the
+token-cost math) plus its own enabled flags.
 """
 
 from __future__ import annotations
@@ -44,6 +58,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from typing import Callable
 
 from .core.errors import PptMcpError
 
@@ -108,13 +123,35 @@ PACK_ALIASES: dict[str, str] = {
 # pack -> {tool_name: fastmcp Tool}; "lite" holds the always-on core.
 _REGISTRY: dict[str, dict[str, object]] = {"lite": {}}
 
+# tool_name -> currently enabled? Authoritative bookkeeping (fastmcp 3.x
+# has no per-tool enabled flag to read back; see module docstring).
+_ENABLED: dict[str, bool] = {}
+
+# Injected by server.py: called as _visibility_hook(names, enabled) after
+# every state change so the FastMCP surface mirrors the registry. None
+# means bookkeeping only (unit tests, measurement scripts).
+_visibility_hook: Callable[[set[str], bool], None] | None = None
+
+
+def set_visibility_hook(hook: Callable[[set[str], bool], None] | None) -> None:
+    """server.py wires this to the fastmcp 3.x visibility API."""
+    global _visibility_hook
+    _visibility_hook = hook
+
+
+def _sync(names: set[str], enabled: bool) -> None:
+    if _visibility_hook is not None and names:
+        _visibility_hook(names, enabled)
+
 
 def register(tool_name: str, pack: str | None, tool: object) -> None:
-    """Called by server.py once per tool at import time."""
+    """Called by server.py once per tool at import time. pack=None means
+    the lite core (enabled at startup); anything else starts disabled."""
     key = pack or "lite"
     if key != "lite" and key not in PACK_SUMMARIES:
         raise ValueError(f"unknown pack {key!r} for tool {tool_name}")
     _REGISTRY.setdefault(key, {})[tool_name] = tool
+    _ENABLED[tool_name] = key == "lite"
 
 
 def pack_names() -> list[str]:
@@ -132,8 +169,22 @@ def pack_of(tool_name: str) -> str | None:
     return None
 
 
+def is_tool_enabled(tool_name: str) -> bool:
+    return _ENABLED.get(tool_name, False)
+
+
 def tool_names() -> dict[str, list[str]]:
     return {pack: sorted(tools) for pack, tools in _REGISTRY.items()}
+
+
+def tool_objects() -> dict[str, object]:
+    """Every registered tool by name, flattened across packs. The route to
+    the Tool objects now that fastmcp 3.x has no _tool_manager to read."""
+    return {
+        name: tool
+        for tools in _REGISTRY.values()
+        for name, tool in tools.items()
+    }
 
 
 def approx_tokens(tool: object) -> int:
@@ -158,7 +209,7 @@ def surface_report() -> dict:
     tokens = 0
     per_pack: dict[str, str] = {}
     for pack, tools in _REGISTRY.items():
-        enabled = [t for t in tools.values() if getattr(t, "enabled", True)]
+        enabled = [t for n, t in tools.items() if _ENABLED.get(n, False)]
         active += len(enabled)
         tokens += sum(approx_tokens(t) for t in enabled)
         per_pack[pack] = f"{len(enabled)}/{len(tools)} enabled"
@@ -308,14 +359,17 @@ def enable(packs: list[str]) -> dict:
     enabled_now: list[str] = []
     already: list[str] = []
     tokens_added = 0
+    flipped: set[str] = set()
     for pack in wanted:
         newly = False
-        for name, tool in _REGISTRY[pack].items():
-            if not getattr(tool, "enabled", True):
-                tool.enable()
+        for name, tool in _REGISTRY.get(pack, {}).items():
+            if not _ENABLED.get(name, False):
+                _ENABLED[name] = True
+                flipped.add(name)
                 tokens_added += approx_tokens(tool)
                 newly = True
         (enabled_now if newly else already).append(pack)
+    _sync(flipped, True)
     result = {
         "enabled": enabled_now,
         "already_enabled": already,
@@ -343,14 +397,17 @@ def disable(packs: list[str]) -> dict:
     disabled_now: list[str] = []
     already: list[str] = []
     tokens_removed = 0
+    flipped: set[str] = set()
     for pack in wanted:
         newly = False
-        for name, tool in _REGISTRY[pack].items():
-            if getattr(tool, "enabled", True):
-                tool.disable()
+        for name, tool in _REGISTRY.get(pack, {}).items():
+            if _ENABLED.get(name, False):
+                _ENABLED[name] = False
+                flipped.add(name)
                 tokens_removed += approx_tokens(tool)
                 newly = True
         (disabled_now if newly else already).append(pack)
+    _sync(flipped, False)
     return {
         "disabled": disabled_now,
         "already_disabled": already,
@@ -393,9 +450,9 @@ def startup_note() -> str:
 
 def apply_startup_mode() -> str:
     """Apply the resolved startup surface at server start (before the event
-    loop; FastMCP's enable() outside a request context skips the
-    notification, which is correct at startup since no client is connected
-    yet). Returns the mode applied, for logging.
+    loop; no client is connected yet, so the visibility hook runs without a
+    session and the server-side wiring must use a global transform, not
+    session state). Returns the mode applied, for logging.
 
     Every boolean toggle is parsed here so a typo in any of them refuses
     LOUDLY before the server serves a single request, and the resolution is
@@ -420,10 +477,13 @@ def apply_startup_mode() -> str:
     if not packs:
         return "lite"
     valid = _validate(packs)
+    flipped: set[str] = set()
     for pack in valid:
-        for tool in _REGISTRY[pack].values():
-            if not getattr(tool, "enabled", True):
-                tool.enable()
+        for name in _REGISTRY.get(pack, {}):
+            if not _ENABLED.get(name, False):
+                _ENABLED[name] = True
+                flipped.add(name)
+    _sync(flipped, True)
     return mode
 
 
