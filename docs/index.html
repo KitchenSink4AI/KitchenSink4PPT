@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <!--
-  SHIPPED NUMBERS (v1.1, 2026-09-04; re-derive before any deploy):
+  SHIPPED NUMBERS (page ships v1.2.1; figures last derived 2026-09-04 against v1.1; re-derive before any deploy):
     141   registered tools (scripts/measure_surface.py) - masthead catalog no., specs strip, colophon
     1241  tests (python -m pytest tests/unit --co -q) - specs strip, comparison foot-note
     1646  adversarial stress calls across three raw-stdio rounds (400 + 881 + 365) - specs strip, foot-note
@@ -27,7 +27,7 @@
   is a slow hanging sway, guarded by the reduced-motion block. The light pool is now a small
   paint pool under the brush; the WET PAINT sign stays. XL's plug references are Excel's own
   and stay untouched. The copy talks about finishing a room, not about light.
-  STOREFRONT: live at https://kitchensink4ai.github.io/
+  STOREFRONT: the catalog is at https://kitchensink4.ai/products/ (the bare apex is the corporate homepage, not the catalog)
 -->
 <title>KitchenSink4PPT: Everything plus the kitchen sink for Microsoft PowerPoint</title>
 <meta name="description" content="141-tool MCP server for Microsoft PowerPoint. Native editable diagrams from SVG with glued connectors (move the node, the arrows follow), file-based table surgery, slide duplication done right, template-aware deck creation, six capability packs with tiered loading from a 24-tool core. Live editing of an open deck, serialized and dialog-aware. Engineered not to corrupt.">
@@ -494,15 +494,16 @@ footer a{color:var(--patina)}
 <div class="wrap masthead rev d1">
   <span data-i18n="m.left"><b>PAINT DEPARTMENT</b> &middot; AISLE P</span>
   <nav class="lang-toggle" id="langToggle" aria-label="Language"></nav>
-  <span><span data-i18n="m.catalog">CATALOG № 141</span> · <a href="https://kitchensink4ai.github.io/" data-i18n="m.family">FAMILY</a> · <a href="#service" data-i18n="m.service">SERVICE</a> · <a href="https://github.com/KitchenSink4AI/KitchenSink4PPT">GITHUB</a> · <a href="https://pypi.org/project/kitchensink4ppt/">PYPI</a> · <a href="llms.txt">LLMS.TXT</a></span>
+  <span><span data-i18n="m.catalog">CATALOG № 141</span> · <a href="https://kitchensink4.ai/products/" data-i18n="m.family">FAMILY</a> · <a href="#service" data-i18n="m.service">SERVICE</a> · <a href="https://github.com/KitchenSink4AI/KitchenSink4PPT">GITHUB</a> · <a href="https://pypi.org/project/kitchensink4ppt/">PYPI</a> · <a href="llms.txt">LLMS.TXT</a></span>
 </div>
 
 <div class="switchbar">
   <span class="lbl">THE KITCHENSINK WORKS</span>
-  <a href="https://kitchensink4ai.github.io/KitchenSink4Word/">🚰 KitchenSink4Word</a>
+  <a href="https://kitchensink4.ai/KitchenSink4Word/">🚰 KitchenSink4Word</a>
   <span class="here">🖌️ KitchenSink4PPT <span data-i18n="sw.here">(you are here)</span></span>
-  <a href="https://kitchensink4ai.github.io/KitchenSink4XL/">🔌 KitchenSink4XL</a>
-  <a href="https://kitchensink4ai.github.io/">🏪 <span data-i18n="sw.store">The storefront</span></a>
+  <a href="https://kitchensink4.ai/KitchenSink4XL/">🔌 KitchenSink4XL</a>
+  <a href="https://kitchensink4.ai/KitchenSink4Web/">🪴 KitchenSink4Web</a>
+  <a href="https://kitchensink4.ai/products/">🏪 <span data-i18n="sw.store">The storefront</span></a>
 </div>
 
 <header class="hero wrap">
@@ -539,15 +540,14 @@ footer a{color:var(--patina)}
       <summary>
         <span class="tag" data-i18n="new.label">JUST IN</span>
         <span class="ttl" data-i18n="h2.new">New on the shelf</span>
-        <span class="hint" data-i18n="new.t">What version 1.1 just added</span>
+        <span class="hint" data-i18n="new.t">What 1.2 just added</span>
       </summary>
     <div class="newin">
       <p class="sub" data-i18n="new.sub">The short version of the release, no changelog reading required.</p>
       <ul>
-        <li data-i18n="new1"><b>Two agents can now work the same open deck.</b> Live calls into PowerPoint run one at a time, so agents editing together take turns instead of overwriting each other. And if PowerPoint throws up a dialog only a human can answer, the server says so instead of hanging. Both safeguards were proven on the Word server first.</li>
-        <li data-i18n="new2"><b>Fixed: your warning prompts stayed off.</b> The server mutes PowerPoint's warning dialogs while it edits, which is fine, but it used to forget to unmute them on the way out. You'd close the session and PowerPoint would keep swallowing warnings meant for you. It always turns them back on now.</li>
-        <li data-i18n="new3"><b>Six packs instead of nine.</b> The smallest packs cost more tokens to skim past than they saved, so they've been folded into their neighbors. Sessions start lighter, and every old pack name still works.</li>
-        <li data-i18n="new4"><b>Bad slide lists get caught before PowerPoint opens.</b> Ask the exporter for slides that don't exist, or hand it a malformed list, and it used to spend nine seconds opening PowerPoint just to fail with a cryptic error. Now it checks the request first and tells you exactly what to fix.</li>
+        <li data-i18n="new1">Every read is budgeted: one call can no longer flood your conversation, and anything left out is named.</li>
+        <li data-i18n="new2">Saves run up to three times faster and keep each media file's original compression exactly.</li>
+        <li data-i18n="new3">All four KitchenSink servers now install side by side in one environment.</li>
       </ul>
     </div>
     </details>
@@ -761,19 +761,25 @@ footer a{color:var(--patina)}
   <div class="wrap">
     <div class="sec-head"><span class="no" data-i18n="no7">DEPT. 07</span><h2 data-i18n="h2.fam">The other aisles</h2></div>
     <div class="famrow">
-      <a class="counter" href="https://kitchensink4ai.github.io/KitchenSink4Word/">
+      <a class="counter" href="https://kitchensink4.ai/KitchenSink4Word/">
         <span class="icon" id="faucetCameo">🚰<span class="cameo-drip"></span></span>
         <h3>KitchenSink4Word</h3>
         <p data-i18n="fam1.p">The original fixture: everything plus the kitchen sink for Microsoft Word. It handles the manuscript misery that made this family exist, from tracked-changes triage to a reference list that finally matches the citations, and it edits documents live in your own Word window. Same promise: engineered not to corrupt.</p>
         <span class="go" data-i18n="fam1.g">Visit the plumbing aisle →</span>
       </a>
-      <a class="counter" href="https://kitchensink4ai.github.io/KitchenSink4XL/">
+      <a class="counter" href="https://kitchensink4.ai/KitchenSink4XL/">
         <span class="icon">🔌</span>
         <h3>KitchenSink4XL</h3>
         <p data-i18n="fam2.p">Everything plus the kitchen sink for Excel (.xlsx): every value labeled calculated, cached, or missing, so the AI never repeats a stale number as a fresh one. Same never-corrupts promise, now for spreadsheets.</p>
         <span class="go" data-i18n="fam2.g">Visit the electrical aisle →</span>
       </a>
-      <a class="counter" href="https://kitchensink4ai.github.io/">
+      <a class="counter" href="https://kitchensink4.ai/KitchenSink4Web/">
+        <span class="icon">🪴</span>
+        <h3>KitchenSink4Web</h3>
+        <p data-i18n="fam4.p">Everything plus the kitchen sink for the web: budgeted page reads that name what went unread, structured extraction with named evidence, and a consent ladder that cannot be talked into payments. Read-only out of the box.</p>
+        <span class="go" data-i18n="fam4.g">Visit the garden aisle →</span>
+      </a>
+      <a class="counter" href="https://kitchensink4.ai/products/">
         <span class="icon">🏪</span>
         <h3 data-i18n="fam3.t">The storefront</h3>
         <p data-i18n="fam3.p">The whole hardware store on one page: every KitchenSink server, its fixture, and its counter, plus a shelf or two that are not empty by accident.</p>
@@ -785,9 +791,11 @@ footer a{color:var(--patina)}
 
 <footer>
   <div class="wrap row">
-    <span data-i18n="f.left">&copy; 2026 &middot; <b>AGPL-3.0</b>: free for individuals and personal use.<br>Companies building it into their own products need a commercial license; <a href='https://github.com/KitchenSink4AI/KitchenSink4PPT/issues/new?template=commercial_license.yml'>open an issue</a> and we will talk it through.</span>
+    <span data-i18n="f.left">&copy; 2026 Alvut Consulting, LLC &middot; <b>AGPL-3.0</b>: free for individuals and personal use.<br>Companies building it into their own products need a commercial license; <a href='https://github.com/KitchenSink4AI/KitchenSink4PPT/issues/new?template=commercial_license.yml'>open an issue</a> and we will talk it through.</span>
     <span style="text-align:right" data-i18n="f.right"><a href='https://github.com/KitchenSink4AI/KitchenSink4PPT'>github.com/KitchenSink4AI/KitchenSink4PPT</a> · <a href='https://github.com/KitchenSink4AI/KitchenSink4PPT/issues/new/choose'>report a glitch</a><br>Built on the KitchenSink4Word safety core, prototyped with Claude Code, and hardened through adversarial rounds until the test agents ran out of complaints. That's a well-dressed room! 🖌️</span>
   </div>
+  <div class="wrap" style="text-align:center;padding:6px 0;font-size:11px"><a href="https://kitchensink4.ai/" data-i18n="f.corp">The office upstairs: KitchenSink4AI →</a></div>
+  <div class="wrap" style="text-align:center;padding:6px 0;opacity:.5;font-size:11px">Not affiliated with or endorsed by Microsoft Corporation. Microsoft and PowerPoint are trademarks of Microsoft Corporation.</div>
   <div class="wrap" style="text-align:center;padding:10px 0"><img src="https://visitor-badge.laobi.icu/badge?page_id=nometalalchemist.KitchenSink4PPT&left_color=%231e3550&right_color=%232e6e55&left_text=views" alt="views" height="18" style="vertical-align:middle"></div>
 <div class="wrap colophon">SET IN FRAUNCES &amp; IBM PLEX MONO · CATALOG № 141</div>
 </footer>
@@ -934,12 +942,11 @@ en: {
 "hero.invite": "↓ or try it first: there is a diagram below you can drag, and the arrows follow",
 "sw.here": "(you are here)", "sw.store": "The storefront",
 "h2.new": "New on the shelf", "new.label": "JUST IN",
-"new.t": "What version 1.1 just added",
+"new.t": "What 1.2 just added",
 "new.sub": "The short version of the release, no changelog reading required.",
-"new1": "<b>Two agents can now work the same open deck.</b> Live calls into PowerPoint run one at a time, so agents editing together take turns instead of overwriting each other. And if PowerPoint throws up a dialog only a human can answer, the server says so instead of hanging. Both safeguards were proven on the Word server first.",
-"new2": "<b>Fixed: your warning prompts stayed off.</b> The server mutes PowerPoint's warning dialogs while it edits, which is fine, but it used to forget to unmute them on the way out. You'd close the session and PowerPoint would keep swallowing warnings meant for you. It always turns them back on now.",
-"new3": "<b>Six packs instead of nine.</b> The smallest packs cost more tokens to skim past than they saved, so they've been folded into their neighbors. Sessions start lighter, and every old pack name still works.",
-"new4": "<b>Bad slide lists get caught before PowerPoint opens.</b> Ask the exporter for slides that don't exist, or hand it a malformed list, and it used to spend nine seconds opening PowerPoint just to fail with a cryptic error. Now it checks the request first and tells you exactly what to fix.",
+"new1": "Every read is budgeted: one call can no longer flood your conversation, and anything left out is named.",
+"new2": "Saves run up to three times faster and keep each media file's original compression exactly.",
+"new3": "All four KitchenSink servers now install side by side in one environment.",
 "no0": "DEPT. 00", "no1": "DEPT. 01", "no2": "DEPT. 02", "no3": "DEPT. 03", "no4": "DEPT. 04", "no5": "DEPT. 05", "no6": "DEPT. 06", "no7": "DEPT. 07",
 "h2.demo": "Move the node, the arrows follow",
 "demo.lead": "Every AI pipeline can put a diagram on a slide. Almost all of them hand you a picture of one: flat pixels behind glass. The night before you present, one box needs to move half an inch, and a picture does not care how small the change is. This server draws the diagram out of real PowerPoint shapes, the same ones you would draw by hand, with the arrows genuinely attached to the boxes they join. Drag a node in PowerPoint and the arrows follow. Ask the agent to recolor one box by name and only that box changes. No starting over, no waiting on an image service, and nothing extra to install to build it.",
@@ -1044,7 +1051,10 @@ en: {
 "fam3.t": "The storefront",
 "fam3.p": "The whole hardware store on one page: every KitchenSink server, its fixture, and its counter, plus a shelf or two that are not empty by accident.",
 "fam3.g": "Browse the store →",
-"f.left": "&copy; 2026 &middot; <b>AGPL-3.0</b>: free for individuals and personal use.<br>Companies building it into their own products need a commercial license; <a href='https://github.com/KitchenSink4AI/KitchenSink4PPT/issues/new?template=commercial_license.yml'>open an issue</a> and we will talk it through.",
+"fam4.p": "Everything plus the kitchen sink for the web: budgeted page reads that name what went unread, structured extraction with named evidence, and a consent ladder that cannot be talked into payments. Read-only out of the box.",
+"fam4.g": "Visit the garden aisle →",
+"f.left": "&copy; 2026 Alvut Consulting, LLC &middot; <b>AGPL-3.0</b>: free for individuals and personal use.<br>Companies building it into their own products need a commercial license; <a href='https://github.com/KitchenSink4AI/KitchenSink4PPT/issues/new?template=commercial_license.yml'>open an issue</a> and we will talk it through.",
+"f.corp": "The office upstairs: KitchenSink4AI →",
 "f.right": "<a href='https://github.com/KitchenSink4AI/KitchenSink4PPT'>github.com/KitchenSink4AI/KitchenSink4PPT</a> · <a href='https://github.com/KitchenSink4AI/KitchenSink4PPT/issues/new/choose'>report a glitch</a><br>Built on the KitchenSink4Word safety core, prototyped with Claude Code, and hardened through adversarial rounds until the test agents ran out of complaints. That's a well-dressed room! 🖌️",
 "inst.dev": "For developers: pip, source, other MCP clients",
 "inst.dp1": "Install the package and point any MCP client at the executable:",
@@ -1085,12 +1095,11 @@ ko: {
 "hero.invite": "↓ 먼저 써 보셔도 됩니다: 아래에 직접 드래그할 수 있는 다이어그램이 있고, 화살표가 따라옵니다",
 "sw.here": "(현재 페이지)", "sw.store": "스토어",
 "h2.new": "선반에 새로 올라온 것", "new.label": "신규 입고",
-"new.t": "버전 1.1이 방금 더한 것들",
+"new.t": "버전 1.2가 방금 더한 것들",
 "new.sub": "이번 릴리스를 짧게 간추렸습니다. 변경 내역을 따로 읽지 않으셔도 됩니다.",
-"new1": "<b>이제 에이전트 둘이 같은 덱을 열어 둔 채 함께 작업할 수 있습니다.</b> PowerPoint로 들어가는 라이브 호출은 한 번에 하나씩 처리되므로, 함께 편집하는 에이전트들은 서로 덮어쓰지 않고 차례를 지킵니다. 그리고 사람만 답할 수 있는 대화 상자를 PowerPoint가 띄우면, 서버는 멈춰 서 있지 않고 그 사실을 알려 줍니다. 두 안전장치 모두 Word 서버에서 먼저 검증된 것입니다.",
-"new2": "<b>바로잡았습니다: 경고 창이 꺼진 채로 남아 있던 문제.</b> 서버는 편집하는 동안 PowerPoint의 경고 대화 상자를 꺼 둡니다. 거기까지는 괜찮은데, 예전에는 나가는 길에 다시 켜는 것을 잊곤 했습니다. 세션을 닫고 난 뒤에도 PowerPoint가 사용자에게 보여 줌어야 할 경고를 계속 삼켰던 것입니다. 이제는 언제나 다시 켜 둡니다.",
-"new3": "<b>팩 아홉 개 대신 여섯 개.</b> 가장 작은 팩들은 읽고 지나가는 데 드는 토큰이 아낀 주는 것보다 많았기에, 옆 팩으로 살림을 합쿼습니다. 세션이 더 가벼게 시작되고, 예전 팩 이름은 전부 그대로 동작합니다.",
-"new4": "<b>잘못된 슬라이드 목록은 PowerPoint를 열기 전에 걸러냅니다.</b> 내보내기 도구에 없는 슬라이드를 요청하거나 형식이 어긋난 목록을 건네면, 예전에는 PowerPoint를 여는 데 9초를 쓴 뒤에야 알아보기 힘든 오류로 실패했습니다. 이제는 요청을 먼저 확인하고, 무엇을 고쳐야 하는지 정확히 알려 줍니다.",
+"new1": "모든 읽기에 예산이 붙습니다. 호출 하나가 대화를 뒤덮는 일은 이제 없고, 빠뜨린 것은 이름으로 알려 줍니다.",
+"new2": "저장이 최대 세 배까지 빨라졌고, 미디어 파일마다 원래의 압축을 그대로 지킵니다.",
+"new3": "이제 네 개의 KitchenSink 서버를 한 환경에 나란히 설치할 수 있습니다.",
 "no0": "부문 00", "no1": "부문 01", "no2": "부문 02", "no3": "부문 03", "no4": "부문 04", "no5": "부문 05", "no6": "부문 06", "no7": "부문 07",
 "h2.demo": "노드를 옮기면 화살표가 따라옵니다",
 "demo.lead": "슬라이드에 다이어그램을 넣을 수 있는 AI 파이프라인은 얼마든지 있습니다. 그런데 거의 전부가 다이어그램의 '그림'을 건네줍니다: 납작한 픽셀, 유리 안에 걸린 그림. 발표 전날 밤 상자 하나를 반 인치만 옮겨야 하는데, 그림은 그 변경이 아무리 작아도 상관하지 않습니다. 이 서버는 다이어그램을 진짜 PowerPoint 도형으로, 직접 손으로 그렸을 바로 그 도형으로 그려 냅니다. 화살표는 잇는 상자에 실제로 붙어 있습니다. PowerPoint에서 노드를 드래그하면 화살표가 따라오고, 에이전트에게 상자 하나를 이름으로 지정해 색을 바꾸라고 하면 그 상자만 바뀝니다. 처음부터 다시 만들 일도, 이미지 서비스를 기다릴 일도, 만들기 위해 따로 설치할 것도 없습니다.",
@@ -1195,7 +1204,10 @@ ko: {
 "fam3.t": "본점",
 "fam3.p": "철물점 전체를 한 페이지에: 모든 KitchenSink 서버와 그 설비, 그 창구, 그리고 우연히 비어 있는 게 아닌 선반 한두 개까지.",
 "fam3.g": "매장 둘러보기 →",
-"f.left": "&copy; 2026 &middot; <b>AGPL-3.0</b>: 개인과 개인적 용도에는 무료.<br>자사 제품에 넣어 만드는 회사에는 상업용 라이선스가 필요합니다. <a href='https://github.com/KitchenSink4AI/KitchenSink4PPT/issues/new?template=commercial_license.yml'>이슈를 열어</a> 주시면 함께 이야기하겠습니다.",
+"fam4.p": "웹 도구라면 없는 게 없습니다. 예산이 정해진 페이지 읽기는 읽지 않고 넘어간 부분을 이름으로 알려 주고, 구조화된 추출은 근거를 이름으로 짚어 주며, 동의 사다리는 결제까지 말로 구슬릴 수 없습니다. 기본 상태는 읽기 전용입니다.",
+"fam4.g": "원예 코너 방문하기 →",
+"f.left": "&copy; 2026 Alvut Consulting, LLC &middot; <b>AGPL-3.0</b>: 개인과 개인적 용도에는 무료.<br>자사 제품에 넣어 만드는 회사에는 상업용 라이선스가 필요합니다. <a href='https://github.com/KitchenSink4AI/KitchenSink4PPT/issues/new?template=commercial_license.yml'>이슈를 열어</a> 주시면 함께 이야기하겠습니다.",
+"f.corp": "위층 사무실: KitchenSink4AI →",
 "f.right": "<a href='https://github.com/KitchenSink4AI/KitchenSink4PPT'>github.com/KitchenSink4AI/KitchenSink4PPT</a> · <a href='https://github.com/KitchenSink4AI/KitchenSink4PPT/issues/new/choose'>오작동 신고</a><br>KitchenSink4Word 안전 코어 위에 세우고, Claude Code로 프로토타입을 만들고, 테스트 에이전트가 불평거리를 다 소진할 때까지 적대적 라운드로 단련했습니다. 이만하면 방 하나 잘 꾸몄죠! 🖌️",
 "inst.dev": "개발자용: pip, 소스, 다른 MCP 클라이언트",
 "inst.dp1": "패키지를 설치하고 원하는 MCP 클라이언트가 실행 파일을 가리키게 하면 됩니다:",
@@ -1236,12 +1248,11 @@ ja: {
 "hero.invite": "↓ まず試してみてください:下にドラッグできる図があり、矢印がついてきます",
 "sw.here": "(現在のページ)", "sw.store": "ストアトップ",
 "h2.new": "棚に並んだ新入荷", "new.label": "新入荷",
-"new.t": "v1.1 で新しく加わったもの",
+"new.t": "v1.2 で新しく加わったもの",
 "new.sub": "リリースの要点だけ。変更履歴を読む必要はありません。",
-"new1": "<b>エージェント二つで、開いた同じデッキを扱えるようになりました。</b> PowerPoint へのライブ呼び出しは一度に一つずつ通るので、一緒に編集するエージェントは互いに上書きせず順番を守ります。また、人にしか答えられないダイアログを PowerPoint が出したときは、サーバーが固まらずにそう知らせます。どちらの安全策も、先に Word サーバーで確かめたものです。",
-"new2": "<b>修正: 警告ダイアログが切れたままになっていました。</b> サーバーは編集中、PowerPoint の警告ダイアログを止めます。それ自体は問題ないのですが、以前は終わりぎわに戻し忘れることがありました。セッションを閉じたあとも、PowerPoint はあなたに向けられた警告をのみ込み続けていたのです。今は必ず戻します。",
-"new3": "<b>パックは九つではなく六つ。</b> いちばん小さなパックは、読み飛ばすためのトークンのほうが節約分より多かったので、隣のパックにまとめました。セッションは軽く始まり、以前のパック名もすべてそのまま使えます。",
-"new4": "<b>おかしなスライド指定は、PowerPoint を開く前に見つけます。</b> 書き出しに存在しないスライドを頼んだり、形の崩れた指定を渡したりすると、以前は PowerPoint を開くのに9秒かけたうえで、分かりにくいエラーで失敗していました。今はまず要求を確かめ、どこを直せばよいかをはっきり伝えます。",
+"new1": "読み取りにはすべて予算が付きます。ひとつの呼び出しが会話をあふれさせることはもうなく、外したものは名前で示されます。",
+"new2": "保存は最大で三倍速くなり、メディアファイルごとの元の圧縮をそのまま保ちます。",
+"new3": "四つの KitchenSink サーバーを、ひとつの環境に並べて入れられるようになりました。",
 "no0": "第00部", "no1": "第01部", "no2": "第02部", "no3": "第03部", "no4": "第04部", "no5": "第05部", "no6": "第06部", "no7": "第07部",
 "h2.demo": "ノードを動かせば、矢印がついてくる",
 "demo.lead": "スライドに図を載せられる AI パイプラインなら、いくらでもあります。しかしそのほとんどが渡してくるのは図の「画像」です:平らなピクセル、額の硝子の向こう。発表前夜、箱をひとつ半インチ動かしたいのに、画像は変更がどれほど小さかろうとお構いなしです。このサーバーは、図を本物の PowerPoint 図形で、あなたが手で描いたであろうその図形で描き起こします。矢印は、結ぶ箱に本当に付いています。PowerPoint でノードをドラッグすれば矢印がついてくる。エージェントに箱ひとつを名前で指定して色替えを頼めば、その箱だけが変わる。作り直しも、画像サービス待ちも、作るために別途インストールするものも要りません。",
@@ -1346,7 +1357,10 @@ ja: {
 "fam3.t": "本店",
 "fam3.p": "金物屋まるごと1ページに:すべての KitchenSink サーバーとその器具、その窓口、そして偶然ではなく空けてある棚が一つ二つ。",
 "fam3.g": "店内を見る →",
-"f.left": "&copy; 2026 &middot; <b>AGPL-3.0</b>:個人利用と私的な用途は無料。<br>自社製品に組み込む企業には商用ライセンスが必要です。<a href='https://github.com/KitchenSink4AI/KitchenSink4PPT/issues/new?template=commercial_license.yml'>Issue を開いて</a>いただければ、そこから話を進めます。",
+"fam4.p": "ウェブのためなら何でも揃う。予算のついたページ読み取りは読み残した箇所を名前で挙げ、構造化された抽出は根拠を名指しし、同意の段階は言葉巧みに支払いへ進ませることができません。出荷時は読み取り専用です。",
+"fam4.g": "園芸コーナーへ →",
+"f.left": "&copy; 2026 Alvut Consulting, LLC &middot; <b>AGPL-3.0</b>:個人利用と私的な用途は無料。<br>自社製品に組み込む企業には商用ライセンスが必要です。<a href='https://github.com/KitchenSink4AI/KitchenSink4PPT/issues/new?template=commercial_license.yml'>Issue を開いて</a>いただければ、そこから話を進めます。",
+"f.corp": "上の階の事務所：KitchenSink4AI →",
 "f.right": "<a href='https://github.com/KitchenSink4AI/KitchenSink4PPT'>github.com/KitchenSink4AI/KitchenSink4PPT</a> · <a href='https://github.com/KitchenSink4AI/KitchenSink4PPT/issues/new/choose'>不具合を報告</a><br>KitchenSink4Word の安全コアの上に築き、Claude Code でプロトタイプを作り、テストエージェントが文句を言い尽くすまで敵対的ラウンドで鍛えました。これで部屋はすっかり整いました!🖌️",
 "inst.dev": "開発者向け: pip、ソース、その他の MCP クライアント",
 "inst.dp1": "パッケージを入れて、任意の MCP クライアントから実行ファイルを指すだけです:",
@@ -1387,12 +1401,11 @@ zh: {
 "hero.invite": "↓ 或者先试试:下面有一张可以拖动的图,箭头会跟着走",
 "sw.here": "(当前页面)", "sw.store": "商店首页",
 "h2.new": "新上架", "new.label": "新到货",
-"new.t": "v1.1 刚刚添了什么",
+"new.t": "v1.2 刚刚添了什么",
 "new.sub": "这次发布的简短版，不用去翻更新日志。",
-"new1": "<b>两个代理现在可以同改一份打开的演示文稿。</b> 进入 PowerPoint 的实时调用一次只走一个，所以一起编辑的代理会轮着来，不会互相覆盖。而且要是 PowerPoint 弹出只有人能回答的对话框，服务器会说出来，而不是卡在那里。这两道保险都是先在 Word 服务器上验过的。",
-"new2": "<b>已修：你的警告提示一直没开回来。</b> 服务器在编辑时会静掉 PowerPoint 的警告对话框，这没什么问题，只是从前收尾时会忘了开回来。你关掉会话，PowerPoint 还在把本该给你看的警告吞掉。现在它一定会开回来。",
-"new3": "<b>六个包，不是九个。</b> 最小的那几个包，读一遍花掉的 token 比省下的还多，于是并进了相邻的包。会话开起来更轻，旧的包名也全都照样管用。",
-"new4": "<b>有问题的幻灯片清单，在 PowerPoint 打开之前就被拦下。</b> 向导出工具要不存在的幻灯片，或者递一个格式不对的清单，从前它要花九秒打开 PowerPoint，再以一个看不懂的错误收场。现在它先检查请求，并明确告诉你要改什么。",
+"new1": "每次读取都有预算：一次调用不会再淹没你的对话，落下的内容也会被点名说出。",
+"new2": "保存最快可达原来的三倍，并且原样保留每个媒体文件的原始压缩。",
+"new3": "四台 KitchenSink 服务器现在可以并排装进同一个环境。",
 "no0": "第00部", "no1": "第01部", "no2": "第02部", "no3": "第03部", "no4": "第04部", "no5": "第05部", "no6": "第06部", "no7": "第07部",
 "h2.demo": "移动节点,箭头跟着走",
 "demo.lead": "能往幻灯片里放图表的 AI 流水线遍地都是,可几乎全都递给你一张图表的“图片”:扁平的像素,裱在玻璃后面。汇报前夜,一个框要挪半英寸,而图片不在乎改动有多小。这台服务器是用真正的 PowerPoint 图形把图画出来的,和你亲手会画的那些一模一样,箭头是真的连在它们所接的框上。在 PowerPoint 里拖动节点,箭头跟着走;让智能体按名字给某个框改色,就只有那个框会变。不用从头再来,不用等图片服务,构建时也不用额外装什么。",
@@ -1497,7 +1510,10 @@ zh: {
 "fam3.t": "总店门面",
 "fam3.p": "整间五金店放在一页里:每台 KitchenSink 服务器、它的设备、它的柜台,外加一两个绝非碰巧空着的货架。",
 "fam3.g": "逛逛店里 →",
-"f.left": "&copy; 2026 &middot; <b>AGPL-3.0</b>:个人和个人用途免费。<br>把它做进自家产品的公司需要商业许可,<a href='https://github.com/KitchenSink4AI/KitchenSink4PPT/issues/new?template=commercial_license.yml'>开一个 issue</a>,我们细谈。",
+"fam4.p": "为网页而备，应有尽有：有预算的页面读取会点名说出哪些没读到，结构化提取会点名给出证据，而同意阶梯不会被话术哄着去付款。出厂状态是只读。",
+"fam4.g": "去园艺货架逛逛 →",
+"f.left": "&copy; 2026 Alvut Consulting, LLC &middot; <b>AGPL-3.0</b>:个人和个人用途免费。<br>把它做进自家产品的公司需要商业许可,<a href='https://github.com/KitchenSink4AI/KitchenSink4PPT/issues/new?template=commercial_license.yml'>开一个 issue</a>,我们细谈。",
+"f.corp": "楼上的办公室：KitchenSink4AI →",
 "f.right": "<a href='https://github.com/KitchenSink4AI/KitchenSink4PPT'>github.com/KitchenSink4AI/KitchenSink4PPT</a> · <a href='https://github.com/KitchenSink4AI/KitchenSink4PPT/issues/new/choose'>报告故障</a><br>建在 KitchenSink4Word 的安全内核之上,用 Claude Code 做出原型,再经一轮轮对抗测试打磨,直到测试智能体挑不出毛病。这屋子算是布置齐了!🖌️",
 "inst.dev": "开发者选项:pip、源码、其他 MCP 客户端",
 "inst.dp1": "安装这个包,然后让任意 MCP 客户端指向可执行文件:",
@@ -1538,12 +1554,11 @@ de: {
 "hero.invite": "↓ oder erst ausprobieren: unten ist ein Diagramm zum Ziehen, und die Pfeile folgen",
 "sw.here": "(Sie sind hier)", "sw.store": "Zum Laden",
 "h2.new": "Neu im Regal", "new.label": "NEU EINGETROFFEN",
-"new.t": "Was Version 1.1 gerade dazugelegt hat",
+"new.t": "Was Version 1.2 gerade dazugelegt hat",
 "new.sub": "Die kurze Fassung des Releases, ganz ohne Changelog zu lesen.",
-"new1": "<b>Zwei Agenten können jetzt am selben offenen Foliensatz arbeiten.</b> Live-Aufrufe an PowerPoint laufen einer nach dem anderen, deshalb kommen gemeinsam arbeitende Agenten der Reihe nach dran, statt sich gegenseitig zu überschreiben. Und wenn PowerPoint einen Dialog hinstellt, den nur ein Mensch beantworten kann, sagt der Server das, statt hängen zu bleiben. Beide Sicherungen haben sich zuerst am Word-Server bewährt.",
-"new2": "<b>Behoben: Ihre Warnhinweise blieben abgeschaltet.</b> Der Server schaltet die Warndialoge von PowerPoint stumm, solange er bearbeitet, das ist in Ordnung, nur vergaß er früher, sie zum Schluss wieder einzuschalten. Sie schlossen die Sitzung, und PowerPoint verschluckte weiter Warnungen, die für Sie bestimmt waren. Jetzt schaltet er sie immer zurück.",
-"new3": "<b>Sechs Pakete statt neun.</b> Die kleinsten Pakete kosteten beim Überfliegen mehr Token, als sie einsparten, also sind sie bei ihren Nachbarn eingezogen. Sitzungen starten leichter, und jeder alte Paketname funktioniert weiterhin.",
-"new4": "<b>Fehlerhafte Folienlisten fallen auf, bevor PowerPoint öffnet.</b> Verlangten Sie vom Export Folien, die es gar nicht gibt, oder gaben ihm eine kaputte Liste, brauchte er früher neun Sekunden zum Öffnen von PowerPoint, nur um dann mit einer kryptischen Meldung zu scheitern. Jetzt prüft er die Anfrage zuerst und sagt Ihnen genau, was zu korrigieren ist.",
+"new1": "Jeder Lesevorgang ist budgetiert: Ein einzelner Aufruf kann Ihr Gespräch nicht mehr überschwemmen, und was ausgelassen wurde, wird benannt.",
+"new2": "Speichern läuft bis zu dreimal schneller und behält die ursprüngliche Kompression jeder Mediendatei exakt bei.",
+"new3": "Alle vier KitchenSink-Server lassen sich jetzt nebeneinander in einer Umgebung installieren.",
 "no0": "ABT. 00", "no1": "ABT. 01", "no2": "ABT. 02", "no3": "ABT. 03", "no4": "ABT. 04", "no5": "ABT. 05", "no6": "ABT. 06", "no7": "ABT. 07",
 "h2.demo": "Den Knoten verschieben, die Pfeile folgen",
 "demo.lead": "Jede KI-Pipeline kann ein Diagramm auf eine Folie setzen. Fast alle liefern dabei nur ein Bild davon: flache Pixel hinter Glas. Am Abend vor der Präsentation muss ein Kasten einen Zentimeter wandern, und einem Bild ist egal, wie klein die Änderung ist. Dieser Server zeichnet das Diagramm aus echten PowerPoint-Formen, denselben, die Sie von Hand zeichnen würden, und die Pfeile hängen wirklich an den Kästen, die sie verbinden. Ziehen Sie einen Knoten in PowerPoint, und die Pfeile folgen. Bitten Sie den Agenten, einen Kasten per Name umzufärben, und nur dieser Kasten ändert sich. Kein Von-vorn-Anfangen, kein Warten auf einen Bilddienst und nichts zusätzlich zu installieren, um es zu bauen.",
@@ -1648,7 +1663,10 @@ de: {
 "fam3.t": "Das Ladengeschäft",
 "fam3.p": "Der ganze Baumarkt auf einer Seite: jeder KitchenSink-Server, seine Armatur und sein Schalter, dazu ein, zwei Regale, die nicht aus Versehen leer sind.",
 "fam3.g": "Den Laden durchstöbern →",
-"f.left": "&copy; 2026 &middot; <b>AGPL-3.0</b>: kostenlos für Privatpersonen und private Nutzung.<br>Unternehmen, die es in eigene Produkte einbauen, brauchen eine kommerzielle Lizenz; <a href='https://github.com/KitchenSink4AI/KitchenSink4PPT/issues/new?template=commercial_license.yml'>ein Issue öffnen</a>, dann klären wir das.",
+"fam4.p": "Das Web mit allem Drum und Dran: budgetierte Seitenlesungen benennen, was ungelesen blieb, strukturierte Extraktion benennt ihre Belege, und eine Zustimmungsleiter lässt sich nicht zu Zahlungen überreden. Ab Werk nur lesend.",
+"fam4.g": "Zum Gartengang →",
+"f.left": "&copy; 2026 Alvut Consulting, LLC &middot; <b>AGPL-3.0</b>: kostenlos für Privatpersonen und private Nutzung.<br>Unternehmen, die es in eigene Produkte einbauen, brauchen eine kommerzielle Lizenz; <a href='https://github.com/KitchenSink4AI/KitchenSink4PPT/issues/new?template=commercial_license.yml'>ein Issue öffnen</a>, dann klären wir das.",
+"f.corp": "Das Büro über dem Laden: KitchenSink4AI →",
 "f.right": "<a href='https://github.com/KitchenSink4AI/KitchenSink4PPT'>github.com/KitchenSink4AI/KitchenSink4PPT</a> · <a href='https://github.com/KitchenSink4AI/KitchenSink4PPT/issues/new/choose'>Störung melden</a><br>Auf dem Sicherheitskern von KitchenSink4Word errichtet, mit Claude Code prototypisiert und in adversarialen Runden gehärtet, bis den Test-Agenten die Beschwerden ausgingen. Das nennt man einen gut eingerichteten Raum! 🖌️",
 "inst.dev": "Für Entwickler: pip, Quellcode, andere MCP-Clients",
 "inst.dp1": "Paket installieren und einen beliebigen MCP-Client auf die ausführbare Datei zeigen lassen:",
@@ -1689,12 +1707,11 @@ fr: {
 "hero.invite": "↓ ou essayez d'abord : il y a plus bas un diagramme à faire glisser, et les flèches suivent",
 "sw.here": "(vous êtes ici)", "sw.store": "La boutique",
 "h2.new": "Nouveautés en rayon", "new.label": "ARRIVAGE",
-"new.t": "Ce que la version 1.1 vient d'ajouter",
+"new.t": "Ce que la version 1.2 vient d'ajouter",
 "new.sub": "La version courte de la mise à jour, sans lire les notes de version.",
-"new1": "<b>Deux agents peuvent désormais travailler le même jeu ouvert.</b> Les appels en direct vers PowerPoint passent un par un, donc les agents qui éditent ensemble attendent leur tour au lieu de s'écraser l'un l'autre. Et si PowerPoint affiche une boîte de dialogue que seul un humain peut valider, le serveur le dit au lieu de rester bloqué. Les deux garde-fous ont d'abord fait leurs preuves sur le serveur Word.",
-"new2": "<b>Corrigé : vos avertissements restaient désactivés.</b> Le serveur coupe les boîtes d'avertissement de PowerPoint pendant qu'il travaille, ce qui se tient, mais il oubliait de les rallumer en sortant. Vous fermiez la session et PowerPoint continuait d'avaler des avertissements qui vous étaient destinés. Il les rallume toujours maintenant.",
-"new3": "<b>Six packs au lieu de neuf.</b> Les plus petits packs coûtaient plus de tokens à parcourir qu'ils n'en faisaient gagner, ils ont donc été fondus dans leurs voisins. Les sessions démarrent plus légères, et tous les anciens noms de packs fonctionnent encore.",
-"new4": "<b>Les listes de diapositives erronées sont repérées avant l'ouverture de PowerPoint.</b> Demandez à l'export des diapositives qui n'existent pas, ou donnez-lui une liste mal formée, et il passait autrefois neuf secondes à ouvrir PowerPoint pour échouer sur une erreur incompréhensible. Il vérifie maintenant la demande d'abord, et vous dit exactement quoi corriger.",
+"new1": "Chaque lecture a un budget : un seul appel ne peut plus noyer votre conversation, et ce qui a été laissé de côté est nommé.",
+"new2": "Les enregistrements sont jusqu'à trois fois plus rapides et conservent exactement la compression d'origine de chaque fichier multimédia.",
+"new3": "Les quatre serveurs KitchenSink s'installent désormais côte à côte dans un seul environnement.",
 "no0": "RAYON 00", "no1": "RAYON 01", "no2": "RAYON 02", "no3": "RAYON 03", "no4": "RAYON 04", "no5": "RAYON 05", "no6": "RAYON 06", "no7": "RAYON 07",
 "h2.demo": "Déplacez le nœud, les flèches suivent",
 "demo.lead": "Toutes les chaînes IA savent poser un diagramme sur une diapositive. Presque toutes vous en remettent une image : des pixels plats, sous verre. La veille de la présentation, une boîte doit bouger d'un demi-centimètre, et une image se moque de la taille du changement. Ce serveur dessine le diagramme à partir de vraies formes PowerPoint, celles-là mêmes que vous traceriez à la main, avec des flèches réellement accrochées aux boîtes qu'elles relient. Faites glisser un nœud dans PowerPoint et les flèches suivent. Demandez à l'agent de recolorer une boîte par son nom et seule cette boîte change. Pas de reprise à zéro, pas d'attente d'un service d'images, et rien de plus à installer pour la construire.",
@@ -1799,7 +1816,10 @@ fr: {
 "fam3.t": "La devanture",
 "fam3.p": "Toute la quincaillerie sur une page : chaque serveur KitchenSink, son installation et son comptoir, plus une étagère ou deux qui ne sont pas vides par hasard.",
 "fam3.g": "Parcourir la boutique →",
-"f.left": "&copy; 2026 &middot; <b>AGPL-3.0</b> : gratuit pour les particuliers et l'usage personnel.<br>Les entreprises qui l'intègrent dans leurs propres produits ont besoin d'une licence commerciale ; <a href='https://github.com/KitchenSink4AI/KitchenSink4PPT/issues/new?template=commercial_license.yml'>ouvrez un ticket</a> et nous en parlerons.",
+"fam4.p": "Absolument tout pour le web, jusqu'au moindre détail : des lectures de page avec budget qui nomment ce qui n'a pas été lu, une extraction structurée aux preuves nommées, et une échelle de consentement qu'on ne peut pas convaincre de payer. En lecture seule à la sortie de la boîte.",
+"fam4.g": "Visiter le rayon jardin →",
+"f.left": "&copy; 2026 Alvut Consulting, LLC &middot; <b>AGPL-3.0</b> : gratuit pour les particuliers et l'usage personnel.<br>Les entreprises qui l'intègrent dans leurs propres produits ont besoin d'une licence commerciale ; <a href='https://github.com/KitchenSink4AI/KitchenSink4PPT/issues/new?template=commercial_license.yml'>ouvrez un ticket</a> et nous en parlerons.",
+"f.corp": "Le bureau à l'étage : KitchenSink4AI →",
 "f.right": "<a href='https://github.com/KitchenSink4AI/KitchenSink4PPT'>github.com/KitchenSink4AI/KitchenSink4PPT</a> · <a href='https://github.com/KitchenSink4AI/KitchenSink4PPT/issues/new/choose'>signaler un pépin</a><br>Bâti sur le noyau de sûreté de KitchenSink4Word, prototypé avec Claude Code et endurci par des manches adversariales jusqu'à ce que les agents de test soient à court de réclamations. Voilà une pièce bien décorée ! 🖌️",
 "inst.dev": "Pour les développeurs : pip, sources, autres clients MCP",
 "inst.dp1": "Installez le paquet, puis pointez n'importe quel client MCP sur l'exécutable :",
@@ -1840,12 +1860,11 @@ es: {
 "hero.invite": "↓ o pruébelo primero: abajo hay un diagrama que puede arrastrar, y las flechas lo siguen",
 "sw.here": "(está aquí)", "sw.store": "La tienda",
 "h2.new": "Recién puesto en el estante", "new.label": "RECIÉN LLEGADO",
-"new.t": "Lo que acaba de añadir la versión 1.1",
+"new.t": "Lo que acaba de añadir la versión 1.2",
 "new.sub": "La versión corta de la entrega, sin tener que leer el registro de cambios.",
-"new1": "<b>Ahora dos agentes pueden trabajar la misma presentación abierta.</b> Las llamadas en vivo a PowerPoint van de una en una, así que los agentes que editan a la vez van por turnos en vez de escribir unos encima de otros. Y si PowerPoint saca un cuadro de diálogo que solo puede contestar una persona, el servidor lo dice en lugar de quedarse colgado. Las dos protecciones se probaron antes en el servidor de Word.",
-"new2": "<b>Corregido: sus avisos se quedaban apagados.</b> El servidor silencia los cuadros de aviso de PowerPoint mientras edita, lo cual está bien, pero antes se olvidaba de volver a encenderlos al salir. Usted cerraba la sesión y PowerPoint seguía tragándose avisos que eran para usted. Ahora siempre los vuelve a encender.",
-"new3": "<b>Seis paquetes en lugar de nueve.</b> Los paquetes más pequeños costaban más tokens de leer por encima de los que ahorraban, así que se han fundido con los de al lado. Las sesiones arrancan más ligeras, y todos los nombres antiguos de paquetes siguen funcionando.",
-"new4": "<b>Las listas de diapositivas defectuosas se detectan antes de que se abra PowerPoint.</b> Si le pedía al exportador diapositivas que no existen, o le pasaba una lista mal formada, antes tardaba nueve segundos en abrir PowerPoint solo para fallar con un error críptico. Ahora comprueba la petición primero y le dice exactamente qué corregir.",
+"new1": "Cada lectura tiene presupuesto: una sola llamada ya no puede inundar su conversación, y lo que se queda fuera se nombra.",
+"new2": "Guardar es hasta tres veces más rápido y conserva exactamente la compresión original de cada archivo multimedia.",
+"new3": "Los cuatro servidores KitchenSink ya se instalan uno junto a otro en un mismo entorno.",
 "no0": "DEPTO. 00", "no1": "DEPTO. 01", "no2": "DEPTO. 02", "no3": "DEPTO. 03", "no4": "DEPTO. 04", "no5": "DEPTO. 05", "no6": "DEPTO. 06", "no7": "DEPTO. 07",
 "h2.demo": "Mueva el nodo y las flechas lo siguen",
 "demo.lead": "Cualquier canalización de IA puede poner un diagrama en una diapositiva. Casi todas le entregan una imagen del diagrama: píxeles planos tras el cristal. La noche antes de presentar, una caja tiene que moverse medio centímetro, y a una imagen no le importa lo pequeño que sea el cambio. Este servidor dibuja el diagrama con formas reales de PowerPoint, las mismas que usted trazaría a mano, con las flechas de verdad pegadas a las cajas que unen. Arrastre un nodo en PowerPoint y las flechas lo siguen. Pida al agente recolorear una caja por su nombre y solo esa caja cambia. Sin empezar de cero, sin esperar a un servicio de imágenes y sin nada extra que instalar para construirlo.",
@@ -1950,7 +1969,10 @@ es: {
 "fam3.t": "La tienda",
 "fam3.p": "Toda la ferretería en una página: cada servidor KitchenSink, su accesorio y su mostrador, más un estante o dos que no están vacíos por casualidad.",
 "fam3.g": "Recorrer la tienda →",
-"f.left": "&copy; 2026 &middot; <b>AGPL-3.0</b>: gratis para particulares y uso personal.<br>Las empresas que lo integren en productos propios necesitan una licencia comercial; <a href='https://github.com/KitchenSink4AI/KitchenSink4PPT/issues/new?template=commercial_license.yml'>abra un issue</a> y lo hablamos.",
+"fam4.p": "De todo para la web, hasta lo que no imaginas: lecturas de página con presupuesto que nombran lo que quedó sin leer, extracción estructurada con pruebas nombradas y una escalera de consentimiento a la que no se la puede convencer de pagar. Solo lectura de fábrica.",
+"fam4.g": "Visite el pasillo de jardín →",
+"f.left": "&copy; 2026 Alvut Consulting, LLC &middot; <b>AGPL-3.0</b>: gratis para particulares y uso personal.<br>Las empresas que lo integren en productos propios necesitan una licencia comercial; <a href='https://github.com/KitchenSink4AI/KitchenSink4PPT/issues/new?template=commercial_license.yml'>abra un issue</a> y lo hablamos.",
+"f.corp": "La oficina de arriba: KitchenSink4AI →",
 "f.right": "<a href='https://github.com/KitchenSink4AI/KitchenSink4PPT'>github.com/KitchenSink4AI/KitchenSink4PPT</a> · <a href='https://github.com/KitchenSink4AI/KitchenSink4PPT/issues/new/choose'>informar de un fallo</a><br>Construido sobre el núcleo de seguridad de KitchenSink4Word, prototipado con Claude Code y endurecido en rondas adversariales hasta que los agentes de prueba se quedaron sin quejas. ¡Menuda sala tan bien decorada! 🖌️",
 "inst.dev": "Para desarrolladores: pip, código fuente, otros clientes MCP",
 "inst.dp1": "Instale el paquete y apunte cualquier cliente MCP al ejecutable:",
