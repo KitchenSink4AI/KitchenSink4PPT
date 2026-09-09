@@ -4,9 +4,9 @@
   "title": "KitchenSink4PPT",
   "description": "Everything plus the kitchen sink for PowerPoint: native editable diagrams, live editing, 141 tools.",
   "version": "1.2.0",
-  "websiteUrl": "https://nometalalchemist.github.io/KitchenSink4PPT/",
+  "websiteUrl": "https://kitchensink4ai.github.io/KitchenSink4PPT/",
   "repository": {
-    "url": "https://github.com/nometalalchemist/KitchenSink4PPT",
+    "url": "https://github.com/KitchenSink4AI/KitchenSink4PPT",
     "source": "github"
   },
   "packages": [

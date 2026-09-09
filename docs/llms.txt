@@ -66,18 +66,18 @@ Heavy editing with a safety net:
 
 ## The KitchenSink family
 
-- KitchenSink4Word (the original fixture, 219 operations across 108 tools for .docx): https://nometalalchemist.github.io/KitchenSink4Word/
-- KitchenSink4XL (the electrical aisle, 69 tools for .xlsx, every value labeled calculated, cached, or absent): https://nometalalchemist.github.io/KitchenSink4XL/
-- Family storefront: https://nometalalchemist.github.io/
+- KitchenSink4Word (the original fixture, 219 operations across 108 tools for .docx): https://kitchensink4ai.github.io/KitchenSink4Word/
+- KitchenSink4XL (the electrical aisle, 69 tools for .xlsx, every value labeled calculated, cached, or absent): https://kitchensink4ai.github.io/KitchenSink4XL/
+- Family storefront: https://kitchensink4ai.github.io/
 
 ## Links
 
-- GitHub: https://github.com/nometalalchemist/KitchenSink4PPT
+- GitHub: https://github.com/KitchenSink4AI/KitchenSink4PPT
 - PyPI: https://pypi.org/project/kitchensink4ppt/
 - MCP registry: io.github.nometalalchemist/kitchensink4ppt
-- Landing page: https://nometalalchemist.github.io/KitchenSink4PPT/
-- Issues (bugs, feature requests, licensing): https://github.com/nometalalchemist/KitchenSink4PPT/issues/new/choose
+- Landing page: https://kitchensink4ai.github.io/KitchenSink4PPT/
+- Issues (bugs, feature requests, licensing): https://github.com/KitchenSink4AI/KitchenSink4PPT/issues/new/choose
 
 ## License
 
-AGPL-3.0. Free for any use under AGPL terms (copyleft: modifications to served copies must be shared). Commercial license available for use cases that cannot comply with AGPL: https://github.com/nometalalchemist/KitchenSink4PPT/issues/new?template=commercial_license.yml
+AGPL-3.0. Free for any use under AGPL terms (copyleft: modifications to served copies must be shared). Commercial license available for use cases that cannot comply with AGPL: https://github.com/KitchenSink4AI/KitchenSink4PPT/issues/new?template=commercial_license.yml

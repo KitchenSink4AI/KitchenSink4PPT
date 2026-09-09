@@ -1,11 +1,11 @@
 <!-- mcp-name: io.github.nometalalchemist/kitchensink4ppt -->
 # 🖌️ KitchenSink4PPT
 
-[![Tests](https://github.com/nometalalchemist/KitchenSink4PPT/actions/workflows/tests.yml/badge.svg)](https://github.com/nometalalchemist/KitchenSink4PPT/actions/workflows/tests.yml)
+[![Tests](https://github.com/KitchenSink4AI/KitchenSink4PPT/actions/workflows/tests.yml/badge.svg)](https://github.com/KitchenSink4AI/KitchenSink4PPT/actions/workflows/tests.yml)
 [![PyPI](https://img.shields.io/pypi/v/kitchensink4ppt)](https://pypi.org/project/kitchensink4ppt/)
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue)](LICENSE)
 
-[Landing page](https://nometalalchemist.github.io/KitchenSink4PPT/) · [llms.txt](https://nometalalchemist.github.io/KitchenSink4PPT/llms.txt) (machine-readable capability manifest for agents and LLM crawlers)
+[Landing page](https://kitchensink4ai.github.io/KitchenSink4PPT/) · [llms.txt](https://kitchensink4ai.github.io/KitchenSink4PPT/llms.txt) (machine-readable capability manifest for agents and LLM crawlers)
 
 Everything plus the kitchen sink for Microsoft PowerPoint: an MCP server for
 .pptx files, engineered not to corrupt. Slides, text, tables, charts, notes,
@@ -37,7 +37,7 @@ fix it.
 ### Claude Desktop: one click
 
 Download `kitchensink4ppt.mcpb` from the
-[latest release](https://github.com/nometalalchemist/KitchenSink4PPT/releases/latest)
+[latest release](https://github.com/KitchenSink4AI/KitchenSink4PPT/releases/latest)
 and double-click it, or drag it into the Claude Desktop window. Desktop adds
 it as an extension and the sink is connected. Nothing to type, nothing to
 configure. The bundle launches the server with
@@ -69,7 +69,7 @@ pip install kitchensink4ppt
 The `ppt-mcp` executable is an equivalent entry point. From a clone:
 
 ```
-git clone https://github.com/nometalalchemist/KitchenSink4PPT
+git clone https://github.com/KitchenSink4AI/KitchenSink4PPT
 cd KitchenSink4PPT
 python -m venv .venv
 .venv\Scripts\pip install -e .
@@ -186,7 +186,7 @@ process-wide lock with dialog detection at the window layer and bounded
 timeouts, and ships with its own COM gate scripts (`tests/com_gates/`).
 It has not yet had a long field life; treat important decks with the
 respect the backup tools make easy, and expect fast point releases.
-[Before filing](https://github.com/nometalalchemist/KitchenSink4PPT/issues/new?template=bug_report.yml):
+[Before filing](https://github.com/KitchenSink4AI/KitchenSink4PPT/issues/new?template=bug_report.yml):
 ask your AI to run `diagnose` and paste the output here; it is designed
 to be safe to share.
 
@@ -198,5 +198,5 @@ software, open an issue to discuss a commercial license.
 
 ## Family
 
-Sibling of [KitchenSink4Word](https://github.com/nometalalchemist/KitchenSink4Word)
-(the same engineering for .docx; [site](https://nometalalchemist.github.io/KitchenSink4Word/)).
+Sibling of [KitchenSink4Word](https://github.com/KitchenSink4AI/KitchenSink4Word)
+(the same engineering for .docx; [site](https://kitchensink4ai.github.io/KitchenSink4Word/)).

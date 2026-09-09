@@ -87,7 +87,7 @@ resolves the package from PyPI (needs network and uv on the machine).
 Attach the `.mcpb` as a release asset (do not commit the binary):
 
 ```
-gh release upload vX.Y.Z bundle/kitchensink4ppt.mcpb --repo nometalalchemist/KitchenSink4PPT
+gh release upload vX.Y.Z bundle/kitchensink4ppt.mcpb --repo KitchenSink4AI/KitchenSink4PPT
 ```
 
 Because the manifest pins the PyPI version, each release's asset is specific
