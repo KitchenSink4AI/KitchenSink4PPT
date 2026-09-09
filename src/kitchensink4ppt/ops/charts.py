@@ -1212,13 +1212,6 @@ def _insert_ordered(parent, el, order: tuple[str, ...]) -> None:
     parent.append(el)
 
 
-def _replace_child(parent, el, order: tuple[str, ...]) -> None:
-    old = parent.find(_qc(etree.QName(el).localname))
-    if old is not None:
-        parent.remove(old)
-    _insert_ordered(parent, el, order)
-
-
 def _set_bool_child(parent, name: str, val: int, order: tuple[str, ...]) -> None:
     el = parent.find(_qc(name))
     if el is None:

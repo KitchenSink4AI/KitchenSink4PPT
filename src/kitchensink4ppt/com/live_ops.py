@@ -27,7 +27,6 @@ to TextRange '\\r' on the way in and back on the way out.
 from __future__ import annotations
 
 import contextlib
-from pathlib import Path
 
 from ..core.errors import (
     AmbiguousTarget,

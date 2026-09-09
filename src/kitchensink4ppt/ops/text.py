@@ -34,6 +34,7 @@ import re as _stdlib_re
 
 from lxml import etree
 
+from ..core import budget as _budget
 from ..core.errors import (
     AmbiguousTarget,
     PptMcpError,
@@ -57,6 +58,7 @@ from ._runmap import (
     split_for_range,
 )
 from .read import (
+    _dgm,
     iter_shapes,
     notes_part_for,
     paragraph_text,
@@ -1006,12 +1008,33 @@ def _slide_paragraph_sites(pkg: PptxPackage, rec: dict):
                         yield p, (
                             f"slide {rec['index']} table shape {sid} "
                             f"cell r{r + 1}c{c + 1}"
-                        )
+                        ), rec["part"]
         elif kind in _NO_TEXT_KINDS:
             continue
         else:
             for p in txbody_paragraphs(elem):
-                yield p, f"slide {rec['index']} shape {sid}"
+                yield p, f"slide {rec['index']} shape {sid}", rec["part"]
+
+
+def _diagram_paragraph_sites(pkg: PptxPackage, rec: dict):
+    """Yield (a:p, where, part) for every SmartArt paragraph reachable from
+    one slide: the data model AND the cached drawing, because a replacement
+    that lands in one and not the other leaves the old words on screen for
+    every viewer that does not regenerate the diagram."""
+    from .diagrams import _dsp, diagram_frames, drawing_part_of
+
+    for _frame, data_part in diagram_frames(pkg, rec["part"]):
+        if data_part is None or not pkg.has_part(data_part):
+            continue
+        for t in pkg.root(data_part).iter(_dgm("t")):
+            for p in t.findall(qn("a:p")):
+                yield p, f"slide {rec['index']} SmartArt", data_part
+        drawing = drawing_part_of(pkg, data_part)
+        if drawing is None:
+            continue
+        for body in pkg.root(drawing).iter(_dsp("txBody")):
+            for p in body.findall(qn("a:p")):
+                yield p, f"slide {rec['index']} SmartArt (cached)", drawing
 
 
 def search_and_replace(
@@ -1042,8 +1065,17 @@ def search_and_replace(
     total = 0
     for rec in slides_in_scope(pkg, scope):
         count = 0
-        for p, where in _slide_paragraph_sites(pkg, rec):
+        for p, where, _part in _slide_paragraph_sites(pkg, rec):
             count += _replace_in_paragraph(p, matcher, where)
+        diagram_count = 0
+        diagram_parts: set[str] = set()
+        for p, where, dpart in _diagram_paragraph_sites(pkg, rec):
+            hits = _replace_in_paragraph(p, matcher, where)
+            if hits:
+                diagram_count += hits
+                diagram_parts.add(dpart)
+        for dpart in diagram_parts:
+            pkg.mark_dirty(dpart)
         notes_count = 0
         if include_notes:
             npart = notes_part_for(pkg, rec["part"])
@@ -1060,7 +1092,7 @@ def search_and_replace(
                     pkg.mark_dirty(npart)
         if count:
             pkg.mark_dirty(rec["part"])
-        if count or notes_count:
+        if count or notes_count or diagram_count:
             entry = {
                 "slide_index": rec["index"],
                 "slide_id": rec["slide_id"],
@@ -1068,8 +1100,10 @@ def search_and_replace(
             }
             if include_notes:
                 entry["notes_count"] = notes_count
+            if diagram_count:
+                entry["diagram_count"] = diagram_count
             slides_out.append(entry)
-        total += count + notes_count
+        total += count + notes_count + diagram_count
 
     return {
         "find": find,
@@ -1215,7 +1249,8 @@ def _autofit_slide_records(pkg: PptxPackage, rec: dict) -> list[dict]:
     return shapes
 
 
-def get_autofit_state(pkg: PptxPackage, slide=None, shape=None) -> dict:
+def get_autofit_state(pkg: PptxPackage, slide=None, shape=None, *,
+                      limit=None, offset: int = 0) -> dict:
     """Autofit state of one shape, every text-bearing shape on a slide, or
     (slide=None) every text-bearing shape on EVERY slide: the bodyPr autofit
     mode (normAutofit with fontScale/lnSpcReduction, spAutoFit, none, or
@@ -1237,7 +1272,18 @@ def get_autofit_state(pkg: PptxPackage, slide=None, shape=None) -> dict:
             }
             for rec in slides_in_scope(pkg, None)
         ]
-        return {"caveat": _AUTOFIT_CAVEAT, "slides": slides_out}
+        # Deck-wide, this is one record per text-bearing shape on every
+        # slide: 880,000 characters on the heaviest corpus deck.
+        kept, page = _budget.page_items(
+            slides_out, limit=limit, offset=offset,
+            overhead=_budget.overhead_of({"caveat": _AUTOFIT_CAVEAT}),
+            unit="slides",
+            narrow_hint="narrow with slide=<index>",
+        )
+        out = {"caveat": _AUTOFIT_CAVEAT, "slides": kept}
+        if page is not None:
+            out["page"] = page
+        return out
     rec = resolve_slide(pkg, slide)
     if shape is not None:
         elem, kind = _resolve_shape(pkg, rec, shape)
@@ -1245,11 +1291,22 @@ def get_autofit_state(pkg: PptxPackage, slide=None, shape=None) -> dict:
         shapes = [_autofit_record(elem)]
     else:
         shapes = _autofit_slide_records(pkg, rec)
-    return {
+    header = {
         "slide_index": rec["index"],
         "slide_id": rec["slide_id"],
         "caveat": _AUTOFIT_CAVEAT,
-        "shapes": shapes,
+    }
+    kept, page = _budget.page_items(
+        shapes, limit=limit, offset=offset,
+        overhead=_budget.overhead_of(header),
+        unit="shapes",
+        narrow_hint="narrow with shape=<id>",
+        shrink=_budget.shrink_record,
+    )
+    return {
+        **header,
+        "shapes": kept,
+        **({"page": page} if page is not None else {}),
     }
 
 

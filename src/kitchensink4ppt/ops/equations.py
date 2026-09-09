@@ -55,7 +55,7 @@ import re
 from lxml import etree
 
 from ..core.errors import PptMcpError, TargetNotFound, UnsupportedStructure
-from ..core.package import NSMAP, PptxPackage, qn
+from ..core.package import PptxPackage, qn
 from .read import resolve_slide
 
 M_NS = "http://schemas.openxmlformats.org/officeDocument/2006/math"
