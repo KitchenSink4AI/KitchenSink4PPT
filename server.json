@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.nometalalchemist/kitchensink4ppt",
   "title": "KitchenSink4PPT",
-  "description": "PowerPoint (.pptx) MCP server: editable vector diagrams, tables, charts, budgeted reads, render-to-verify. The kitchen sink.",
+  "description": "PowerPoint (.pptx) MCP server: editable vector diagrams, tables, budgeted reads, render-to-verify",
   "version": "1.2.2",
   "websiteUrl": "https://kitchensink4.ai/KitchenSink4PPT/",
   "repository": {
