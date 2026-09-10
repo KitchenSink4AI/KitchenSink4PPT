@@ -208,9 +208,9 @@ body.dusk .wetpaint{opacity:.95}
 
 /* ---------- sections ---------- */
 section{padding:64px 0;border-top:1px solid var(--rule)}
-.sec-head{display:flex;align-items:baseline;gap:16px;margin-bottom:34px}
-.sec-head h2{font-size:clamp(26px,4vw,40px);font-weight:800}
-.sec-head .no{font-size:12px;letter-spacing:.25em;color:var(--patina);white-space:nowrap;
+.sec-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:10px 16px;margin-bottom:34px}
+.sec-head h2{min-width:0;overflow-wrap:anywhere;font-size:clamp(26px,4vw,40px);font-weight:800}
+.sec-head .no{font-size:12px;letter-spacing:.25em;color:var(--patina);white-space:normal;max-width:100%;overflow-wrap:anywhere;
   border:2px solid currentColor;border-radius:3px;padding:3px 10px;transform:rotate(-2deg);
   display:inline-block;opacity:.85;
   mask-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='4' height='4'%3E%3Crect width='4' height='4' fill='white'/%3E%3Ccircle cx='2.5' cy='1.5' r='.3' fill='black'/%3E%3C/svg%3E")}
@@ -328,7 +328,7 @@ section{padding:64px 0;border-top:1px solid var(--rule)}
 /* the rack has one empty slot at four columns; it should read as paper, not as a painted tile */
 .depts:after{content:"";background:var(--paper)}
 .dept h3{font-size:17px;font-weight:800;display:flex;justify-content:space-between;align-items:baseline;gap:8px}
-.dept h3 .num{font-family:'IBM Plex Mono',"Plex Mono Fallback",monospace;font-size:10px;color:var(--patina);letter-spacing:.15em;white-space:nowrap}
+.dept h3 .num{font-family:'IBM Plex Mono',"Plex Mono Fallback",monospace;font-size:10px;color:var(--patina);letter-spacing:.15em;white-space:normal;overflow-wrap:anywhere}
 .dept p{font-size:12.5px;color:var(--ink-soft);margin-top:8px;line-height:1.55}
 .dept .ex{font-size:11.5px;color:var(--patina);margin-top:8px;line-height:1.5}
 .dept .count{display:inline-block;margin-top:10px;font-size:10px;border:1px solid var(--patina);
@@ -555,10 +555,9 @@ footer a{color:var(--patina)}
       <summary>
         <span class="tag" data-i18n="new.label">JUST IN</span>
         <span class="ttl" data-i18n="h2.new">New on the shelf</span>
-        <span class="hint" data-i18n="new.t">What 1.2 just added</span>
+        <span class="hint">v1.2.0 &middot; <time datetime="2026-09-09">2026-09-09</time></span>
       </summary>
     <div class="newin">
-      <p class="sub" data-i18n="new.sub">The short version of the release, no changelog reading required.</p>
       <ul>
         <li data-i18n="new1">Every read is budgeted: one call can no longer flood your conversation, and anything left out is named.</li>
         <li data-i18n="new2">Saves run up to three times faster and keep each media file's original compression exactly.</li>
@@ -750,7 +749,7 @@ footer a{color:var(--patina)}
         <p data-i18n="svc2.p">A PowerPoint capability the sink should also have. Describe the real task behind it and it goes on the workbench.</p>
         <span class="go" data-i18n="svc2.g">Request a feature →</span>
       </a>
-      <a class="counter" href="https://github.com/KitchenSink4AI/KitchenSink4PPT/issues/new?template=commercial_license.yml">
+      <a class="counter" href="https://kitchensink4.ai/contact/?category=licensing#cat-licensing">
         <span class="icon">💼</span>
         <h3 data-i18n="svc3.t">Commercial fitting?</h3>
         <p data-i18n="svc3.p">Free for any use that meets the AGPL's terms, including its source-sharing obligations. If your company wants to build it into a product of its own, that needs a commercial license, with terms worked out case by case. This counter is where you start that conversation.</p>
@@ -957,7 +956,6 @@ en: {
 "hero.invite": "↓ or try it first: there is a diagram below you can drag, and the arrows follow",
 "sw.here": "(you are here)", "sw.store": "The storefront",
 "h2.new": "New on the shelf", "new.label": "JUST IN",
-"new.t": "What 1.2 just added",
 "new.sub": "The short version of the release, no changelog reading required.",
 "new1": "Every read is budgeted: one call can no longer flood your conversation, and anything left out is named.",
 "new2": "Saves run up to three times faster and keep each media file's original compression exactly.",
@@ -1110,7 +1108,6 @@ ko: {
 "hero.invite": "↓ 먼저 써 보셔도 됩니다: 아래에 직접 드래그할 수 있는 다이어그램이 있고, 화살표가 따라옵니다",
 "sw.here": "(현재 페이지)", "sw.store": "스토어",
 "h2.new": "선반에 새로 올라온 것", "new.label": "신규 입고",
-"new.t": "버전 1.2가 방금 더한 것들",
 "new.sub": "이번 릴리스를 짧게 간추렸습니다. 변경 내역을 따로 읽지 않으셔도 됩니다.",
 "new1": "모든 읽기에 예산이 붙습니다. 호출 하나가 대화를 뒤덮는 일은 이제 없고, 빠뜨린 것은 이름으로 알려 줍니다.",
 "new2": "저장이 최대 세 배까지 빨라졌고, 미디어 파일마다 원래의 압축을 그대로 지킵니다.",
@@ -1263,7 +1260,6 @@ ja: {
 "hero.invite": "↓ まず試してみてください:下にドラッグできる図があり、矢印がついてきます",
 "sw.here": "(現在のページ)", "sw.store": "ストアトップ",
 "h2.new": "棚に並んだ新入荷", "new.label": "新入荷",
-"new.t": "v1.2 で新しく加わったもの",
 "new.sub": "リリースの要点だけ。変更履歴を読む必要はありません。",
 "new1": "読み取りにはすべて予算が付きます。ひとつの呼び出しが会話をあふれさせることはもうなく、外したものは名前で示されます。",
 "new2": "保存は最大で三倍速くなり、メディアファイルごとの元の圧縮をそのまま保ちます。",
@@ -1416,7 +1412,6 @@ zh: {
 "hero.invite": "↓ 或者先试试:下面有一张可以拖动的图,箭头会跟着走",
 "sw.here": "(当前页面)", "sw.store": "商店首页",
 "h2.new": "新上架", "new.label": "新到货",
-"new.t": "v1.2 刚刚添了什么",
 "new.sub": "这次发布的简短版，不用去翻更新日志。",
 "new1": "每次读取都有预算：一次调用不会再淹没你的对话，落下的内容也会被点名说出。",
 "new2": "保存最快可达原来的三倍，并且原样保留每个媒体文件的原始压缩。",
@@ -1569,7 +1564,6 @@ de: {
 "hero.invite": "↓ oder erst ausprobieren: unten ist ein Diagramm zum Ziehen, und die Pfeile folgen",
 "sw.here": "(Sie sind hier)", "sw.store": "Zum Laden",
 "h2.new": "Neu im Regal", "new.label": "NEU EINGETROFFEN",
-"new.t": "Was Version 1.2 gerade dazugelegt hat",
 "new.sub": "Die kurze Fassung des Releases, ganz ohne Changelog zu lesen.",
 "new1": "Jeder Lesevorgang ist budgetiert: Ein einzelner Aufruf kann Ihr Gespräch nicht mehr überschwemmen, und was ausgelassen wurde, wird benannt.",
 "new2": "Speichern läuft bis zu dreimal schneller und behält die ursprüngliche Kompression jeder Mediendatei exakt bei.",
@@ -1722,7 +1716,6 @@ fr: {
 "hero.invite": "↓ ou essayez d'abord : il y a plus bas un diagramme à faire glisser, et les flèches suivent",
 "sw.here": "(vous êtes ici)", "sw.store": "La boutique",
 "h2.new": "Nouveautés en rayon", "new.label": "ARRIVAGE",
-"new.t": "Ce que la version 1.2 vient d'ajouter",
 "new.sub": "La version courte de la mise à jour, sans lire les notes de version.",
 "new1": "Chaque lecture a un budget : un seul appel ne peut plus noyer votre conversation, et ce qui a été laissé de côté est nommé.",
 "new2": "Les enregistrements sont jusqu'à trois fois plus rapides et conservent exactement la compression d'origine de chaque fichier multimédia.",
@@ -1875,7 +1868,6 @@ es: {
 "hero.invite": "↓ o pruébelo primero: abajo hay un diagrama que puede arrastrar, y las flechas lo siguen",
 "sw.here": "(está aquí)", "sw.store": "La tienda",
 "h2.new": "Recién puesto en el estante", "new.label": "RECIÉN LLEGADO",
-"new.t": "Lo que acaba de añadir la versión 1.2",
 "new.sub": "La versión corta de la entrega, sin tener que leer el registro de cambios.",
 "new1": "Cada lectura tiene presupuesto: una sola llamada ya no puede inundar su conversación, y lo que se queda fuera se nombra.",
 "new2": "Guardar es hasta tres veces más rápido y conserva exactamente la compresión original de cada archivo multimedia.",
