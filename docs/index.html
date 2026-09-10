@@ -4,14 +4,14 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <!--
-  SHIPPED NUMBERS (page ships v1.2.1; figures last derived 2026-09-09 against v1.2.1 with scripts/check_site.py,
+  SHIPPED NUMBERS (page ships v1.2.2; figures last derived 2026-09-10 against v1.2.2 with scripts/check_site.py,
   scripts/measure_surface.py, and pytest collection, all three agreeing with the figures below; re-derive before any deploy):
-    141   registered tools (scripts/measure_surface.py) - masthead catalog no., specs strip, colophon
-    1241  tests (python -m pytest tests/unit --co -q) - specs strip, comparison foot-note
+    142   registered tools (scripts/measure_surface.py) - masthead catalog no., specs strip, colophon
+    1251  tests (python -m pytest tests/ --co -q, stamped by scripts/stamp_figures.py) - specs strip, comparison foot-note
     1646  adversarial stress calls across three raw-stdio rounds (400 + 881 + 365) - specs strip, foot-note
   Also re-verify the comparison-table survey date line before ship.
-  COUNT DOCTRINE: 141 is the ONLY tool total stated on this page; the inventory deliberately
-  carries no per-pack counts except the lite core's "24" (which also appears in DEPT. 04; keep them
+  COUNT DOCTRINE: 142 is the ONLY tool total stated on this page; the inventory deliberately
+  carries no per-pack counts except the lite core's "25" (which also appears in DEPT. 04; keep them
   identical). If per-pack counts are ever added, they must visibly sum to the stated total, or a
   careful reader will do the math and get two answers (this happened on the KS4W page).
   AISLE: PAINT (moved from DECOR, 2026-09-06). Masthead reads PAINT DEPARTMENT - AISLE P.
@@ -31,13 +31,27 @@
   STOREFRONT: the catalog is at https://kitchensink4.ai/products/ (the bare apex is the corporate homepage, not the catalog)
 -->
 <title>KitchenSink4PPT: Everything plus the kitchen sink for Microsoft PowerPoint</title>
-<meta name="description" content="141-tool MCP server for Microsoft PowerPoint. Native editable diagrams from SVG with glued connectors (move the node, the arrows follow), file-based table surgery, slide duplication done right, template-aware deck creation, six capability packs with tiered loading from a 24-tool core. Live editing of an open deck, serialized and dialog-aware. Engineered not to corrupt.">
+<meta name="description" content="142-tool MCP server for Microsoft PowerPoint. Native editable diagrams from SVG with glued connectors (move the node, the arrows follow), file-based table surgery, slide duplication done right, template-aware deck creation, six capability packs with tiered loading from a 25-tool core. Live editing of an open deck, serialized and dialog-aware. Engineered not to corrupt.">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🖌️</text></svg>">
 <link rel="llms" href="llms.txt" type="text/plain">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT@9..144,300..900,50&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="preload" href="fonts/fraunces-300-900-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="fonts/plexmono-400-latin.woff2" as="font" type="font/woff2" crossorigin>
 <style>
+/* Self-hosted, the way the corporate homepage serves its face: the same two
+   families this page has always used, the same subsets Google returned for
+   this exact request, now served from this origin so a reader is not
+   announced to a third party to read a product page. Latin and latin-ext
+   only, which is every glyph these families carry; the CJK locales fall
+   through to the system faces they already used. */
+@font-face{font-family:"Fraunces";font-style:normal;font-weight:300 900;font-display:swap;src:url("fonts/fraunces-300-900-latin-ext.woff2") format("woff2");unicode-range:U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF}
+@font-face{font-family:"Fraunces";font-style:normal;font-weight:300 900;font-display:swap;src:url("fonts/fraunces-300-900-latin.woff2") format("woff2");unicode-range:U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD}
+@font-face{font-family:"IBM Plex Mono";font-style:normal;font-weight:400;font-display:swap;src:url("fonts/plexmono-400-latin-ext.woff2") format("woff2");unicode-range:U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF}
+@font-face{font-family:"IBM Plex Mono";font-style:normal;font-weight:400;font-display:swap;src:url("fonts/plexmono-400-latin.woff2") format("woff2");unicode-range:U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD}
+@font-face{font-family:"IBM Plex Mono";font-style:normal;font-weight:500;font-display:swap;src:url("fonts/plexmono-500-latin-ext.woff2") format("woff2");unicode-range:U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF}
+@font-face{font-family:"IBM Plex Mono";font-style:normal;font-weight:500;font-display:swap;src:url("fonts/plexmono-500-latin.woff2") format("woff2");unicode-range:U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD}
+@font-face{font-family:"IBM Plex Mono";font-style:normal;font-weight:600;font-display:swap;src:url("fonts/plexmono-600-latin-ext.woff2") format("woff2");unicode-range:U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF}
+@font-face{font-family:"IBM Plex Mono";font-style:normal;font-weight:600;font-display:swap;src:url("fonts/plexmono-600-latin.woff2") format("woff2");unicode-range:U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD}
+
 /* metric-matched local fallbacks: on a cold cache the swap to the webfonts cannot re-wrap text.
    Courier New shares IBM Plex Mono's exact 0.6em advance width (measured 100.0%);
    Georgia scaled 104% matches Fraunces at text weights (measured 104.9% regular, 103.4% italic). */
@@ -495,7 +509,7 @@ footer a{color:var(--patina)}
 <div class="wrap masthead rev d1">
   <span data-i18n="m.left"><b>PAINT DEPARTMENT</b> &middot; AISLE P</span>
   <nav class="lang-toggle" id="langToggle" aria-label="Language"></nav>
-  <span><span data-i18n="m.catalog">CATALOG № 141</span> · <a href="https://kitchensink4.ai/products/" data-i18n="m.family">FAMILY</a> · <a href="#service" data-i18n="m.service">SERVICE</a> · <a href="https://github.com/KitchenSink4AI/KitchenSink4PPT">GITHUB</a> · <a href="https://pypi.org/project/kitchensink4ppt/">PYPI</a> · <a href="llms.txt">LLMS.TXT</a></span>
+  <span><span data-i18n="m.catalog">CATALOG № 142</span> · <a href="https://kitchensink4.ai/products/" data-i18n="m.family">FAMILY</a> · <a href="#service" data-i18n="m.service">SERVICE</a> · <a href="https://github.com/KitchenSink4AI/KitchenSink4PPT">GITHUB</a> · <a href="https://pypi.org/project/kitchensink4ppt/">PYPI</a> · <a href="llms.txt">LLMS.TXT</a></span>
 </div>
 
 <div class="switchbar">
@@ -523,8 +537,8 @@ footer a{color:var(--patina)}
   <p class="tagline rev d3" data-i18n="hero.tagline">Everything <em>plus</em> the kitchen sink for Microsoft&nbsp;PowerPoint: the .pptx&nbsp;MCP&nbsp;server that builds diagrams your hands can still move.</p>
   <p class="idiom-note rev d3" data-i18n="hero.idiom"></p>
   <div class="specs-strip rev d4">
-    <div class="spec"><span class="n">141</span><span class="l" data-i18n="spec.tools">Tools</span></div>
-    <div class="spec"><span class="n">1,241</span><span class="l" data-i18n="spec.tests">Tests</span></div>
+    <div class="spec"><span class="n">142</span><span class="l" data-i18n="spec.tools">Tools</span></div>
+    <div class="spec"><span class="n">1,251</span><span class="l" data-i18n="spec.tests">Tests</span></div>
     <div class="spec"><span class="n">1,646</span><span class="l" data-i18n="spec.stress">Stress calls</span></div>
     <div class="spec"><span class="n">0</span><span class="l" data-i18n="spec.corr">Corruptions</span></div>
   </div>
@@ -627,11 +641,11 @@ footer a{color:var(--patina)}
     <div class="sec-head"><span class="no" data-i18n="no2">DEPT. 02</span><h2 data-i18n="h2.inv">The shelves, pack by pack</h2></div>
     <p class="for-lead" data-i18n="inv.lead">The stock is arranged in capability packs, the way a good shop groups what belongs together. A session opens light and switches on the pack a job needs with one call. Every department below is on the floor today, fully stocked. v1.1 moved the small packs in with their neighbours, and the old pack names still ring up fine.</p>
     <div class="depts">
-      <div class="dept"><div class="chiprow"><span data-i18n="pk1.chip">PRIMER WHITE</span><span class="pot" data-i18n="state.pot">SAMPLE POT</span></div><h3><span data-i18n="pk1.t">Lite Core</span> <span class="num" data-i18n="pk1.n">PACK 0 · ALWAYS ON</span></h3><p data-i18n="pk1.p">Read the whole deck as text with a stable address on every slide, search and replace, the full set of slide operations done right (insert by layout, duplicate deeply, delete with cleanup, reorder, hide), batch edits with one save per batch, snapshots and backups, diagnostics, and the switchboard that turns on the other packs.</p><p class="ex" data-i18n="pk1.e">e.g. read the deck as text your agent can point into · duplicate the heaviest slide cleanly · apply twenty edits in one all-or-nothing batch</p><span class="count" data-i18n="pk1.c">24 TOOLS · ALWAYS ON</span></div>
+      <div class="dept"><div class="chiprow"><span data-i18n="pk1.chip">PRIMER WHITE</span><span class="pot" data-i18n="state.pot">SAMPLE POT</span></div><h3><span data-i18n="pk1.t">Lite Core</span> <span class="num" data-i18n="pk1.n">PACK 0 · ALWAYS ON</span></h3><p data-i18n="pk1.p">Read the whole deck as text with a stable address on every slide, search and replace, the full set of slide operations done right (insert by layout, duplicate deeply, delete with cleanup, reorder, hide), batch edits with one save per batch, snapshots and backups, diagnostics, and the switchboard that turns on the other packs.</p><p class="ex" data-i18n="pk1.e">e.g. read the deck as text your agent can point into · duplicate the heaviest slide cleanly · apply twenty edits in one all-or-nothing batch</p><span class="count" data-i18n="pk1.c">25 TOOLS · ALWAYS ON</span></div>
       <div class="dept"><div class="chiprow"><span data-i18n="pk2.chip">GILT EDGE</span><span class="pot" data-i18n="state.pot">SAMPLE POT</span></div><h3><span data-i18n="pk2.t">Graphics</span> <span class="num" data-i18n="pk2.n">THE STATEMENT PIECE</span></h3><p data-i18n="pk2.p">SVG compiled to grouped native shapes, preset and freeform geometry with gradients and theme-color fills, connectors glued to the shapes they join, edit one shape by name without touching the rest, group and ungroup, align, distribute, z-order.</p><p class="ex" data-i18n="pk2.e">e.g. turn an SVG diagram into shapes you can drag · restyle one connector by id · align a row of boxes mechanically, not by eye</p><span class="count" data-i18n="pk.ships">SHIPS IN v1.1</span></div>
       <div class="dept"><div class="chiprow"><span data-i18n="pk3.chip">DROP CLOTH</span><span class="pot" data-i18n="state.pot">SAMPLE POT</span></div><h3><span data-i18n="pk3.t">Tables plus Charts</span> <span class="num" data-i18n="pk3.n">STAGING THE ROOM</span></h3><p data-i18n="pk3.p">The first file-based structural table operations in any PowerPoint MCP server: merge cells, insert and delete rows AND columns, borders and shading, verified named table styles, CSV and JSON round trips. Chart building rides along.</p><p class="ex" data-i18n="pk3.e">e.g. merge a header row nobody else can touch · add a column without rebuilding the table · load a table straight from CSV</p><span class="count" data-i18n="pk.ships">SHIPS IN v1.1</span></div>
       <div class="dept"><div class="chiprow"><span data-i18n="pk4.chip">VERDIGRIS</span><span class="pot" data-i18n="state.pot">SAMPLE POT</span></div><h3><span data-i18n="pk4.t">Design</span> <span class="num" data-i18n="pk4.n">WALLPAPER AND PAINT</span></h3><p data-i18n="pk4.p">Create presentations FROM your own template, list and apply layouts and masters, read the theme, and fill shapes with theme-color references so they follow the palette when the theme changes. Themes are the wallpaper and the paint; layouts are where the furniture goes.</p><p class="ex" data-i18n="pk4.e">e.g. start a deck from the house template · apply the right layout by name · fill a shape with accent 2, not a hex guess</p><span class="count" data-i18n="pk.ships">SHIPS IN v1.1</span></div>
-      <div class="dept"><div class="chiprow"><span data-i18n="pk5.chip">FRESH COAT</span><span class="pot" data-i18n="state.pot">SAMPLE POT</span></div><h3><span data-i18n="pk5.t">Assembly plus Export</span> <span class="num" data-i18n="pk5.n">OUT THE DOOR</span></h3><p data-i18n="pk5.p">Speaker notes, sections, footers and slide numbers, hide slide, PDF export, per-slide PNG export so the agent can look at its own work, a check that the deck opens with no repair prompt, and a report of text that overflows its box. Slide transitions with millisecond timing, click and by-paragraph entrance builds, and the tested guarantee that edits never strip the animations a deck already has.</p><p class="ex" data-i18n="pk5.e">e.g. write the speaker notes · export slide 7 as a PNG to check the layout · confirm the deck opens with no repair prompt · build the lineage slide one panel per click</p><span class="count" data-i18n="pk.ships">SHIPS IN v1.1</span></div>
+      <div class="dept"><div class="chiprow"><span data-i18n="pk5.chip">FRESH COAT</span><span class="pot" data-i18n="state.pot">SAMPLE POT</span></div><h3><span data-i18n="pk5.t">Assembly plus Export</span> <span class="num" data-i18n="pk5.n">OUT THE DOOR</span></h3><p data-i18n="pk5.p">Speaker notes, sections, footers and slide numbers, hide slide, PDF export, per-slide PNG export so the agent can look at its own work, a check that the deck opens with no repair prompt, and a report of text that overflows its box. Slide transitions with millisecond timing, click and by-paragraph entrance builds, and the tested behavior that edits never strip the animations a deck already has.</p><p class="ex" data-i18n="pk5.e">e.g. write the speaker notes · export slide 7 as a PNG to check the layout · confirm the deck opens with no repair prompt · build the lineage slide one panel per click</p><span class="count" data-i18n="pk.ships">SHIPS IN v1.1</span></div>
       <div class="dept"><div class="chiprow"><span data-i18n="pk6.chip">SECOND COAT</span><span class="pot" data-i18n="state.pot">SAMPLE POT</span></div><h3><span data-i18n="pk6.t">Review plus Sweeps</span> <span class="num" data-i18n="pk6.n">THE DEEP CLEAN</span></h3><p data-i18n="pk6.p">Modern threaded comments with REPLIES, which exist in no other PowerPoint MCP server, resolve and cascade delete, a whole-deck review report, structural deck compare, and anonymize-for-review. Deck-wide operations that reach where PowerPoint itself cannot: font inventory and replacement including charts and phantom declarations, color remapping with literal-to-theme unification, proofing language, whole-deck logo replacement preserving crops, and compress with an offender report.</p><p class="ex" data-i18n="pk6.e">e.g. reply to the reviewer in the thread · diff two versions of the deck · strip authorship before blind review · swap the old logo everywhere, crops intact</p><span class="count" data-i18n="pk.ships">SHIPS IN v1.1</span></div>
       <div class="dept"><div class="chiprow"><span data-i18n="pk7.chip">WET EDGE</span><span class="pot" data-i18n="state.pot">SAMPLE POT</span></div><h3><span data-i18n="pk7.t">Live Editing</span> <span class="num" data-i18n="pk7.n">OPEN DECK? FINE.</span></h3><p data-i18n="pk7.p">Edit the deck while it is open in the user's PowerPoint: the same tools route automatically, edits stay unsaved until asked, the cursor is never touched, and the undo guarantee is reported honestly. Every call runs through one queue, so agents working the same open deck cannot interleave, and a dialog waiting on a human is caught at the window level. PowerPoint status and a zombie-process check come along.</p><p class="ex" data-i18n="pk7.e">e.g. fix a typo in the deck you are presenting from tomorrow · see unsaved edits the file on disk does not have · check whether a stray PowerPoint is still running</p><span class="count" data-i18n="pk.ships">SHIPS IN v1.1</span></div>
     </div>
@@ -654,7 +668,7 @@ footer a{color:var(--patina)}
         <tr><td data-i18n="cr7.q">"Reply to the reviewer's comment."</td><td class="us yes" data-i18n="cr7.us">threaded replies, verified rendering in PowerPoint itself</td><td class="no">✘</td><td class="no" data-i18n="cr7.com">✘ reply exists in no PowerPoint MCP server today</td></tr>
       </table>
     </div></div>
-    <p class="foot-note" data-i18n="cmp.note">Capability survey as of 2026-08-31, compiled from public repositories, documentation, and issue trackers. n/d: not documented in the sources surveyed (not a claimed absence). The most popular server is GongRzhe/Office-PowerPoint-MCP-Server, archived since March 2026. * COM tier: the servers that automate a running PowerPoint on Windows (Ayushmaniar/powerpoint-mcp 113, ykuwai/ppt-mcp 58, trsdn/mcp-server-ppt 36, sbroenne/mcp-server-powerpoint 19); capable, but Windows-locked and unavailable without the application. &dagger; Star counts read from the GitHub API on 2026-09-04, shown for context: stars say how long a shelf has been in view, not what is on it. The 1,851-star leader has been archived since March 2026 and still cannot take a slide back out. Test and stress evidence lives in the specs strip up top (1,241 tests, over 1,500 adversarial transport calls, 0 corruptions). Corrections welcome: open an issue.</p>
+    <p class="foot-note" data-i18n="cmp.note">Capability survey as of 2026-08-31, compiled from public repositories, documentation, and issue trackers. n/d: not documented in the sources surveyed (not a claimed absence). The most popular server is GongRzhe/Office-PowerPoint-MCP-Server, archived since March 2026. * COM tier: the servers that automate a running PowerPoint on Windows (Ayushmaniar/powerpoint-mcp 113, ykuwai/ppt-mcp 58, trsdn/mcp-server-ppt 36, sbroenne/mcp-server-powerpoint 19); capable, but Windows-locked and unavailable without the application. &dagger; Star counts read from the GitHub API on 2026-09-04, shown for context: stars say how long a shelf has been in view, not what is on it. The 1,851-star leader has been archived since March 2026 and still cannot take a slide back out. Test and stress evidence lives in the specs strip up top (1,251 tests, over 1,500 adversarial transport calls, 0 corruptions). Corrections welcome: open an issue.</p>
   </div>
 </section>
 
@@ -664,7 +678,7 @@ footer a{color:var(--patina)}
     <p class="for-lead" data-i18n="eff.lead">Every MCP server takes up part of an AI's working memory before any work starts, the way every fixture on the floor takes up floor space whether anyone is browsing it or not. This one starts small on purpose: a lean core to begin, and when a job needs more, the agent opens the pack it needs by name, mid-session, like pulling one more can off the shelf. Your assistant stays fast and cheap until the moment it genuinely needs to be big.</p>
     <div class="specs-strip" style="margin-top:26px">
       <div class="spec"><span class="n">24</span><span class="l" data-i18n="eff.s1">Tools in the lite core</span></div>
-      <div class="spec"><span class="n">5.3k</span><span class="l" data-i18n="eff.s2">Tokens, lite core up front</span></div>
+      <div class="spec"><span class="n">5.5k</span><span class="l" data-i18n="eff.s2">Tokens, lite core up front</span></div>
       <div class="spec"><span class="n">1</span><span class="l" data-i18n="eff.s3">Call to the whole sink</span></div>
     </div>
     <div class="term" style="margin-top:26px"><div><span class="c"># an agent in lite mode tries structural table work</span>
@@ -792,13 +806,13 @@ footer a{color:var(--patina)}
 
 <footer>
   <div class="wrap row">
-    <span data-i18n="f.left">&copy; 2026 Alvut Consulting, LLC &middot; <b>AGPL-3.0</b>: free for individuals and personal use.<br>Companies building it into their own products need a commercial license; <a href='https://github.com/KitchenSink4AI/KitchenSink4PPT/issues/new?template=commercial_license.yml'>open an issue</a> and we will talk it through.</span>
+    <span data-i18n="f.left">&copy; 2026 Alvut Consulting, LLC &middot; Licensed <b>AGPL-3.0</b>: free for any use that meets the AGPL's terms, including its source-sharing obligations.<br>Commercial licenses for organizations that need to ship these in closed products (<a href='mailto:licensing@kitchensink4.ai'>licensing@kitchensink4.ai</a>).</span>
     <span style="text-align:right" data-i18n="f.right"><a href='https://github.com/KitchenSink4AI/KitchenSink4PPT'>github.com/KitchenSink4AI/KitchenSink4PPT</a> · <a href='https://github.com/KitchenSink4AI/KitchenSink4PPT/issues/new/choose'>report a glitch</a><br>Built on the KitchenSink4Word safety core, prototyped with Claude Code, and hardened through adversarial rounds until the test agents ran out of complaints. That's a well-dressed room! 🖌️</span>
   </div>
   <div class="wrap" style="text-align:center;padding:6px 0;font-size:11px"><a href="https://kitchensink4.ai/" data-i18n="f.corp">The office upstairs: KitchenSink4AI →</a></div>
   <div class="wrap" style="text-align:center;padding:6px 0;opacity:.5;font-size:11px">Not affiliated with or endorsed by Microsoft Corporation. Microsoft and PowerPoint are trademarks of Microsoft Corporation.</div>
   <div class="wrap" style="text-align:center;padding:10px 0"><img src="https://visitor-badge.laobi.icu/badge?page_id=nometalalchemist.KitchenSink4PPT&left_color=%231e3550&right_color=%232e6e55&left_text=views" alt="views" height="18" style="vertical-align:middle"></div>
-<div class="wrap colophon">SET IN FRAUNCES &amp; IBM PLEX MONO · CATALOG № 141</div>
+<div class="wrap colophon">SET IN FRAUNCES &amp; IBM PLEX MONO · CATALOG № 142</div>
 </footer>
 
 <script>
@@ -926,7 +940,7 @@ en: {
 "state.pot": "SAMPLE POT",
 "dev.label": "TRADE COUNTER",
 "sec.mixed": "MIXED ON PREMISES",
-"m.catalog": "CATALOG № 141",
+"m.catalog": "CATALOG № 142",
 "m.family": "FAMILY",
 "m.service": "SERVICE",
 "hero.stamp": "SHAPES,<br>NOT SCREENSHOTS",
@@ -973,7 +987,7 @@ en: {
 "pk1.t": "Lite Core", "pk1.n": "PACK 0 · ALWAYS ON",
 "pk1.p": "Read the whole deck as text with a stable address on every slide, search and replace, the full set of slide operations done right (insert by layout, duplicate deeply, delete with cleanup, reorder, hide), batch edits with one save per batch, snapshots and backups, diagnostics, and the switchboard that turns on the other packs.",
 "pk1.e": "e.g. read the deck as text your agent can point into · duplicate the heaviest slide cleanly · apply twenty edits in one all-or-nothing batch",
-"pk1.c": "24 TOOLS · ALWAYS ON",
+"pk1.c": "25 TOOLS · ALWAYS ON",
 "pk.ships": "SHIPS IN v1.1",
 "pk2.t": "Graphics", "pk2.n": "THE STATEMENT PIECE",
 "pk2.p": "SVG compiled to grouped native shapes, preset and freeform geometry with gradients and theme-color fills, connectors glued to the shapes they join, edit one shape by name without touching the rest, group and ungroup, align, distribute, z-order.",
@@ -985,7 +999,7 @@ en: {
 "pk4.p": "Create presentations FROM your own template, list and apply layouts and masters, read the theme, and fill shapes with theme-color references so they follow the palette when the theme changes. Themes are the wallpaper and the paint; layouts are where the furniture goes.",
 "pk4.e": "e.g. start a deck from the house template · apply the right layout by name · fill a shape with accent 2, not a hex guess",
 "pk5.t": "Assembly plus Export", "pk5.n": "OUT THE DOOR",
-"pk5.p": "Speaker notes, sections, footers and slide numbers, hide slide, PDF export, per-slide PNG export so the agent can look at its own work, a check that the deck opens with no repair prompt, and a report of text that overflows its box. Slide transitions with millisecond timing, click and by-paragraph entrance builds, and the tested guarantee that edits never strip the animations a deck already has.",
+"pk5.p": "Speaker notes, sections, footers and slide numbers, hide slide, PDF export, per-slide PNG export so the agent can look at its own work, a check that the deck opens with no repair prompt, and a report of text that overflows its box. Slide transitions with millisecond timing, click and by-paragraph entrance builds, and the tested behavior that edits never strip the animations a deck already has.",
 "pk5.e": "e.g. write the speaker notes · export slide 7 as a PNG to check the layout · confirm the deck opens with no repair prompt · build the lineage slide one panel per click",
 "pk6.t": "Review plus Sweeps", "pk6.n": "THE DEEP CLEAN",
 "pk6.p": "Modern threaded comments with REPLIES, which exist in no other PowerPoint MCP server, resolve and cascade delete, a whole-deck review report, structural deck compare, and anonymize-for-review. Deck-wide operations that reach where PowerPoint itself cannot: font inventory and replacement including charts and phantom declarations, color remapping with literal-to-theme unification, proofing language, whole-deck logo replacement preserving crops, and compress with an offender report.",
@@ -1018,7 +1032,7 @@ en: {
 "cr7.q": "\"Reply to the reviewer's comment.\"",
 "cr7.us": "threaded replies, verified rendering in PowerPoint itself",
 "cr7.com": "✘ reply exists in no PowerPoint MCP server today",
-"cmp.note": "Capability survey as of 2026-08-31, compiled from public repositories, documentation, and issue trackers. n/d: not documented in the sources surveyed (not a claimed absence). The most popular server is GongRzhe/Office-PowerPoint-MCP-Server, archived since March 2026. * COM tier: the servers that automate a running PowerPoint on Windows (Ayushmaniar/powerpoint-mcp 113, ykuwai/ppt-mcp 58, trsdn/mcp-server-ppt 36, sbroenne/mcp-server-powerpoint 19); capable, but Windows-locked and unavailable without the application. &dagger; Star counts read from the GitHub API on 2026-09-04, shown for context: stars say how long a shelf has been in view, not what is on it. The 1,851-star leader has been archived since March 2026 and still cannot take a slide back out. Test and stress evidence lives in the specs strip up top (1,241 tests, over 1,500 adversarial transport calls, 0 corruptions). Corrections welcome: open an issue.",
+"cmp.note": "Capability survey as of 2026-08-31, compiled from public repositories, documentation, and issue trackers. n/d: not documented in the sources surveyed (not a claimed absence). The most popular server is GongRzhe/Office-PowerPoint-MCP-Server, archived since March 2026. * COM tier: the servers that automate a running PowerPoint on Windows (Ayushmaniar/powerpoint-mcp 113, ykuwai/ppt-mcp 58, trsdn/mcp-server-ppt 36, sbroenne/mcp-server-powerpoint 19); capable, but Windows-locked and unavailable without the application. &dagger; Star counts read from the GitHub API on 2026-09-04, shown for context: stars say how long a shelf has been in view, not what is on it. The 1,851-star leader has been archived since March 2026 and still cannot take a slide back out. Test and stress evidence lives in the specs strip up top (1,251 tests, over 1,500 adversarial transport calls, 0 corruptions). Corrections welcome: open an issue.",
 "h2.eff": "The context bill",
 "eff.lead": "Every MCP server takes up part of an AI's working memory before any work starts, the way every fixture on the floor takes up floor space whether anyone is browsing it or not. This one starts small on purpose: a lean core to begin, and when a job needs more, the agent opens the pack it needs by name, mid-session, like pulling one more can off the shelf. Your assistant stays fast and cheap until the moment it genuinely needs to be big.",
 "eff.s1": "Tools in the lite core",
@@ -1054,7 +1068,7 @@ en: {
 "fam3.g": "Browse the store →",
 "fam4.p": "Everything plus the kitchen sink for the web: budgeted page reads that name what went unread, structured extraction with named evidence, and a consent ladder that cannot be talked into payments. Read-only out of the box.",
 "fam4.g": "Visit the garden aisle →",
-"f.left": "&copy; 2026 Alvut Consulting, LLC &middot; <b>AGPL-3.0</b>: free for individuals and personal use.<br>Companies building it into their own products need a commercial license; <a href='https://github.com/KitchenSink4AI/KitchenSink4PPT/issues/new?template=commercial_license.yml'>open an issue</a> and we will talk it through.",
+"f.left": "&copy; 2026 Alvut Consulting, LLC &middot; Licensed <b>AGPL-3.0</b>: free for any use that meets the AGPL's terms, including its source-sharing obligations.<br>Commercial licenses for organizations that need to ship these in closed products (<a href='mailto:licensing@kitchensink4.ai'>licensing@kitchensink4.ai</a>).",
 "f.corp": "The office upstairs: KitchenSink4AI →",
 "f.right": "<a href='https://github.com/KitchenSink4AI/KitchenSink4PPT'>github.com/KitchenSink4AI/KitchenSink4PPT</a> · <a href='https://github.com/KitchenSink4AI/KitchenSink4PPT/issues/new/choose'>report a glitch</a><br>Built on the KitchenSink4Word safety core, prototyped with Claude Code, and hardened through adversarial rounds until the test agents ran out of complaints. That's a well-dressed room! 🖌️",
 "inst.dev": "For developers: pip, source, other MCP clients",
@@ -1079,7 +1093,7 @@ ko: {
 "state.pot": "샘플 팟",
 "dev.label": "전문가 카운터",
 "sec.mixed": "매장에서 직접 조색",
-"m.catalog": "카탈로그 № 141",
+"m.catalog": "카탈로그 № 142",
 "m.family": "제품군",
 "m.service": "서비스",
 "hero.stamp": "스크린샷이 아닌<br>진짜 도형",
@@ -1126,7 +1140,7 @@ ko: {
 "pk1.t": "라이트 코어", "pk1.n": "팩 0 · 상시 켜짐",
 "pk1.p": "슬라이드마다 고정된 주소가 붙은 채로 전체 덱을 텍스트로 읽기, 찾아 바꾸기, 제대로 만든 슬라이드 작업 한 벌(레이아웃 지정 삽입, 깊은 복제, 정리까지 하는 삭제, 순서 변경, 숨기기), 배치당 저장 한 번의 일괄 편집, 스냅샷과 백업, 진단, 그리고 나머지 팩을 켜는 배전반.",
 "pk1.e": "예: 에이전트가 짚어 들어갈 수 있는 텍스트로 덱 읽기 · 가장 무거운 슬라이드를 깔끔하게 복제 · 편집 스무 건을 전부 아니면 전무인 배치 하나로 적용",
-"pk1.c": "도구 24종 · 상시 켜짐",
+"pk1.c": "도구 25종 · 상시 켜짐",
 "pk.ships": "v1.1에 포함",
 "pk2.t": "그래픽", "pk2.n": "시선을 끄는 한 점",
 "pk2.p": "SVG를 그룹화된 네이티브 도형으로 컴파일, 그라데이션과 테마 색 채우기를 갖춘 프리셋·자유형 지오메트리, 잇는 도형에 붙는 연결선, 나머지는 건드리지 않고 도형 하나를 이름으로 편집, 그룹화와 해제, 정렬, 배분, 쌓임 순서.",
@@ -1171,7 +1185,7 @@ ko: {
 "cr7.q": "“검토자 메모에 답글 달아 줘.”",
 "cr7.us": "스레드형 답글, PowerPoint 본체에서 렌더링 검증 완료",
 "cr7.com": "✘ 답글 기능은 오늘날 어떤 PowerPoint MCP 서버에도 없음",
-"cmp.note": "2026-08-31 기준 기능 조사. 공개 저장소, 문서, 이슈 트래커에서 취합했습니다. n/d: 조사한 자료에서 확인되지 않음(없다는 주장이 아닙니다). 최다 인기 서버는 GongRzhe/Office-PowerPoint-MCP-Server이며 2026년 3월부터 보관 상태입니다. * COM 계열: Windows에서 실행 중인 PowerPoint를 자동화하는 서버들(Ayushmaniar/powerpoint-mcp 113, ykuwai/ppt-mcp 58, trsdn/mcp-server-ppt 36, sbroenne/mcp-server-powerpoint 19)로, 유능하지만 Windows에 묶여 있고 애플리케이션 없이는 쓸 수 없습니다. &dagger; 스타 수는 2026-09-04에 GitHub API로 읽은 값이며 참고용입니다. 스타는 그 선반이 얼마나 오래 눈에 띄었는지를 보여줄 뿐, 그 위에 무엇이 놓였는지는 말해 주지 않습니다. 스타 1,851개의 선두 제품은 2026년 3월부터 보관 상태이고, 지금도 슬라이드를 도로 빼내지 못합니다. 테스트와 스트레스 근거는 상단 사양 띠에 있습니다(테스트 1,241건, 적대적 전송 호출 1,500건 이상, 손상 0건). 정정은 환영합니다. 이슈를 열어 주세요.",
+"cmp.note": "2026-08-31 기준 기능 조사. 공개 저장소, 문서, 이슈 트래커에서 취합했습니다. n/d: 조사한 자료에서 확인되지 않음(없다는 주장이 아닙니다). 최다 인기 서버는 GongRzhe/Office-PowerPoint-MCP-Server이며 2026년 3월부터 보관 상태입니다. * COM 계열: Windows에서 실행 중인 PowerPoint를 자동화하는 서버들(Ayushmaniar/powerpoint-mcp 113, ykuwai/ppt-mcp 58, trsdn/mcp-server-ppt 36, sbroenne/mcp-server-powerpoint 19)로, 유능하지만 Windows에 묶여 있고 애플리케이션 없이는 쓸 수 없습니다. &dagger; 스타 수는 2026-09-04에 GitHub API로 읽은 값이며 참고용입니다. 스타는 그 선반이 얼마나 오래 눈에 띄었는지를 보여줄 뿐, 그 위에 무엇이 놓였는지는 말해 주지 않습니다. 스타 1,851개의 선두 제품은 2026년 3월부터 보관 상태이고, 지금도 슬라이드를 도로 빼내지 못합니다. 테스트와 스트레스 근거는 상단 사양 띠에 있습니다(테스트 1,251건, 적대적 전송 호출 1,500건 이상, 손상 0건). 정정은 환영합니다. 이슈를 열어 주세요.",
 "h2.eff": "컨텍스트 청구서",
 "eff.lead": "모든 MCP 서버는 일이 시작되기도 전에 AI의 작업 기억 일부를 차지합니다. 매장에 놓인 집기 하나하나가 아무도 구경하지 않아도 바닥 자리를 차지하는 것과 같습니다. 이 서버는 일부러 작게 시작합니다. 처음에는 가벼운 코어로 열고, 일이 더 필요해지면 에이전트가 세션 도중에 필요한 팩을 이름으로 엽니다. 선반에서 페인트 통 하나를 더 꺼내 오는 것과 같습니다. 어시스턴트는 정말로 커져야 하는 순간까지 빠르고 저렴한 상태로 남습니다.",
 "eff.s1": "라이트 코어의 도구 수",
@@ -1232,7 +1246,7 @@ ja: {
 "state.pot": "見本缶",
 "dev.label": "業者用カウンター",
 "sec.mixed": "店内で調色",
-"m.catalog": "カタログ № 141",
+"m.catalog": "カタログ № 142",
 "m.family": "ファミリー",
 "m.service": "サービス",
 "hero.stamp": "スクショではなく<br>図形を",
@@ -1279,7 +1293,7 @@ ja: {
 "pk1.t": "ライトコア", "pk1.n": "パック0 · 常時オン",
 "pk1.p": "スライドごとに変わらない番地が付いた状態でデッキ全体をテキストとして読む、検索置換、まともに作られたスライド操作一式(レイアウト指定の挿入、深い複製、後始末付き削除、並べ替え、非表示)、バッチごと保存1回の一括編集、スナップショットとバックアップ、診断、そして他のパックを点ける配電盤。",
 "pk1.e": "例:エージェントが指し示せるテキストとしてデッキを読む · いちばん重いスライドをきれいに複製 · 20件の編集を全部通すか全部やめるかの1バッチで適用",
-"pk1.c": "ツール24種 · 常時オン",
+"pk1.c": "ツール25種 · 常時オン",
 "pk.ships": "v1.1 で出荷",
 "pk2.t": "グラフィックス", "pk2.n": "主役の一点",
 "pk2.p": "SVG をグループ化されたネイティブ図形へコンパイル、グラデーションとテーマカラー塗りを備えたプリセット・フリーフォーム形状、結んだ図形に接着するコネクタ、ほかに触れずに図形ひとつを名前で編集、グループ化と解除、整列、等間隔配置、重なり順。",
@@ -1324,7 +1338,7 @@ ja: {
 "cr7.q": "「校閲者のコメントに返信して。」",
 "cr7.us": "スレッド返信、PowerPoint 本体での描画を検証済み",
 "cr7.com": "✘ 返信は今日どの PowerPoint MCP サーバーにも存在しない",
-"cmp.note": "2026-08-31 時点の機能調査。公開リポジトリ、ドキュメント、Issue トラッカーから集約しました。n/d:調査した資料では確認できず(欠如の断定ではありません)。最人気サーバーは GongRzhe/Office-PowerPoint-MCP-Server で、2026年3月からアーカイブ済みです。* COM 系:Windows 上で起動中の PowerPoint を自動化するサーバー群(Ayushmaniar/powerpoint-mcp 113、ykuwai/ppt-mcp 58、trsdn/mcp-server-ppt 36、sbroenne/mcp-server-powerpoint 19)。有能ですが Windows に縛られ、アプリケーションなしでは使えません。&dagger; スター数は 2026-09-04 に GitHub API から取得した参考値です。スターはその棚がどれだけ長く目に触れてきたかを示すもので、棚に何が載っているかを示すものではありません。スター1,851の売れ筋は2026年3月からアーカイブ済みで、いまだにスライドを取り下げることができません。テストと負荷の証跡は上部のスペック帯に(テスト1,241件、敵対的トランスポート呼び出し1,500件超、破損0件)。訂正歓迎、Issue をどうぞ。",
+"cmp.note": "2026-08-31 時点の機能調査。公開リポジトリ、ドキュメント、Issue トラッカーから集約しました。n/d:調査した資料では確認できず(欠如の断定ではありません)。最人気サーバーは GongRzhe/Office-PowerPoint-MCP-Server で、2026年3月からアーカイブ済みです。* COM 系:Windows 上で起動中の PowerPoint を自動化するサーバー群(Ayushmaniar/powerpoint-mcp 113、ykuwai/ppt-mcp 58、trsdn/mcp-server-ppt 36、sbroenne/mcp-server-powerpoint 19)。有能ですが Windows に縛られ、アプリケーションなしでは使えません。&dagger; スター数は 2026-09-04 に GitHub API から取得した参考値です。スターはその棚がどれだけ長く目に触れてきたかを示すもので、棚に何が載っているかを示すものではありません。スター1,851の売れ筋は2026年3月からアーカイブ済みで、いまだにスライドを取り下げることができません。テストと負荷の証跡は上部のスペック帯に(テスト1,251件、敵対的トランスポート呼び出し1,500件超、破損0件)。訂正歓迎、Issue をどうぞ。",
 "h2.eff": "コンテキストの請求書",
 "eff.lead": "どの MCP サーバーも、仕事が始まる前から AI の作業記憶の一部を占めています。売り場の什器が、誰も見て回らなくても床の場所を取るのと同じです。このサーバーは意図して小さく始めます。はじめは身軽なコアで、仕事に足りなくなればエージェントがセッションの途中で必要なパックを名前で開けます。棚から缶をもうひとつ下ろすようなものです。アシスタントは、本当に大きくなる必要が生じるその瞬間まで、速くて安いままでいられます。",
 "eff.s1": "ライトコアのツール数",
@@ -1385,7 +1399,7 @@ zh: {
 "state.pot": "样品罐",
 "dev.label": "专业柜台",
 "sec.mixed": "本店现调",
-"m.catalog": "目录 № 141",
+"m.catalog": "目录 № 142",
 "m.family": "家族",
 "m.service": "服务",
 "hero.stamp": "是图形,<br>不是截图",
@@ -1432,7 +1446,7 @@ zh: {
 "pk1.t": "精简内核", "pk1.n": "包 0 · 常开",
 "pk1.p": "把整套幻灯片当成文本读,每一页都有固定的地址,查找替换,做对了的整套幻灯片操作(按版式插入、深度复制、带清理的删除、重排、隐藏)、每批只存一次的批量编辑、快照与备份、诊断,以及打开其他能力包的配电板。",
 "pk1.e": "例:把幻灯片读成智能体能指着改的文本 · 干净地复制最重的那页 · 二十处修改放进一个要么全成要么全不成的批次",
-"pk1.c": "24 件工具 · 常开",
+"pk1.c": "25 件工具 · 常开",
 "pk.ships": "随 v1.1 出货",
 "pk2.t": "图形", "pk2.n": "全场的主角",
 "pk2.p": "SVG 编译成分组的原生图形,带渐变与主题色填充的预设及自由几何,粘在所连图形上的连接线,按名字改一个图形,别的不动,组合与拆组,对齐、分布、层叠顺序。",
@@ -1477,7 +1491,7 @@ zh: {
 "cr7.q": "“回复审阅人的批注。”",
 "cr7.us": "多层回复,渲染已在 PowerPoint 本尊里验证",
 "cr7.com": "✘ 回复功能今天不存在于任何 PowerPoint MCP 服务器",
-"cmp.note": "能力调查,截至 2026-08-31,汇总自公开仓库、文档与 issue 跟踪器。n/d:在所查资料中未见记载(并非断言其没有)。最流行的服务器是 GongRzhe/Office-PowerPoint-MCP-Server,自 2026 年 3 月起已归档。* COM 阵营:在 Windows 上自动化运行中 PowerPoint 的那些服务器(Ayushmaniar/powerpoint-mcp 113、ykuwai/ppt-mcp 58、trsdn/mcp-server-ppt 36、sbroenne/mcp-server-powerpoint 19);有本事,但被锁在 Windows 上,没有应用就没法用。&dagger; 星标数于 2026-09-04 通过 GitHub API 读取,仅供参考:星标说明一个货架被人看了多久,而不是架上摆着什么。那位 1,851 星的领头货自 2026 年 3 月起归档,至今仍然没法把一张幻灯片撤下来。测试与压力证据在顶部规格条里(1,241 项测试,1,500 余次对抗性传输调用,0 次损坏)。欢迎指正,请开 issue。",
+"cmp.note": "能力调查,截至 2026-08-31,汇总自公开仓库、文档与 issue 跟踪器。n/d:在所查资料中未见记载(并非断言其没有)。最流行的服务器是 GongRzhe/Office-PowerPoint-MCP-Server,自 2026 年 3 月起已归档。* COM 阵营:在 Windows 上自动化运行中 PowerPoint 的那些服务器(Ayushmaniar/powerpoint-mcp 113、ykuwai/ppt-mcp 58、trsdn/mcp-server-ppt 36、sbroenne/mcp-server-powerpoint 19);有本事,但被锁在 Windows 上,没有应用就没法用。&dagger; 星标数于 2026-09-04 通过 GitHub API 读取,仅供参考:星标说明一个货架被人看了多久,而不是架上摆着什么。那位 1,851 星的领头货自 2026 年 3 月起归档,至今仍然没法把一张幻灯片撤下来。测试与压力证据在顶部规格条里(1,251 项测试,1,500 余次对抗性传输调用,0 次损坏)。欢迎指正,请开 issue。",
 "h2.eff": "上下文账单",
 "eff.lead": "每个 MCP 服务器都在开工之前就占掉 AI 一部分工作记忆,就像卖场里的每一件陈设,没人逛也照样占着地方。这一台是故意从小处起步的:开场只带一个精简内核,活儿需要更多时,智能体在会话中途按名字打开要用的包,就像从货架上再取下一罐漆。你的助手一直又快又便宜,直到它真的需要变大的那一刻。",
 "eff.s1": "精简内核的工具数",
@@ -1538,7 +1552,7 @@ de: {
 "state.pot": "PROBEDOSE",
 "dev.label": "PROFI-THEKE",
 "sec.mixed": "IM HAUS ANGEMISCHT",
-"m.catalog": "KATALOG № 141",
+"m.catalog": "KATALOG № 142",
 "m.family": "FAMILIE",
 "m.service": "SERVICE",
 "hero.stamp": "FORMEN,<br>KEINE SCREENSHOTS",
@@ -1585,7 +1599,7 @@ de: {
 "pk1.t": "Lite-Kern", "pk1.n": "PAKET 0 · IMMER AN",
 "pk1.p": "Den ganzen Foliensatz als Text lesen, mit einer festen Adresse auf jeder Folie, Suchen und Ersetzen, der komplette Satz an Folienoperationen, richtig gemacht (Einfügen nach Layout, tiefes Duplizieren, Löschen mit Aufräumen, Umsortieren, Ausblenden), Stapelbearbeitung mit einem Speichern pro Stapel, Snapshots und Backups, Diagnostik und die Schalttafel, die die anderen Pakete anschaltet.",
 "pk1.e": "z. B. den Foliensatz als Text lesen, in den der Agent hineinzeigen kann · die schwerste Folie sauber duplizieren · zwanzig Änderungen in einem Ganz-oder-gar-nicht-Stapel anwenden",
-"pk1.c": "24 WERKZEUGE · IMMER AN",
+"pk1.c": "25 WERKZEUGE · IMMER AN",
 "pk.ships": "AB v1.1 DABEI",
 "pk2.t": "Grafik", "pk2.n": "DAS SCHAUSTÜCK",
 "pk2.p": "SVG kompiliert zu gruppierten nativen Formen, Preset- und Freiform-Geometrie mit Verläufen und Themenfarben-Füllungen, Verbinder, die an den verbundenen Formen kleben, eine Form über ihren Namen bearbeiten, ohne die anderen anzurühren, Gruppieren und Aufheben, Ausrichten, Verteilen, Z-Reihenfolge.",
@@ -1630,7 +1644,7 @@ de: {
 "cr7.q": "„Antworte auf den Kommentar des Prüfers.“",
 "cr7.us": "Antworten im Thread, Darstellung in PowerPoint selbst verifiziert",
 "cr7.com": "✘ Antworten gibt es heute in keinem PowerPoint-MCP-Server",
-"cmp.note": "Fähigkeitserhebung, Stand 2026-08-31, zusammengetragen aus öffentlichen Repositories, Dokumentation und Issue-Trackern. n/d: in den gesichteten Quellen nicht dokumentiert (keine behauptete Abwesenheit). Der beliebteste Server ist GongRzhe/Office-PowerPoint-MCP-Server, seit März 2026 archiviert. * COM-Riege: die Server, die ein laufendes PowerPoint unter Windows automatisieren (Ayushmaniar/powerpoint-mcp 113, ykuwai/ppt-mcp 58, trsdn/mcp-server-ppt 36, sbroenne/mcp-server-powerpoint 19); fähig, aber Windows-gebunden und ohne die Anwendung nicht verfügbar. &dagger; Sternzahlen am 2026-09-04 über die GitHub-API gelesen, zur Einordnung: Sterne sagen, wie lange ein Regal schon zu sehen ist, nicht was darin steht. Der Spitzenreiter mit 1.851 Sternen ist seit März 2026 archiviert und bekommt eine Folie noch immer nicht wieder heraus. Test- und Stressbelege stehen oben im Spezifikationsstreifen (1.241 Tests, über 1.500 adversariale Transportaufrufe, 0 Beschädigungen). Korrekturen willkommen: einfach ein Issue öffnen.",
+"cmp.note": "Fähigkeitserhebung, Stand 2026-08-31, zusammengetragen aus öffentlichen Repositories, Dokumentation und Issue-Trackern. n/d: in den gesichteten Quellen nicht dokumentiert (keine behauptete Abwesenheit). Der beliebteste Server ist GongRzhe/Office-PowerPoint-MCP-Server, seit März 2026 archiviert. * COM-Riege: die Server, die ein laufendes PowerPoint unter Windows automatisieren (Ayushmaniar/powerpoint-mcp 113, ykuwai/ppt-mcp 58, trsdn/mcp-server-ppt 36, sbroenne/mcp-server-powerpoint 19); fähig, aber Windows-gebunden und ohne die Anwendung nicht verfügbar. &dagger; Sternzahlen am 2026-09-04 über die GitHub-API gelesen, zur Einordnung: Sterne sagen, wie lange ein Regal schon zu sehen ist, nicht was darin steht. Der Spitzenreiter mit 1.851 Sternen ist seit März 2026 archiviert und bekommt eine Folie noch immer nicht wieder heraus. Test- und Stressbelege stehen oben im Spezifikationsstreifen (1.251 Tests, über 1.500 adversariale Transportaufrufe, 0 Beschädigungen). Korrekturen willkommen: einfach ein Issue öffnen.",
 "h2.eff": "Die Kontextrechnung",
 "eff.lead": "Jeder MCP-Server belegt einen Teil des Arbeitsgedächtnisses einer KI, bevor irgendeine Arbeit beginnt, so wie jedes Möbelstück im Laden Stellfläche braucht, ob jemand davor steht oder nicht. Dieser hier startet mit Absicht klein: ein schlanker Kern zu Beginn, und wenn ein Auftrag mehr braucht, öffnet der Agent mitten in der Sitzung das benötigte Paket per Name, so wie man eine weitere Dose aus dem Regal nimmt. Ihr Assistent bleibt schnell und günstig, bis zu dem Moment, in dem er wirklich groß sein muss.",
 "eff.s1": "Werkzeuge im Lite-Kern",
@@ -1691,7 +1705,7 @@ fr: {
 "state.pot": "POT D'ESSAI",
 "dev.label": "COMPTOIR PRO",
 "sec.mixed": "MÉLANGÉ SUR PLACE",
-"m.catalog": "CATALOGUE № 141",
+"m.catalog": "CATALOGUE № 142",
 "m.family": "FAMILLE",
 "m.service": "SERVICE",
 "hero.stamp": "DES FORMES,<br>PAS DES CAPTURES",
@@ -1738,7 +1752,7 @@ fr: {
 "pk1.t": "Noyau allégé", "pk1.n": "PACK 0 · TOUJOURS ACTIF",
 "pk1.p": "Lire tout le jeu de diapositives comme du texte, avec une adresse stable sur chaque diapositive, rechercher-remplacer, l'ensemble complet des opérations sur les diapositives bien fait (insertion par disposition, duplication profonde, suppression avec nettoyage, réordonnancement, masquage), éditions par lots avec un seul enregistrement par lot, instantanés et sauvegardes, diagnostics, et le standard qui allume les autres packs.",
 "pk1.e": "p. ex. lire le jeu comme du texte que l'agent peut pointer · dupliquer proprement la diapositive la plus lourde · appliquer vingt modifications en un lot tout ou rien",
-"pk1.c": "24 OUTILS · TOUJOURS ACTIFS",
+"pk1.c": "25 OUTILS · TOUJOURS ACTIFS",
 "pk.ships": "LIVRÉ EN v1.1",
 "pk2.t": "Graphiques", "pk2.n": "LA PIÈCE MAÎTRESSE",
 "pk2.p": "SVG compilé en formes natives groupées, géométrie prédéfinie et libre avec dégradés et remplissages aux couleurs du thème, connecteurs collés aux formes qu'ils relient, modifier une forme par son nom sans toucher aux autres, grouper et dissocier, aligner, distribuer, ordre de superposition.",
@@ -1783,7 +1797,7 @@ fr: {
 "cr7.q": "« Réponds au commentaire du relecteur. »",
 "cr7.us": "réponses en fil, rendu vérifié dans PowerPoint lui-même",
 "cr7.com": "✘ la réponse n'existe aujourd'hui dans aucun serveur MCP PowerPoint",
-"cmp.note": "Recensement des capacités au 2026-08-31, compilé à partir des dépôts publics, de la documentation et des traqueurs de tickets. n/d : non documenté dans les sources consultées (ce n'est pas une absence affirmée). Le serveur le plus populaire est GongRzhe/Office-PowerPoint-MCP-Server, archivé depuis mars 2026. * Rang COM : les serveurs qui automatisent un PowerPoint en cours d'exécution sous Windows (Ayushmaniar/powerpoint-mcp 113, ykuwai/ppt-mcp 58, trsdn/mcp-server-ppt 36, sbroenne/mcp-server-powerpoint 19) ; capables, mais verrouillés sur Windows et indisponibles sans l'application. &dagger; Nombres d'étoiles relevés via l'API GitHub le 2026-09-04, à titre de contexte : les étoiles disent depuis combien de temps un rayon est visible, pas ce qu'il y a dessus. Le leader à 1 851 étoiles est archivé depuis mars 2026 et ne sait toujours pas retirer une diapositive. Les preuves de test et d'endurance vivent dans le bandeau de caractéristiques tout en haut (1 241 tests, plus de 1 500 appels de transport adversariaux, 0 corruption). Corrections bienvenues : ouvrez un ticket.",
+"cmp.note": "Recensement des capacités au 2026-08-31, compilé à partir des dépôts publics, de la documentation et des traqueurs de tickets. n/d : non documenté dans les sources consultées (ce n'est pas une absence affirmée). Le serveur le plus populaire est GongRzhe/Office-PowerPoint-MCP-Server, archivé depuis mars 2026. * Rang COM : les serveurs qui automatisent un PowerPoint en cours d'exécution sous Windows (Ayushmaniar/powerpoint-mcp 113, ykuwai/ppt-mcp 58, trsdn/mcp-server-ppt 36, sbroenne/mcp-server-powerpoint 19) ; capables, mais verrouillés sur Windows et indisponibles sans l'application. &dagger; Nombres d'étoiles relevés via l'API GitHub le 2026-09-04, à titre de contexte : les étoiles disent depuis combien de temps un rayon est visible, pas ce qu'il y a dessus. Le leader à 1 851 étoiles est archivé depuis mars 2026 et ne sait toujours pas retirer une diapositive. Les preuves de test et d'endurance vivent dans le bandeau de caractéristiques tout en haut (1 251 tests, plus de 1 500 appels de transport adversariaux, 0 corruption). Corrections bienvenues : ouvrez un ticket.",
 "h2.eff": "La facture de contexte",
 "eff.lead": "Chaque serveur MCP occupe une partie de la mémoire de travail d'une IA avant même que le travail commence, comme chaque présentoir du magasin occupe de la surface, que quelqu'un s'y arrête ou non. Celui-ci démarre petit à dessein : un noyau allégé au départ, et quand un travail en demande plus, l'agent ouvre le pack qu'il lui faut par son nom, en pleine session, comme on descend un pot de plus de l'étagère. Votre assistant reste rapide et bon marché jusqu'au moment où il a vraiment besoin d'être grand.",
 "eff.s1": "Outils dans le noyau allégé",
@@ -1844,7 +1858,7 @@ es: {
 "state.pot": "BOTE DE MUESTRA",
 "dev.label": "MOSTRADOR PROFESIONAL",
 "sec.mixed": "MEZCLADO EN LA TIENDA",
-"m.catalog": "CATÁLOGO № 141",
+"m.catalog": "CATÁLOGO № 142",
 "m.family": "FAMILIA",
 "m.service": "SERVICIO",
 "hero.stamp": "FORMAS,<br>NO CAPTURAS",
@@ -1891,7 +1905,7 @@ es: {
 "pk1.t": "Núcleo ligero", "pk1.n": "PAQUETE 0 · SIEMPRE ACTIVO",
 "pk1.p": "Leer toda la presentación como texto, con una dirección estable en cada diapositiva, buscar y reemplazar, el conjunto completo de operaciones de diapositiva bien hecho (insertar por diseño, duplicado profundo, borrado con limpieza, reordenar, ocultar), ediciones por lotes con un guardado por lote, instantáneas y copias de seguridad, diagnósticos, y el cuadro de mandos que enciende los demás paquetes.",
 "pk1.e": "p. ej. leer la presentación como texto al que el agente puede apuntar · duplicar limpiamente la diapositiva más pesada · aplicar veinte ediciones en un lote de todo o nada",
-"pk1.c": "24 HERRAMIENTAS · SIEMPRE ACTIVAS",
+"pk1.c": "25 HERRAMIENTAS · SIEMPRE ACTIVAS",
 "pk.ships": "SE ENTREGA EN v1.1",
 "pk2.t": "Gráficos", "pk2.n": "LA PIEZA CENTRAL",
 "pk2.p": "SVG compilado a formas nativas agrupadas, geometría predefinida y libre con degradados y rellenos de colores del tema, conectores pegados a las formas que unen, editar una forma por su nombre sin tocar las demás, agrupar y desagrupar, alinear, distribuir, orden z.",
@@ -1936,7 +1950,7 @@ es: {
 "cr7.q": "«Responde al comentario del revisor.»",
 "cr7.us": "respuestas en hilo, representación verificada en el propio PowerPoint",
 "cr7.com": "✘ responder no existe hoy en ningún servidor MCP de PowerPoint",
-"cmp.note": "Estudio de capacidades a 2026-08-31, compilado de repositorios públicos, documentación y gestores de incidencias. n/d: no documentado en las fuentes consultadas (no es una ausencia afirmada). El servidor más popular es GongRzhe/Office-PowerPoint-MCP-Server, archivado desde marzo de 2026. * Nivel COM: los servidores que automatizan un PowerPoint en ejecución bajo Windows (Ayushmaniar/powerpoint-mcp 113, ykuwai/ppt-mcp 58, trsdn/mcp-server-ppt 36, sbroenne/mcp-server-powerpoint 19); capaces, pero atados a Windows e inservibles sin la aplicación. &dagger; Recuento de estrellas leído de la API de GitHub el 2026-09-04, a modo de contexto: las estrellas dicen cuánto tiempo lleva un estante a la vista, no lo que hay en él. El líder de 1.851 estrellas está archivado desde marzo de 2026 y sigue sin poder retirar una diapositiva. La evidencia de pruebas y estrés vive en la franja de especificaciones de arriba (1.241 pruebas, más de 1.500 llamadas de transporte adversariales, 0 corrupciones). Correcciones bienvenidas: abra un issue.",
+"cmp.note": "Estudio de capacidades a 2026-08-31, compilado de repositorios públicos, documentación y gestores de incidencias. n/d: no documentado en las fuentes consultadas (no es una ausencia afirmada). El servidor más popular es GongRzhe/Office-PowerPoint-MCP-Server, archivado desde marzo de 2026. * Nivel COM: los servidores que automatizan un PowerPoint en ejecución bajo Windows (Ayushmaniar/powerpoint-mcp 113, ykuwai/ppt-mcp 58, trsdn/mcp-server-ppt 36, sbroenne/mcp-server-powerpoint 19); capaces, pero atados a Windows e inservibles sin la aplicación. &dagger; Recuento de estrellas leído de la API de GitHub el 2026-09-04, a modo de contexto: las estrellas dicen cuánto tiempo lleva un estante a la vista, no lo que hay en él. El líder de 1.851 estrellas está archivado desde marzo de 2026 y sigue sin poder retirar una diapositiva. La evidencia de pruebas y estrés vive en la franja de especificaciones de arriba (1.251 pruebas, más de 1.500 llamadas de transporte adversariales, 0 corrupciones). Correcciones bienvenidas: abra un issue.",
 "h2.eff": "La factura de contexto",
 "eff.lead": "Todo servidor MCP ocupa una parte de la memoria de trabajo de una IA antes de que empiece cualquier trabajo, igual que cada mueble de la tienda ocupa suelo aunque nadie se pare a mirarlo. Este arranca pequeño a propósito: un núcleo ligero para empezar y, cuando un trabajo pide más, el agente abre el paquete que necesita por su nombre, en plena sesión, como quien baja otro bote del estante. Su asistente se mantiene rápido y barato hasta el momento en que de verdad necesita ser grande.",
 "eff.s1": "Herramientas en el núcleo ligero",

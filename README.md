@@ -7,6 +7,18 @@
 
 [Landing page](https://kitchensink4ai.github.io/KitchenSink4PPT/) · [llms.txt](https://kitchensink4ai.github.io/KitchenSink4PPT/llms.txt) (machine-readable capability manifest for agents and LLM crawlers)
 
+A full-featured PowerPoint (.pptx) MCP server: slides, text, native vector
+diagrams your hands can still move, structural tables, charts, speaker
+notes, and render-to-verify export, with budgeted reads that never flood a
+conversation. 142 tools. Works with Claude Code, Claude Desktop, Cursor, and
+any MCP client. Part of the KitchenSink4AI suite with kitchensink4word
+(Word), kitchensink4xl (Excel), and kitchensink4web (browser).
+
+Not affiliated with, endorsed by, or sponsored by Microsoft Corporation.
+Microsoft and PowerPoint are trademarks of the Microsoft group of companies.
+Dual-licensed: AGPL-3.0, or a commercial license for organizations that need
+to ship it in closed products ([details](#license)).
+
 Everything plus the kitchen sink for Microsoft PowerPoint: an MCP server for
 .pptx files, engineered not to corrupt. Slides, text, tables, charts, notes,
 export, and the one thing no other server in the ecosystem does: arbitrary
@@ -82,7 +94,7 @@ headless where available. Nothing ever needs a network connection.
 
 ## Tiered loading: start light, grow mid-session
 
-The server starts in lite mode: 24 tools, roughly 5.3k tokens of tool
+The server starts in lite mode: 25 tools, roughly 5.5k tokens of tool
 context, covering reading, slide CRUD, text, hyperlinks, batch editing,
 backups, and diagnostics. The other 117 tools are registered but disabled
 until asked for:
@@ -125,11 +137,11 @@ Tip: in Claude Desktop's Tool permissions, set the Read-only tools group to
 Always Allow: those tools cannot change anything, and it stops most
 permission prompts.
 
-## Pack inventory (141 tools total)
+## Pack inventory (142 tools total)
 
 | Pack | Tools | ~Tokens | What is in it |
 |---|---|---|---|
-| lite core (always on) | 24 | 5.3k | anchored deck view, atomic batch edits, get/find/replace text (live-aware, SmartArt text included), slide insert/delete/duplicate/reorder, placeholder text, hyperlinks (set/remove/list with broken-link detection), info and enumeration, copy, snapshots, backups, diagnose, workflows, enable/disable_tools |
+| lite core (always on) | 25 | 5.5k | anchored deck view, atomic batch edits, get/find/replace text (live-aware, SmartArt text included), slide insert/delete/duplicate/reorder, placeholder text, hyperlinks (set/remove/list with broken-link detection), info and enumeration, copy, snapshots, backups, diagnose, workflows, enable/disable_tools |
 | graphics | 27 | 7.1k | shapes, glued connectors, SVG compiler, one-call diagram generators (timeline, org chart, matrix, cycle, comparison), images, video/audio embed, groups, align/distribute, z-order, text boxes, run formatting, bullets, format painter (copy_format/copy_position), native LaTeX equations |
 | tables-charts | 19 | 4.1k | create table, bulk cells, merge/unmerge, row and column insert/delete, borders and fills, widths/heights, 74 built-in styles, CSV/JSON export/import, bar/line/pie/scatter/combo charts with editable data workbooks, chart formatting and data readback |
 | design | 25 | 5.1k | create presentation FROM template, apply layouts, theme read AND write (colors, fonts), brand extract/apply, layout guardrail checks, slide size, hide/move slide, autofit report, slide and master/layout backgrounds, full master and layout editing (placeholders, decoration shapes, create_layout), accessibility audit and repair |
@@ -137,7 +149,7 @@ permission prompts.
 | review-sweeps | 13 | 2.4k | modern threaded comments (add, replies, resolve, cascade delete, dual-system listing), whole-deck review report, structural deck-to-deck diff (compare_decks), and the deck-wide sweeps: font inventory/replace (incl. charts and phantom declarations), color remap and literal-to-theme unification, proofing language, whole-deck logo replace, compress/purge |
 | com (Windows only) | 5 | 0.6k | PowerPoint status and zombie process check, plus editing the deck while it is OPEN in the user's PowerPoint: explicit save, scroll-to-slide, session status; eleven file tools route here automatically via `live='auto'` |
 
-Full surface: about 29.8k tokens if you pin `KS4P_MODE=full` (numbers from
+Full surface: about 29.9k tokens if you pin `KS4P_MODE=full` (numbers from
 `scripts/measure_surface.py`, not hand-math).
 
 v1.1 consolidated nine packs into six. The v1.0 names
@@ -178,7 +190,7 @@ The same discipline as KitchenSink4Word, applied from day one:
 
 Beta. The file layer (packages, slides, text, graphics, tables, charts,
 comments, animations, themes, links, media, notes, masters, equations,
-accessibility, deck assembly, sweeps, export) is covered by a 1,241-test
+accessibility, deck assembly, sweeps, export) is covered by a 1,251-test
 suite, including validation that generated decks open clean in real
 PowerPoint, and the server passes a raw stdio protocol round-trip suite.
 Live editing of decks open in PowerPoint runs every call through one
@@ -192,9 +204,22 @@ to be safe to share.
 
 ## License
 
-AGPL-3.0-only (see LICENSE and NOTICE.md). Free for personal, academic,
-and open-source use. If you want to embed it in closed-source commercial
-software, open an issue to discuss a commercial license.
+KitchenSink4PPT is dual-licensed:
+
+**AGPL-3.0 (open source).** Free for anyone (individuals, academics, and
+businesses) for any use that complies with the AGPL's terms. Those terms
+include sharing source, including your modifications, when you distribute
+the software or make it available over a network.
+
+**Commercial license.** For organizations that want to build KitchenSink4PPT
+into their own products or services without the AGPL's source-sharing
+obligations. Contact licensing@kitchensink4.ai.
+
+Copyright (c) 2026 Alvut Consulting, LLC. KitchenSink4AI is a product line
+of Alvut Consulting, LLC.
+
+Not affiliated with, endorsed by, or sponsored by Microsoft Corporation.
+Microsoft and PowerPoint are trademarks of the Microsoft group of companies.
 
 ## Family
 

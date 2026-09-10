@@ -34,6 +34,7 @@ READ_ONLY: frozenset[str] = frozenset({
     "get_chart_data", "get_document_properties", "get_export_engines",
     "get_footer_support", "get_media_playback", "get_notes",
     "get_presentation_info",
+    "get_server_info",
     "get_presentation_view", "get_slide_info", "get_table", "get_text",
     "get_theme", "get_transitions", "get_workflows", "list_animations",
     "list_comments", "list_elements", "list_equations",

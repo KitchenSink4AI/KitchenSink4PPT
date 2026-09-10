@@ -26,6 +26,8 @@ from __future__ import annotations
 import functools
 import inspect as _inspect
 import json as _json
+import platform as _platform
+import sys as _sys
 from typing import Any
 from xml.etree.ElementTree import ParseError as _XmlParseError
 
@@ -42,6 +44,7 @@ from lxml import etree as _lxml_etree
 from . import __version__
 
 from . import packs as _packs
+from . import shipped as _shipped
 from .core import errors as _err
 from .core import readonly as _readonly
 from .core import update_check as _upd
@@ -92,6 +95,14 @@ mcp = FastMCP(
     "kitchensink4ppt",
     version=__version__,
     instructions=(
+        # The lead line is the only place an agent reading the injected
+        # instructions learns WHAT it is connected to. Without it the
+        # product name never reaches a client: the server name field is
+        # lowercase, and clients show the user's own config alias ("ppt")
+        # rather than either. get_server_info is the tool that answers the
+        # same question on demand.
+        "KitchenSink4PPT (kitchensink4ppt on PyPI), part of the "
+        "KitchenSink4AI suite. "
         "PowerPoint (.pptx) editor: slides, text, native vector graphics "
         "(SVG in, editable grouped shapes with glued connectors out), "
         "structural tables, charts, notes, and render-to-verify export. "
@@ -1017,6 +1028,50 @@ def _update_check_status() -> dict:
         return _upd.status()
     except Exception:
         return {"state": "unknown", "note": _upd.NOTE_UNKNOWN}
+
+
+@_tool()
+def get_server_info() -> dict:
+    """Report the KitchenSink4PPT server build: product and PyPI package
+    name, the version a client is connected to, the landing page, the
+    sibling servers in the KitchenSink4AI suite, the registered and lite
+    tool totals, the released test count, the active pack surface and its
+    token bill, and the host platform and Python. A read-only orient call
+    that needs no deck and touches no file, and the only tool that answers
+    WHAT you are connected to. diagnose covers the environment."""
+    names = _packs.tool_names()
+    out = {
+        "product": "KitchenSink4PPT",
+        "name": "kitchensink4ppt",
+        "package": "kitchensink4ppt",
+        "version": __version__,
+        "homepage": "https://kitchensink4.ai/KitchenSink4PPT/",
+        "family": [
+            "kitchensink4word",
+            "kitchensink4xl",
+            "kitchensink4web",
+        ],
+        # Read off the live registry, the same source measure_surface.py
+        # and check_site.py cut the published figures from. A hand-typed
+        # number here is the defect this whole file guards against.
+        "tools_registered": sum(len(v) for v in names.values()),
+        "tools_lite": len(names["lite"]),
+        "tests": _shipped.TESTS,
+        "surface": _packs.surface_report(),
+        "packs_available": _packs.pack_names(),
+        "platform": _platform.platform(),
+        "python": _sys.version.split()[0],
+    }
+    # The server's one and only update surface, and its one and only path to
+    # the network: an on-demand check, at most once every seven days, two-second
+    # cap, off under KS4P_UPDATE_CHECK=off. Nothing runs at startup, no other
+    # tool can fire it, a failed check reports the failure, and this never
+    # raises.
+    out["update_check"] = _update_check_status()
+    notice = _upd.update_notice()
+    if notice:
+        out["update"] = notice
+    return out
 
 
 @_tool()

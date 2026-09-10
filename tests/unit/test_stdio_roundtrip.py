@@ -151,7 +151,15 @@ def test_stdio_roundtrip(make_deck, tmp_path):
         _handshake(srv)
 
         lite = _tool_names(srv)
-        assert len(lite) == 24, f"lite surface should be 24 tools, got {lite}"
+        # Derived, not remembered: a hardcoded 24 here went stale the day a
+        # tool joined the lite core, and the failure read like a leak rather
+        # than a restamp. What this proves is that the surface ON THE WIRE
+        # equals the surface the pack registry says it built.
+        from kitchensink4ppt import packs
+
+        expected = len(packs.tool_names()["lite"])
+        assert len(lite) == expected, (
+            f"lite surface should be {expected} tools, got {lite}")
         assert "enable_tools" in lite
         assert "insert_shape" not in lite, "pack tool leaked into lite"
 

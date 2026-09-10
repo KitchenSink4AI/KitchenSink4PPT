@@ -1,11 +1,11 @@
 [project]
 name = "kitchensink4ppt"
-version = "1.2.1"
-description = "Everything plus the kitchen sink for Microsoft PowerPoint - a .pptx MCP server engineered not to corrupt: atomic validated saves, slot backups, native vector graphics as editable PowerPoint shapes"
+version = "1.2.2"
+description = "PowerPoint (.pptx) MCP server: editable vector diagrams, tables, charts, budgeted reads, render-to-verify. The kitchen sink."
 readme = "README.md"
 license = "AGPL-3.0-only"
 license-files = ["LICENSE", "NOTICE.md"]
-authors = [{ name = "nometalalchemist" }]
+authors = [{ name = "Alvut Consulting, LLC (KitchenSink4AI)" }]
 keywords = [
     "mcp", "powerpoint", "pptx", "ooxml", "claude", "model-context-protocol",
     "presentations", "slides", "shapes", "svg", "vector-graphics", "tables",

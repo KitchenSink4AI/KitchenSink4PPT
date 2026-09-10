@@ -144,9 +144,9 @@ FIGURE_SURFACES = (
 #: measurement at the commit that adds this guard. Change one only together
 #: with a re-run of the named script.
 PUBLISHED_FIGURES = (
-    ('141', 'tools', 'scripts/measure_surface.py'),
-    ('1,241', 'tests', 'pytest --collect-only'),
-    ('5.3k', 'tokens in the lite core', 'scripts/measure_surface.py'),
+    ('142', 'tools', 'scripts/measure_surface.py'),
+    ('1,251', 'tests', 'scripts/stamp_figures.py'),
+    ('5.5k', 'tokens in the lite core', 'scripts/measure_surface.py'),
 )
 
 #: (string, what it used to mean). Absent from every FIGURE_SURFACES file at
@@ -154,12 +154,17 @@ PUBLISHED_FIGURES = (
 SUPERSEDED_FIGURES = (
     ('885 tests', 'the pre-1.2.0 test count'),
     ('1,238 tests', 'the test count before the gate gained its figure guard'),
+    ('1,241 tests', 'the pre-1.2.2 test count'),
     ('885 Tests', 'the same count in german'),
     ('885 pruebas', 'the same count in spanish'),
     ('138 tools', 'the pre-1.2.0 tool count'),
     ('138-tool', 'the same count in the meta description'),
     ('№ 138', 'the same count as a catalog number'),
+    ('141 tools', 'the pre-1.2.2 tool count'),
+    ('141-tool', 'the same count in the meta description'),
+    ('№ 141', 'the same count as a catalog number'),
     ('4.7k', 'the pre-1.2.0 lite core cost'),
+    ('5.3k', 'the pre-1.2.2 lite core cost'),
 )
 
 
@@ -198,3 +203,39 @@ def test_no_superseded_figure_survives_on_a_published_surface():
 def test_every_figure_surface_is_still_a_real_file():
     for rel in FIGURE_SURFACES:
         assert (ROOT / rel).is_file(), rel
+
+
+def test_the_server_reports_the_same_tool_total_it_publishes():
+    """The gate above holds three text surfaces to each other. This holds
+    the RUNNING SERVER to them, which is the surface an agent actually
+    reads: get_server_info counts the live registry, so a restamp that
+    forgets a page turns this red rather than shipping a server that
+    contradicts its own README."""
+    import sys
+
+    sys.path.insert(0, str(ROOT / "src"))
+    from kitchensink4ppt import packs, server  # noqa: F401
+
+    live = sum(len(v) for v in packs.tool_names().values())
+    published = next(f for f, what, _ in PUBLISHED_FIGURES if what == 'tools')
+    assert str(live) == published, (
+        f"the registry has {live} tools, the published figure is "
+        f"{published}. Re-run scripts/measure_surface.py and restamp "
+        f"{', '.join(FIGURE_SURFACES)} plus PUBLISHED_FIGURES.")
+
+
+def test_the_server_reports_the_same_test_count_it_publishes():
+    """shipped.TESTS is what get_server_info hands an agent. It cannot be
+    derived at runtime, so this is the join that keeps it from drifting
+    away from the number on the page. Re-stamp with
+    scripts/stamp_figures.py --write, never by hand."""
+    import sys
+
+    sys.path.insert(0, str(ROOT / "src"))
+    from kitchensink4ppt import shipped
+
+    published = next(f for f, what, _ in PUBLISHED_FIGURES if what == 'tests')
+    assert f"{shipped.TESTS:,}" == published, (
+        f"the server reports {shipped.TESTS:,} tests, the published figure "
+        f"is {published}. Run scripts/stamp_figures.py --write, then "
+        f"restamp {', '.join(FIGURE_SURFACES)} and PUBLISHED_FIGURES.")
