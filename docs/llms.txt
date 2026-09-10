@@ -66,9 +66,10 @@ Heavy editing with a safety net:
 
 ## The KitchenSink family
 
-- KitchenSink4Word (the original fixture, 219 operations across 108 tools for .docx): https://kitchensink4ai.github.io/KitchenSink4Word/
-- KitchenSink4XL (the electrical aisle, 69 tools for .xlsx, every value labeled calculated, cached, or absent): https://kitchensink4ai.github.io/KitchenSink4XL/
-- Family storefront: https://kitchensink4ai.github.io/
+- KitchenSink4Word (the original fixture, 221 operations across 110 tools for .docx): https://kitchensink4.ai/KitchenSink4Word/
+- KitchenSink4XL (the electrical aisle, 69 tools for .xlsx, every value labeled calculated, cached, or absent): https://kitchensink4.ai/KitchenSink4XL/
+- KitchenSink4Web (the garden section, browser automation with budget-priced page reads and a consent ladder): https://kitchensink4.ai/KitchenSink4Web/
+- Family storefront: https://kitchensink4.ai/products/
 
 ## Links
 
