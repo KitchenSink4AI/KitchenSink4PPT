@@ -502,6 +502,51 @@ footer a{color:var(--patina)}
   *{animation-duration:.01ms !important;animation-iteration-count:1 !important;transition-duration:.01ms !important}
   html{scroll-behavior:auto}
 }
+
+/* The evening coat uses PowerPoint's presentation-stage character: deep
+   indigo and slate, pale copy, and a warm brass lamp rather than olive stock. */
+body.dusk{
+  --paper:#20283c;--paper-deep:#2c3550;--ink:#f3eef8;--ink-soft:#c9c3d8;
+  --patina:#9bcac4;--patina-bright:#b8ded8;--glow:#f0bd68;--stamp:#ef8980;
+  --rule:#59647f;--chip:#6c83b5;--chip-mid:#947db0;--pool-op:.78;
+  --dusk-tint:rgba(126,96,173,.28);
+  --shadow:0 2px 0 var(--rule),0 12px 32px rgba(4,8,20,.32);
+  background-image:radial-gradient(ellipse at 20% -10%,var(--dusk-tint),transparent 56%),
+    repeating-linear-gradient(0deg,transparent 0 27px,rgba(243,238,248,.035) 27px 28px)
+}
+body.dusk .pendant .bulb{filter:sepia(.08) saturate(1.18) drop-shadow(0 4px 18px rgba(240,189,104,.68))}
+
+/* Responsive polish for translated navigation, card headings, and credits. */
+.masthead{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);align-items:baseline}
+.masthead>span{min-width:0;overflow-wrap:anywhere}
+.masthead>span:last-child{justify-self:end;text-align:right;line-height:1.9}
+.dept h3{flex-wrap:wrap;row-gap:4px}
+.dept h3 .num{margin-left:auto;white-space:normal;text-align:right}
+.counter,.step,.demo-panel{min-width:0;overflow-wrap:anywhere}
+footer .row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:28px}
+footer .row>span{min-width:0;overflow-wrap:anywhere}
+@media(max-width:900px){
+  .masthead{grid-template-columns:1fr;justify-items:center;text-align:center}
+  .masthead>span:last-child{justify-self:center;text-align:center}
+  .lang-toggle{justify-content:center}
+  footer .row{grid-template-columns:1fr;gap:20px;text-align:center}
+  footer .row>span:last-child{text-align:center!important}
+}
+@media(max-width:640px){
+  .wrap{padding-left:18px;padding-right:18px}
+  .switchbar{gap:8px 12px;padding:10px 16px;line-height:1.45}
+  .switchbar a,.switchbar .here{white-space:nowrap}
+  .hero{padding-top:48px;padding-bottom:44px}
+  section{padding-top:48px;padding-bottom:48px}
+  .sec-head{align-items:flex-start;gap:9px 12px;flex-wrap:wrap}
+  .sec-head:after{min-width:36px;margin-top:12px}
+  .specs-strip{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}
+  .spec{min-width:0;padding:18px 10px 14px;border-right:1px solid var(--rule);border-bottom:1px solid var(--rule)}
+  .spec:nth-child(2n){border-right:0}
+  .famrow{margin-right:-18px;padding-right:18px}
+}
+
+.footer-links{text-align:center;padding:10px 20px;font-size:12px}.footer-links a{white-space:nowrap}.release-date{font-size:12px;color:var(--ink-soft);white-space:nowrap;margin-left:auto}
 </style>
 </head>
 <body>
@@ -509,7 +554,7 @@ footer a{color:var(--patina)}
 <div class="wrap masthead rev d1">
   <span data-i18n="m.left"><b>PAINT DEPARTMENT</b> &middot; AISLE P</span>
   <nav class="lang-toggle" id="langToggle" aria-label="Language"></nav>
-  <span><span data-i18n="m.catalog">CATALOG № 142</span> · <a href="https://kitchensink4.ai/products/" data-i18n="m.family">FAMILY</a> · <a href="#service" data-i18n="m.service">SERVICE</a> · <a href="https://github.com/KitchenSink4AI/KitchenSink4PPT">GITHUB</a> · <a href="https://pypi.org/project/kitchensink4ppt/">PYPI</a> · <a href="llms.txt">LLMS.TXT</a></span>
+  <span><span data-i18n="m.catalog">CATALOG № 142</span> · <a href="https://kitchensink4.ai/products/" data-i18n="m.family">FAMILY</a> · <a href="#service" data-i18n="m.service">SERVICE</a> · <a href="https://kitchensink4.ai/corporate/" data-i18n="m.company">COMPANY</a> · <a href="https://github.com/KitchenSink4AI/KitchenSink4PPT">GITHUB</a> · <a href="https://pypi.org/project/kitchensink4ppt/">PYPI</a> · <a href="llms.txt">LLMS.TXT</a></span>
 </div>
 
 <div class="switchbar">
@@ -555,7 +600,7 @@ footer a{color:var(--patina)}
       <summary>
         <span class="tag" data-i18n="new.label">JUST IN</span>
         <span class="ttl" data-i18n="h2.new">New on the shelf</span>
-        <span class="hint" data-i18n="new.t">What 1.2 just added</span>
+        <time class="release-date" datetime="2026-09-09">2026-09-09</time>
       </summary>
     <div class="newin">
       <p class="sub" data-i18n="new.sub">The short version of the release, no changelog reading required.</p>
@@ -757,7 +802,7 @@ footer a{color:var(--patina)}
         <span class="go" data-i18n="svc3.g">Arrange a license →</span>
       </a>
     </div>
-    <p class="foot-note" style="margin-top:16px" data-i18n="svc.note">Reports are public GitHub issues (a free GitHub account is needed to file one). Every report lands in the maintainer's inbox.</p>
+    <p class="foot-note" style="margin-top:16px" data-i18n="svc.note">Bug reports and feature requests are public GitHub issues and require a free account. Licensing inquiries use the private contact form.</p>
   </div>
 </section>
 
@@ -807,12 +852,13 @@ footer a{color:var(--patina)}
 <footer>
   <div class="wrap row">
     <span data-i18n="f.left">&copy; 2026 Alvut Consulting, LLC &middot; Licensed <b>AGPL-3.0</b>: free for any use that meets the AGPL's terms, including its source-sharing obligations.<br>Commercial licenses for organizations that need to ship these in closed products (<a href='mailto:licensing@kitchensink4.ai'>licensing@kitchensink4.ai</a>).</span>
-    <span style="text-align:right" data-i18n="f.right"><a href='https://github.com/KitchenSink4AI/KitchenSink4PPT'>github.com/KitchenSink4AI/KitchenSink4PPT</a> · <a href='https://github.com/KitchenSink4AI/KitchenSink4PPT/issues/new/choose'>report a glitch</a><br>Built on the KitchenSink4Word safety core, prototyped with Claude Code, and hardened through adversarial rounds until the test agents ran out of complaints. That's a well-dressed room! 🖌️</span>
+    <span style="text-align:right" data-i18n="f.right"><a href="https://github.com/KitchenSink4AI/KitchenSink4PPT">Source code</a> · <a href="https://github.com/KitchenSink4AI/KitchenSink4PPT/issues/new/choose">Report a glitch</a></span>
   </div>
   <div class="wrap" style="text-align:center;padding:6px 0;font-size:11px"><a href="https://kitchensink4.ai/corporate/" data-i18n="f.corp">The office upstairs: KitchenSink4AI →</a></div>
   <div class="wrap" style="text-align:center;padding:6px 0;opacity:.5;font-size:11px">Not affiliated with or endorsed by Microsoft Corporation. Microsoft and PowerPoint are trademarks of Microsoft Corporation.</div>
   <div class="wrap" style="text-align:center;padding:10px 0"><img src="https://visitor-badge.laobi.icu/badge?page_id=nometalalchemist.KitchenSink4PPT&left_color=%231e3550&right_color=%232e6e55&left_text=views" alt="views" height="18" style="vertical-align:middle"></div>
 <div class="wrap colophon">SET IN FRAUNCES &amp; IBM PLEX MONO · CATALOG № 142</div>
+<nav class="footer-links" aria-label="Contact and privacy"><a href="https://kitchensink4.ai/contact/" data-i18n="f.contact">Contact</a> · <a href="https://kitchensink4.ai/privacy/" data-i18n="f.privacy">Privacy</a></nav>
 </footer>
 
 <script>
@@ -928,6 +974,9 @@ if (faucet && "IntersectionObserver" in window){
 var I18N = {
 en: {
 "pageTitle": "KitchenSink4PPT: Everything plus the kitchen sink for Microsoft PowerPoint",
+"f.privacy": "Privacy",
+"f.contact": "Contact",
+"m.company": "COMPANY",
 "m.left": "<b>PAINT DEPARTMENT</b> &middot; AISLE P",
 "pk1.chip": "PRIMER WHITE",
 "pk2.chip": "GILT EDGE",
@@ -957,7 +1006,6 @@ en: {
 "hero.invite": "↓ or try it first: there is a diagram below you can drag, and the arrows follow",
 "sw.here": "(you are here)", "sw.store": "The storefront",
 "h2.new": "New on the shelf", "new.label": "JUST IN",
-"new.t": "What 1.2 just added",
 "new.sub": "The short version of the release, no changelog reading required.",
 "new1": "Every read is budgeted: one call can no longer flood your conversation, and anything left out is named.",
 "new2": "Saves run up to three times faster and keep each media file's original compression exactly.",
@@ -1056,7 +1104,7 @@ en: {
 "svc3.t": "Commercial fitting?",
 "svc3.p": "Free for any use that meets the AGPL's terms, including its source-sharing obligations. If your company wants to build it into a product of its own, that needs a commercial license, with terms worked out case by case. This counter is where you start that conversation.",
 "svc3.g": "Arrange a license →",
-"svc.note": "Reports are public GitHub issues (a free GitHub account is needed to file one). Every report lands in the maintainer's inbox.",
+"svc.note": "Bug reports and feature requests are public GitHub issues and require a free account. Licensing inquiries use the private contact form.",
 "g.t": "Engineered Not to Corrupt",
 "g.p1": "The deck is due at zero eight, PowerPoint is opening it, and there is a repair prompt where your title slide should be. Preventing that morning is this server's first job. A timestamped backup happens before every change, automatically. Every save is verified before it replaces your file. Whatever an edit doesn't touch, animations, media, embedded objects, passes through untouched, byte for byte. And when the server isn't sure which shape you meant, it stops and shows you the candidates instead of guessing; a wrong first match is somebody else's policy.",
 "g.p2": "Provided as-is, without warranty of any kind, per the license; the engineering above is simply how seriously your decks are taken. Keep backups. (It makes them for you.)",
@@ -1070,7 +1118,7 @@ en: {
 "fam4.g": "Visit the garden aisle →",
 "f.left": "&copy; 2026 Alvut Consulting, LLC &middot; Licensed <b>AGPL-3.0</b>: free for any use that meets the AGPL's terms, including its source-sharing obligations.<br>Commercial licenses for organizations that need to ship these in closed products (<a href='mailto:licensing@kitchensink4.ai'>licensing@kitchensink4.ai</a>).",
 "f.corp": "The office upstairs: KitchenSink4AI →",
-"f.right": "<a href='https://github.com/KitchenSink4AI/KitchenSink4PPT'>github.com/KitchenSink4AI/KitchenSink4PPT</a> · <a href='https://github.com/KitchenSink4AI/KitchenSink4PPT/issues/new/choose'>report a glitch</a><br>Built on the KitchenSink4Word safety core, prototyped with Claude Code, and hardened through adversarial rounds until the test agents ran out of complaints. That's a well-dressed room! 🖌️",
+"f.right": "<a href=\"https://github.com/KitchenSink4AI/KitchenSink4PPT\">Source code</a> · <a href=\"https://github.com/KitchenSink4AI/KitchenSink4PPT/issues/new/choose\">Report a glitch</a>",
 "inst.dev": "For developers: pip, source, other MCP clients",
 "inst.dp1": "Install the package and point any MCP client at the executable:",
 "inst.dp2": "Running from a clone works the same way; point the command at the <code>ppt-mcp</code> executable in the clone's virtual environment. Full setup is in the <a href='https://github.com/KitchenSink4AI/KitchenSink4PPT#install'>README</a>.",
@@ -1081,6 +1129,9 @@ en: {
 },
 ko: {
 "pageTitle": "KitchenSink4PPT: Microsoft PowerPoint 도구라면 없는 게 없는 MCP 서버",
+"f.privacy": "개인정보",
+"f.contact": "문의",
+"m.company": "회사",
 "m.left": "<b>페인트 부문</b> &middot; P 통로",
 "pk1.chip": "프라이머 화이트",
 "pk2.chip": "길트 에지",
@@ -1110,7 +1161,6 @@ ko: {
 "hero.invite": "↓ 먼저 써 보셔도 됩니다: 아래에 직접 드래그할 수 있는 다이어그램이 있고, 화살표가 따라옵니다",
 "sw.here": "(현재 페이지)", "sw.store": "스토어",
 "h2.new": "선반에 새로 올라온 것", "new.label": "신규 입고",
-"new.t": "버전 1.2가 방금 더한 것들",
 "new.sub": "이번 릴리스를 짧게 간추렸습니다. 변경 내역을 따로 읽지 않으셔도 됩니다.",
 "new1": "모든 읽기에 예산이 붙습니다. 호출 하나가 대화를 뒤덮는 일은 이제 없고, 빠뜨린 것은 이름으로 알려 줍니다.",
 "new2": "저장이 최대 세 배까지 빨라졌고, 미디어 파일마다 원래의 압축을 그대로 지킵니다.",
@@ -1209,7 +1259,7 @@ ko: {
 "svc3.t": "영업용 설비가 필요합니까?",
 "svc3.p": "소스 공개 의무를 포함한 AGPL 조건을 충족하는 모든 용도에 무료입니다. 회사가 이 서버를 자사 제품에 넣어 만들려면 상업용 라이선스가 필요하고, 조건은 사안마다 협의해서 정합니다. 그 이야기는 이 창구에서 시작하시면 됩니다.",
 "svc3.g": "라이선스 문의하기 →",
-"svc.note": "신고는 공개 GitHub 이슈로 접수됩니다(제출에는 무료 GitHub 계정이 필요합니다). 모든 신고는 관리자의 수신함에 바로 도착합니다.",
+"svc.note": "버그 신고와 기능 요청은 무료 계정이 필요한 공개 GitHub 이슈입니다. 라이선스 문의는 비공개 문의 양식을 이용하세요.",
 "g.t": "손상시키지 않도록 설계",
 "g.p1": "발표 자료는 08시에 내야 하는데, PowerPoint가 파일을 여는 순간 제목 슬라이드가 있어야 할 자리에 복구 알림이 떠 있습니다. 그 아침을 막는 것이 이 서버의 첫 번째 일입니다. 모든 변경 전에 타임스탬프가 붙은 백업이 자동으로 만들어집니다. 모든 저장은 파일을 대체하기 전에 검증됩니다. 편집이 건드리지 않은 것은 애니메이션이든 미디어든 포함 개체든 손대지 않고 바이트 단위 그대로 통과합니다. 그리고 서버가 어떤 도형을 말한 것인지 확신하지 못하면, 추측하는 대신 멈춰 서서 후보를 보여 줍니다. 엉뚱한 첫 번째 일치를 고르는 것은 다른 가게의 방침입니다.",
 "g.p2": "라이선스에 따라 어떤 종류의 보증도 없이 있는 그대로 제공됩니다. 위의 공학적 장치들은 여러분의 프레젠테이션을 얼마나 진지하게 다루는지를 보여줄 뿐입니다. 백업을 유지하세요. (백업은 이 서버가 대신 만들어 줍니다.)",
@@ -1223,7 +1273,7 @@ ko: {
 "fam4.g": "원예 코너 방문하기 →",
 "f.left": "&copy; 2026 Alvut Consulting, LLC &middot; <b>AGPL-3.0</b> 라이선스: 소스 공개 의무를 포함한 AGPL 조건을 충족하는 모든 용도에 무료.<br>비공개 제품에 담아 배포해야 하는 조직을 위한 상업용 라이선스(<a href='mailto:licensing@kitchensink4.ai'>licensing@kitchensink4.ai</a>).",
 "f.corp": "위층 사무실: KitchenSink4AI →",
-"f.right": "<a href='https://github.com/KitchenSink4AI/KitchenSink4PPT'>github.com/KitchenSink4AI/KitchenSink4PPT</a> · <a href='https://github.com/KitchenSink4AI/KitchenSink4PPT/issues/new/choose'>오작동 신고</a><br>KitchenSink4Word 안전 코어 위에 세우고, Claude Code로 프로토타입을 만들고, 테스트 에이전트가 불평거리를 다 소진할 때까지 적대적 라운드로 단련했습니다. 이만하면 방 하나 잘 꾸몄죠! 🖌️",
+"f.right": "<a href=\"https://github.com/KitchenSink4AI/KitchenSink4PPT\">소스 코드</a> · <a href=\"https://github.com/KitchenSink4AI/KitchenSink4PPT/issues/new/choose\">오류 신고</a>",
 "inst.dev": "개발자용: pip, 소스, 다른 MCP 클라이언트",
 "inst.dp1": "패키지를 설치하고 원하는 MCP 클라이언트가 실행 파일을 가리키게 하면 됩니다:",
 "inst.dp2": "클론에서 실행할 때도 같은 방식이며, 클론의 가상 환경에 있는 <code>ppt-mcp</code> 실행 파일을 가리키면 됩니다. 전체 설정은 <a href='https://github.com/KitchenSink4AI/KitchenSink4PPT#install'>README</a>에 있습니다.",
@@ -1234,6 +1284,9 @@ ko: {
 },
 ja: {
 "pageTitle": "KitchenSink4PPT: Microsoft PowerPoint のための、何でも揃う MCP サーバー",
+"f.privacy": "プライバシー",
+"f.contact": "お問い合わせ",
+"m.company": "会社",
 "m.left": "<b>塗料部門</b> &middot; P列",
 "pk1.chip": "プライマー・ホワイト",
 "pk2.chip": "ギルトエッジ",
@@ -1263,7 +1316,6 @@ ja: {
 "hero.invite": "↓ まず試してみてください:下にドラッグできる図があり、矢印がついてきます",
 "sw.here": "(現在のページ)", "sw.store": "ストアトップ",
 "h2.new": "棚に並んだ新入荷", "new.label": "新入荷",
-"new.t": "v1.2 で新しく加わったもの",
 "new.sub": "リリースの要点だけ。変更履歴を読む必要はありません。",
 "new1": "読み取りにはすべて予算が付きます。ひとつの呼び出しが会話をあふれさせることはもうなく、外したものは名前で示されます。",
 "new2": "保存は最大で三倍速くなり、メディアファイルごとの元の圧縮をそのまま保ちます。",
@@ -1362,7 +1414,7 @@ ja: {
 "svc3.t": "業務用の取り付けですか？",
 "svc3.p": "ソースコード公開義務を含むAGPLの条件を満たすあらゆる用途で無料です。会社としてこれを自社製品に組み込みたい場合は商用ライセンスが必要で、条件は案件ごとに相談して決めます。その話はこの窓口から始めてください。",
 "svc3.g": "ライセンスの相談 →",
-"svc.note": "報告は公開の GitHub Issue になります(提出には無料の GitHub アカウントが必要です)。すべての報告はメンテナーの受信箱に届きます。",
+"svc.note": "不具合報告と機能リクエストは無料アカウントが必要な公開GitHub Issueです。ライセンスのご相談は非公開のお問い合わせフォームへ。",
 "g.t": "壊さないための設計",
 "g.p1": "デッキの締切は08時、PowerPoint がそれを開こうとして、タイトルスライドがあるはずの場所に修復のダイアログが出ている。その朝を防ぐことが、このサーバーの第一の仕事です。すべての変更の前に、タイムスタンプ付きのバックアップが自動で作られます。保存はすべて、ファイルを置き換える前に検証されます。編集が触れないものは、アニメーションもメディアも埋め込みオブジェクトも、手つかずのままバイト単位で通り抜けます。そして、どの図形のことか確信が持てないとき、サーバーは推測せずに立ち止まり、候補を見せます。間違った最初の一致を選ぶのは、よそ様の方針です。",
 "g.p2": "ライセンスのとおり、現状有姿・無保証で提供されます。上記の工学は、あなたのスライド資料をどれだけ真剣に扱っているかを示すものにすぎません。バックアップは取っておいてください。(バックアップはこのサーバーが作ってくれます。)",
@@ -1376,7 +1428,7 @@ ja: {
 "fam4.g": "園芸コーナーへ →",
 "f.left": "&copy; 2026 Alvut Consulting, LLC &middot; <b>AGPL-3.0</b> ライセンス:ソースコード公開義務を含むAGPLの条件を満たすあらゆる用途で無料。<br>クローズドな製品に組み込んで提供する必要がある組織向けには商用ライセンスをご用意しています(<a href='mailto:licensing@kitchensink4.ai'>licensing@kitchensink4.ai</a>)。",
 "f.corp": "上の階の事務所：KitchenSink4AI →",
-"f.right": "<a href='https://github.com/KitchenSink4AI/KitchenSink4PPT'>github.com/KitchenSink4AI/KitchenSink4PPT</a> · <a href='https://github.com/KitchenSink4AI/KitchenSink4PPT/issues/new/choose'>不具合を報告</a><br>KitchenSink4Word の安全コアの上に築き、Claude Code でプロトタイプを作り、テストエージェントが文句を言い尽くすまで敵対的ラウンドで鍛えました。これで部屋はすっかり整いました!🖌️",
+"f.right": "<a href=\"https://github.com/KitchenSink4AI/KitchenSink4PPT\">ソースコード</a> · <a href=\"https://github.com/KitchenSink4AI/KitchenSink4PPT/issues/new/choose\">不具合を報告</a>",
 "inst.dev": "開発者向け: pip、ソース、その他の MCP クライアント",
 "inst.dp1": "パッケージを入れて、任意の MCP クライアントから実行ファイルを指すだけです:",
 "inst.dp2": "クローンから動かす場合も同じで、クローンの仮想環境にある <code>ppt-mcp</code> 実行ファイルを指してください。設定の全体は <a href='https://github.com/KitchenSink4AI/KitchenSink4PPT#install'>README</a> にあります。",
@@ -1387,6 +1439,9 @@ ja: {
 },
 zh: {
 "pageTitle": "KitchenSink4PPT: 为 Microsoft PowerPoint 而备,应有尽有的 MCP 服务器",
+"f.privacy": "隐私",
+"f.contact": "联系",
+"m.company": "公司",
 "m.left": "<b>油漆部</b> &middot; P 号过道",
 "pk1.chip": "底漆白",
 "pk2.chip": "描金边",
@@ -1416,7 +1471,6 @@ zh: {
 "hero.invite": "↓ 或者先试试:下面有一张可以拖动的图,箭头会跟着走",
 "sw.here": "(当前页面)", "sw.store": "商店首页",
 "h2.new": "新上架", "new.label": "新到货",
-"new.t": "v1.2 刚刚添了什么",
 "new.sub": "这次发布的简短版，不用去翻更新日志。",
 "new1": "每次读取都有预算：一次调用不会再淹没你的对话，落下的内容也会被点名说出。",
 "new2": "保存最快可达原来的三倍，并且原样保留每个媒体文件的原始压缩。",
@@ -1515,7 +1569,7 @@ zh: {
 "svc3.t": "商用装配？",
 "svc3.p": "凡符合 AGPL 条款(含其源码公开义务)的用途均免费。如果贵公司想把它做进自家产品里,那就需要商业许可,条款按具体情况一事一议。这个柜台就是开始谈的地方。",
 "svc3.g": "洽谈许可 →",
-"svc.note": "报告以公开 GitHub issue 的形式提交(需要一个免费的 GitHub 账号)。每份报告都会直达维护者的收件箱。",
+"svc.note": "错误报告和功能请求是公开的GitHub议题，需要免费账户。许可咨询请使用私密联系表单。",
 "g.t": "为“不损坏”而设计",
 "g.p1": "幻灯片八点要交,PowerPoint 正在打开它,而标题页该在的地方却是一个修复提示。挡住那个早晨,是这台服务器的头等差事。每次改动之前都会自动生成带时间戳的备份。每一次保存都在替换你的文件之前先做校验。编辑没有碰到的东西,动画、媒体、嵌入对象,都原封不动逐字节通过。而当服务器拿不准你指的是哪个图形时,它会停下来把候选列给你看,而不是去猜;拿错第一个匹配是别家的政策。",
 "g.p2": "依许可证按现状提供,不附带任何形式的担保。上述工程设计,只是说明你的演示文稿被多么认真地对待。请保留备份。(它会替你做备份。)",
@@ -1529,7 +1583,7 @@ zh: {
 "fam4.g": "去园艺货架逛逛 →",
 "f.left": "&copy; 2026 Alvut Consulting, LLC &middot; 依 <b>AGPL-3.0</b> 授权:凡符合 AGPL 条款(含其源码公开义务)的用途均免费。<br>需要把这些装进闭源产品发行的组织可购买商业许可(<a href='mailto:licensing@kitchensink4.ai'>licensing@kitchensink4.ai</a>)。",
 "f.corp": "楼上的办公室：KitchenSink4AI →",
-"f.right": "<a href='https://github.com/KitchenSink4AI/KitchenSink4PPT'>github.com/KitchenSink4AI/KitchenSink4PPT</a> · <a href='https://github.com/KitchenSink4AI/KitchenSink4PPT/issues/new/choose'>报告故障</a><br>建在 KitchenSink4Word 的安全内核之上,用 Claude Code 做出原型,再经一轮轮对抗测试打磨,直到测试智能体挑不出毛病。这屋子算是布置齐了!🖌️",
+"f.right": "<a href=\"https://github.com/KitchenSink4AI/KitchenSink4PPT\">源代码</a> · <a href=\"https://github.com/KitchenSink4AI/KitchenSink4PPT/issues/new/choose\">报告问题</a>",
 "inst.dev": "开发者选项:pip、源码、其他 MCP 客户端",
 "inst.dp1": "安装这个包,然后让任意 MCP 客户端指向可执行文件:",
 "inst.dp2": "从克隆仓库运行的方式相同,指向克隆虚拟环境里的 <code>ppt-mcp</code> 可执行文件即可。完整设置见 <a href='https://github.com/KitchenSink4AI/KitchenSink4PPT#install'>README</a>。",
@@ -1540,6 +1594,9 @@ zh: {
 },
 de: {
 "pageTitle": "KitchenSink4PPT: Microsoft PowerPoint mit allem Drum und Dran",
+"f.privacy": "Datenschutz",
+"f.contact": "Kontakt",
+"m.company": "UNTERNEHMEN",
 "m.left": "<b>ABTEILUNG FARBEN</b> &middot; GANG P",
 "pk1.chip": "PRIMERWEISS",
 "pk2.chip": "GOLDRAND",
@@ -1569,7 +1626,6 @@ de: {
 "hero.invite": "↓ oder erst ausprobieren: unten ist ein Diagramm zum Ziehen, und die Pfeile folgen",
 "sw.here": "(Sie sind hier)", "sw.store": "Zum Laden",
 "h2.new": "Neu im Regal", "new.label": "NEU EINGETROFFEN",
-"new.t": "Was Version 1.2 gerade dazugelegt hat",
 "new.sub": "Die kurze Fassung des Releases, ganz ohne Changelog zu lesen.",
 "new1": "Jeder Lesevorgang ist budgetiert: Ein einzelner Aufruf kann Ihr Gespräch nicht mehr überschwemmen, und was ausgelassen wurde, wird benannt.",
 "new2": "Speichern läuft bis zu dreimal schneller und behält die ursprüngliche Kompression jeder Mediendatei exakt bei.",
@@ -1668,7 +1724,7 @@ de: {
 "svc3.t": "Gewerbliche Montage?",
 "svc3.p": "Kostenlos für jede Nutzung, die die Bedingungen der AGPL einschließlich ihrer Pflicht zur Quelloffenlegung erfüllt. Will ein Unternehmen das in ein eigenes Produkt einbauen, braucht es eine kommerzielle Lizenz, deren Konditionen im Einzelfall besprochen werden. An diesem Schalter fängt das Gespräch an.",
 "svc3.g": "Lizenz vereinbaren →",
-"svc.note": "Berichte sind öffentliche GitHub-Issues (zum Einreichen genügt ein kostenloses GitHub-Konto). Jeder Bericht landet im Posteingang des Maintainers.",
+"svc.note": "Fehlerberichte und Funktionswünsche sind öffentliche GitHub-Issues und erfordern ein kostenloses Konto. Lizenzanfragen laufen über das private Kontaktformular.",
 "g.t": "Konstruiert mit dem Ziel, nichts zu beschädigen",
 "g.p1": "Der Foliensatz ist um acht Uhr fällig, PowerPoint öffnet ihn gerade, und dort, wo Ihre Titelfolie sein sollte, steht eine Reparaturmeldung. Diesen Morgen zu verhindern ist die erste Aufgabe dieses Servers. Vor jeder Änderung entsteht automatisch ein Backup mit Zeitstempel. Jedes Speichern wird geprüft, bevor es Ihre Datei ersetzt. Was eine Bearbeitung nicht anfasst, Animationen, Medien, eingebettete Objekte, geht unangetastet hindurch, Byte für Byte. Und wenn der Server nicht sicher ist, welche Form Sie gemeint haben, hält er an und zeigt Ihnen die Kandidaten, statt zu raten; den falschen ersten Treffer zu nehmen ist die Politik von anderen.",
 "g.p2": "Bereitgestellt wie besehen, ohne Gewährleistung jeglicher Art, gemäß Lizenz; die obige Ingenieursarbeit zeigt lediglich, wie ernst Ihre Foliensätze genommen werden. Behalten Sie Backups. (Es legt sie für Sie an.)",
@@ -1682,7 +1738,7 @@ de: {
 "fam4.g": "Zum Gartengang →",
 "f.left": "&copy; 2026 Alvut Consulting, LLC &middot; Lizenziert unter <b>AGPL-3.0</b>: kostenlos für jede Nutzung, die die Bedingungen der AGPL einschließlich ihrer Pflicht zur Quelloffenlegung erfüllt.<br>Kommerzielle Lizenzen für Organisationen, die diese in geschlossenen Produkten ausliefern müssen (<a href='mailto:licensing@kitchensink4.ai'>licensing@kitchensink4.ai</a>).",
 "f.corp": "Das Büro über dem Laden: KitchenSink4AI →",
-"f.right": "<a href='https://github.com/KitchenSink4AI/KitchenSink4PPT'>github.com/KitchenSink4AI/KitchenSink4PPT</a> · <a href='https://github.com/KitchenSink4AI/KitchenSink4PPT/issues/new/choose'>Störung melden</a><br>Auf dem Sicherheitskern von KitchenSink4Word errichtet, mit Claude Code prototypisiert und in adversarialen Runden gehärtet, bis den Test-Agenten die Beschwerden ausgingen. Das nennt man einen gut eingerichteten Raum! 🖌️",
+"f.right": "<a href=\"https://github.com/KitchenSink4AI/KitchenSink4PPT\">Quellcode</a> · <a href=\"https://github.com/KitchenSink4AI/KitchenSink4PPT/issues/new/choose\">Fehler melden</a>",
 "inst.dev": "Für Entwickler: pip, Quellcode, andere MCP-Clients",
 "inst.dp1": "Paket installieren und einen beliebigen MCP-Client auf die ausführbare Datei zeigen lassen:",
 "inst.dp2": "Aus einem Klon heraus läuft es genauso, dann zeigt der Befehl auf die ausführbare Datei <code>ppt-mcp</code> in der virtuellen Umgebung des Klons. Die vollständige Einrichtung steht in der <a href='https://github.com/KitchenSink4AI/KitchenSink4PPT#install'>README</a>.",
@@ -1693,6 +1749,9 @@ de: {
 },
 fr: {
 "pageTitle": "KitchenSink4PPT : absolument tout pour Microsoft PowerPoint, jusqu'au moindre détail",
+"f.privacy": "Confidentialité",
+"f.contact": "Contact",
+"m.company": "ENTREPRISE",
 "m.left": "<b>RAYON PEINTURE</b> &middot; ALLÉE P",
 "pk1.chip": "BLANC D'APPRÊT",
 "pk2.chip": "TRANCHE DORÉE",
@@ -1722,7 +1781,6 @@ fr: {
 "hero.invite": "↓ ou essayez d'abord : il y a plus bas un diagramme à faire glisser, et les flèches suivent",
 "sw.here": "(vous êtes ici)", "sw.store": "La boutique",
 "h2.new": "Nouveautés en rayon", "new.label": "ARRIVAGE",
-"new.t": "Ce que la version 1.2 vient d'ajouter",
 "new.sub": "La version courte de la mise à jour, sans lire les notes de version.",
 "new1": "Chaque lecture a un budget : un seul appel ne peut plus noyer votre conversation, et ce qui a été laissé de côté est nommé.",
 "new2": "Les enregistrements sont jusqu'à trois fois plus rapides et conservent exactement la compression d'origine de chaque fichier multimédia.",
@@ -1821,7 +1879,7 @@ fr: {
 "svc3.t": "Installation commerciale ?",
 "svc3.p": "Gratuit pour tout usage conforme aux conditions de l'AGPL, y compris son obligation de partage du code source. Si votre entreprise veut l'intégrer dans un produit à elle, il lui faut une licence commerciale, dont les conditions se discutent au cas par cas. C'est à ce comptoir que la conversation commence.",
 "svc3.g": "Convenir d'une licence →",
-"svc.note": "Les signalements sont des tickets GitHub publics (un compte GitHub gratuit suffit pour en déposer un). Chaque signalement atterrit dans la boîte du mainteneur.",
+"svc.note": "Les signalements et demandes de fonctionnalités sont des tickets GitHub publics et nécessitent un compte gratuit. Pour les licences, utilisez le formulaire de contact privé.",
 "g.t": "Conçu pour ne pas corrompre",
 "g.p1": "La présentation est à rendre à huit heures, PowerPoint est en train de l'ouvrir, et là où devrait se trouver votre diapositive de titre s'affiche une invite de réparation. Empêcher ce matin-là est la première tâche de ce serveur. Une sauvegarde horodatée a lieu avant chaque modification, automatiquement. Chaque enregistrement est vérifié avant de remplacer votre fichier. Tout ce qu'une modification ne touche pas, animations, médias, objets incorporés, traverse intact, octet pour octet. Et quand le serveur n'est pas sûr de la forme que vous visiez, il s'arrête et vous montre les candidats au lieu de deviner ; prendre la mauvaise première correspondance, c'est la politique des autres.",
 "g.p2": "Fourni tel quel, sans garantie d'aucune sorte, conformément à la licence ; l'ingénierie ci-dessus dit simplement avec quel sérieux vos jeux de diapositives sont traités. Gardez des sauvegardes. (Il les fait pour vous.)",
@@ -1835,7 +1893,7 @@ fr: {
 "fam4.g": "Visiter le rayon jardin →",
 "f.left": "&copy; 2026 Alvut Consulting, LLC &middot; Sous licence <b>AGPL-3.0</b> : gratuit pour tout usage conforme aux conditions de l'AGPL, y compris son obligation de partage du code source.<br>Licences commerciales pour les organisations qui doivent les diffuser dans des produits fermés (<a href='mailto:licensing@kitchensink4.ai'>licensing@kitchensink4.ai</a>).",
 "f.corp": "Le bureau à l'étage : KitchenSink4AI →",
-"f.right": "<a href='https://github.com/KitchenSink4AI/KitchenSink4PPT'>github.com/KitchenSink4AI/KitchenSink4PPT</a> · <a href='https://github.com/KitchenSink4AI/KitchenSink4PPT/issues/new/choose'>signaler un pépin</a><br>Bâti sur le noyau de sûreté de KitchenSink4Word, prototypé avec Claude Code et endurci par des manches adversariales jusqu'à ce que les agents de test soient à court de réclamations. Voilà une pièce bien décorée ! 🖌️",
+"f.right": "<a href=\"https://github.com/KitchenSink4AI/KitchenSink4PPT\">Code source</a> · <a href=\"https://github.com/KitchenSink4AI/KitchenSink4PPT/issues/new/choose\">Signaler un problème</a>",
 "inst.dev": "Pour les développeurs : pip, sources, autres clients MCP",
 "inst.dp1": "Installez le paquet, puis pointez n'importe quel client MCP sur l'exécutable :",
 "inst.dp2": "Depuis un clone, c'est identique : pointez la commande sur l'exécutable <code>ppt-mcp</code> de l'environnement virtuel du clone. Installation complète dans le <a href='https://github.com/KitchenSink4AI/KitchenSink4PPT#install'>README</a>.",
@@ -1846,6 +1904,9 @@ fr: {
 },
 es: {
 "pageTitle": "KitchenSink4PPT: de todo para Microsoft PowerPoint, hasta lo que no imaginas",
+"f.privacy": "Privacidad",
+"f.contact": "Contacto",
+"m.company": "EMPRESA",
 "m.left": "<b>DEPARTAMENTO DE PINTURA</b> &middot; PASILLO P",
 "pk1.chip": "BLANCO DE IMPRIMACIÓN",
 "pk2.chip": "CANTO DORADO",
@@ -1875,7 +1936,6 @@ es: {
 "hero.invite": "↓ o pruébelo primero: abajo hay un diagrama que puede arrastrar, y las flechas lo siguen",
 "sw.here": "(está aquí)", "sw.store": "La tienda",
 "h2.new": "Recién puesto en el estante", "new.label": "RECIÉN LLEGADO",
-"new.t": "Lo que acaba de añadir la versión 1.2",
 "new.sub": "La versión corta de la entrega, sin tener que leer el registro de cambios.",
 "new1": "Cada lectura tiene presupuesto: una sola llamada ya no puede inundar su conversación, y lo que se queda fuera se nombra.",
 "new2": "Guardar es hasta tres veces más rápido y conserva exactamente la compresión original de cada archivo multimedia.",
@@ -1974,7 +2034,7 @@ es: {
 "svc3.t": "¿Instalación comercial?",
 "svc3.p": "Gratis para cualquier uso que cumpla los términos de la AGPL, incluida su obligación de compartir el código fuente. Si su empresa quiere integrarlo en un producto propio, hace falta una licencia comercial, con las condiciones acordadas caso por caso. En este mostrador empieza esa conversación.",
 "svc3.g": "Gestionar una licencia →",
-"svc.note": "Los partes son issues públicos de GitHub (hace falta una cuenta gratuita de GitHub para presentarlos). Cada parte llega a la bandeja del mantenedor.",
+"svc.note": "Los fallos y las solicitudes de funciones son incidencias públicas de GitHub y requieren una cuenta gratuita. Para licencias, use el formulario de contacto privado.",
 "g.t": "Diseñado para no corromper",
 "g.p1": "La presentación hay que entregarla a las ocho, PowerPoint la está abriendo y donde debería estar su diapositiva de título hay un aviso de reparación. Evitar esa mañana es la primera tarea de este servidor. Antes de cada cambio se hace una copia de seguridad con marca de tiempo, automáticamente. Cada guardado se verifica antes de sustituir su archivo. Lo que una edición no toca, animaciones, medios, objetos incrustados, pasa intacto, byte a byte. Y cuando el servidor no está seguro de qué forma quería usted decir, se detiene y le muestra los candidatos en vez de adivinar; quedarse con la primera coincidencia errónea es política de otros.",
 "g.p2": "Se ofrece tal cual, sin garantía de ningún tipo, según la licencia: la ingeniería anterior solo muestra con cuánta seriedad se tratan sus presentaciones. Conserve copias de seguridad. (Él las hace por usted.)",
@@ -1988,7 +2048,7 @@ es: {
 "fam4.g": "Visite el pasillo de jardín →",
 "f.left": "&copy; 2026 Alvut Consulting, LLC &middot; Con licencia <b>AGPL-3.0</b>: gratis para cualquier uso que cumpla los términos de la AGPL, incluida su obligación de compartir el código fuente.<br>Licencias comerciales para las organizaciones que necesiten distribuirlos en productos cerrados (<a href='mailto:licensing@kitchensink4.ai'>licensing@kitchensink4.ai</a>).",
 "f.corp": "La oficina de arriba: KitchenSink4AI →",
-"f.right": "<a href='https://github.com/KitchenSink4AI/KitchenSink4PPT'>github.com/KitchenSink4AI/KitchenSink4PPT</a> · <a href='https://github.com/KitchenSink4AI/KitchenSink4PPT/issues/new/choose'>informar de un fallo</a><br>Construido sobre el núcleo de seguridad de KitchenSink4Word, prototipado con Claude Code y endurecido en rondas adversariales hasta que los agentes de prueba se quedaron sin quejas. ¡Menuda sala tan bien decorada! 🖌️",
+"f.right": "<a href=\"https://github.com/KitchenSink4AI/KitchenSink4PPT\">Código fuente</a> · <a href=\"https://github.com/KitchenSink4AI/KitchenSink4PPT/issues/new/choose\">Informar de un fallo</a>",
 "inst.dev": "Para desarrolladores: pip, código fuente, otros clientes MCP",
 "inst.dp1": "Instale el paquete y apunte cualquier cliente MCP al ejecutable:",
 "inst.dp2": "Desde un clon funciona igual: apunte el comando al ejecutable <code>ppt-mcp</code> del entorno virtual del clon. La instalación completa está en el <a href='https://github.com/KitchenSink4AI/KitchenSink4PPT#install'>README</a>.",
