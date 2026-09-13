@@ -547,6 +547,9 @@ footer .row>span{min-width:0;overflow-wrap:anywhere}
 }
 
 .footer-links{text-align:center;padding:10px 20px;font-size:12px}.footer-links a{white-space:nowrap}.release-date{font-size:12px;color:var(--ink-soft);white-space:nowrap;margin-left:auto}
+
+/* Local MCP client compatibility and optional setup commands. */
+.mcp-compat{margin:0 0 24px;min-width:0;max-width:100%;line-height:1.6}.mcp-compat p{margin:10px 0;overflow-wrap:anywhere}.mcp-compat summary{cursor:pointer;font-weight:700}.mcp-compat pre{max-width:100%;overflow-x:auto;padding:12px;border:1px solid currentColor;font-size:13px;line-height:1.65}.mcp-compat code{font-family:monospace}
 </style>
 </head>
 <body>
@@ -739,6 +742,16 @@ footer .row>span{min-width:0;overflow-wrap:anywhere}
 <section id="install">
   <div class="wrap">
     <div class="sec-head"><span class="no" data-i18n="no5">DEPT. 05</span><h2 data-i18n="h2.install">Wiring it in</h2></div>
+    <div class="mcp-compat">
+<p data-i18n="compat.lead">Works with Claude Desktop, Claude Code, Codex, and other AI apps that support local MCP servers, including open-source clients.</p>
+<p data-i18n="compat.chatgpt">ChatGPT: use a desktop app with local MCP support. ChatGPT on the web needs a separate remote connection; these downloads do not set that up.</p>
+<details><summary data-i18n="compat.codex">Codex setup</summary>
+<p data-i18n="compat.pre">Install uv first, then run:</p>
+<pre><code>codex mcp add ppt -- uvx kitchensink4ppt</code></pre>
+<p data-i18n="compat.other">Other clients: use uvx as the command and the package name as its argument. Follow your app's MCP setup instructions.</p>
+</details>
+</div>
+
     <p class="for-lead" data-i18n="inst.lead">Three ways in, shortest first. Most people only need the first.</p>
     <div class="orderform">
       <span class="form-no" data-i18n="inst.form">ORDER FORM № KS4P-1</span>
@@ -1089,6 +1102,11 @@ en: {
 "eff.note": "Power users who want everything loaded from the start can pin it: <b>KS4P_MODE=full</b> in the server environment, or a comma-separated pack list. Administrators can lock the selection with KS4P_PACK_POLICY=locked.",
 "h2.install": "Wiring it in",
 "inst.form": "ORDER FORM № KS4P-1",
+"compat.lead": "Works with Claude Desktop, Claude Code, Codex, and other AI apps that support local MCP servers, including open-source clients.",
+"compat.chatgpt": "ChatGPT: use a desktop app with local MCP support. ChatGPT on the web needs a separate remote connection; these downloads do not set that up.",
+"compat.codex": "Codex setup",
+"compat.pre": "Install uv first, then run:",
+"compat.other": "Other clients: use uvx as the command and the package name as its argument. Follow your app's MCP setup instructions.",
 "inst.s1": "① GET THE FIXTURE",
 "inst.s2": "② MIX IT IN (Claude Code)",
 "inst.note": "File-based tools, which are the large majority, need no PowerPoint installation and run cross-platform. The export and validation tools borrow the PowerPoint already installed on the machine when one is there, to render, export, and double-check its own work. Full setup in the <a href='https://github.com/KitchenSink4AI/KitchenSink4PPT#install'>README</a>.",
@@ -1244,6 +1262,11 @@ ko: {
 "eff.note": "처음부터 전부 로드하고 싶은 파워 유저는 고정할 수 있습니다: 서버 환경 변수에 <b>KS4P_MODE=full</b>, 또는 쉼표로 구분한 팩 목록. 관리자는 KS4P_PACK_POLICY=locked로 선택을 잠글 수 있습니다.",
 "h2.install": "설치와 배선",
 "inst.form": "주문서 № KS4P-1",
+"compat.lead": "Claude Desktop, Claude Code, Codex 및 로컬 MCP 서버를 지원하는 다른 AI 앱과 함께 사용할 수 있습니다. 오픈소스 클라이언트도 포함됩니다.",
+"compat.chatgpt": "ChatGPT: 로컬 MCP를 지원하는 데스크톱 앱을 사용하세요. 웹 ChatGPT에는 별도의 원격 연결이 필요하며, 이 다운로드에는 해당 설정이 포함되지 않습니다.",
+"compat.codex": "Codex 설정",
+"compat.pre": "먼저 uv를 설치한 다음 실행하세요:",
+"compat.other": "다른 클라이언트에서는 명령을 uvx로, 인수를 패키지 이름으로 지정하세요. 앱의 MCP 설정 안내를 따르세요.",
 "inst.s1": "① 기구 받기",
 "inst.s2": "② 섞어 넣기 (Claude Code)",
 "inst.note": "대다수를 차지하는 파일 기반 도구는 PowerPoint 설치가 필요 없고 크로스 플랫폼으로 돌아갑니다. 내보내기와 검증 도구는 컴퓨터에 이미 설치된 PowerPoint가 있으면 그것을 빌려서, 자기 작업물을 렌더링하고 내보내고 다시 확인합니다. 전체 설정은 <a href='https://github.com/KitchenSink4AI/KitchenSink4PPT#install'>README</a>에 있습니다.",
@@ -1399,6 +1422,11 @@ ja: {
 "eff.note": "最初から全部読み込みたいパワーユーザーは固定できます:サーバー環境に <b>KS4P_MODE=full</b>、またはカンマ区切りのパック一覧。管理者は KS4P_PACK_POLICY=locked で選択をロックできます。",
 "h2.install": "取り付けと配線",
 "inst.form": "注文書 № KS4P-1",
+"compat.lead": "Claude Desktop、Claude Code、Codex、およびローカル MCP サーバーに対応する AI アプリで利用できます。オープンソースのクライアントも含みます。",
+"compat.chatgpt": "ChatGPT: ローカル MCP 対応のデスクトップアプリを使用してください。Web 版には別途リモート接続が必要です。このダウンロードでは設定されません。",
+"compat.codex": "Codex の設定",
+"compat.pre": "まず uv をインストールしてから実行:",
+"compat.other": "その他のクライアントでは、コマンドを uvx、引数をパッケージ名に設定してください。各アプリの MCP 設定手順に従ってください。",
 "inst.s1": "① 器具を入手",
 "inst.s2": "② 混ぜ込む (Claude Code)",
 "inst.note": "大多数を占めるファイルベースのツールに PowerPoint のインストールは不要で、クロスプラットフォームで動きます。書き出しと検証のツールは、そのマシンにすでに入っている PowerPoint があればそれを借りて、自分の仕事を描画し、書き出し、確かめ直します。詳しい設定は <a href='https://github.com/KitchenSink4AI/KitchenSink4PPT#install'>README</a> へ。",
@@ -1554,6 +1582,11 @@ zh: {
 "eff.note": "想一开始就全部载入的重度用户可以钉死它:在服务器环境里设 <b>KS4P_MODE=full</b>,或给出逗号分隔的包列表。管理员可用 KS4P_PACK_POLICY=locked 锁定选择。",
 "h2.install": "装上,接好",
 "inst.form": "订购单 № KS4P-1",
+"compat.lead": "支持 Claude Desktop、Claude Code、Codex 及其他支持本地 MCP 服务器的 AI 应用，包括开源客户端。",
+"compat.chatgpt": "ChatGPT：请使用支持本地 MCP 的桌面应用。网页版需要单独配置远程连接；这些下载不会完成该配置。",
+"compat.codex": "Codex 设置",
+"compat.pre": "先安装 uv，然后运行：",
+"compat.other": "其他客户端：将命令设为 uvx，参数设为包名，并按照应用的 MCP 设置说明操作。",
 "inst.s1": "① 领取器具",
 "inst.s2": "② 调进去(Claude Code)",
 "inst.note": "占大多数的基于文件的工具无需安装 PowerPoint,并且跨平台运行。导出与校验工具在机器上已经装好 PowerPoint 时会借来一用,用来渲染、导出并复核自己的成果。完整设置见 <a href='https://github.com/KitchenSink4AI/KitchenSink4PPT#install'>README</a>。",
@@ -1709,6 +1742,11 @@ de: {
 "eff.note": "Poweruser, die von Anfang an alles geladen haben wollen, können es festnageln: <b>KS4P_MODE=full</b> in der Serverumgebung, oder eine kommagetrennte Paketliste. Administratoren sperren die Auswahl mit KS4P_PACK_POLICY=locked.",
 "h2.install": "Montage und Anschluss",
 "inst.form": "BESTELLSCHEIN № KS4P-1",
+"compat.lead": "Für Claude Desktop, Claude Code, Codex und andere KI-Apps mit Unterstützung für lokale MCP-Server, einschließlich Open-Source-Clients.",
+"compat.chatgpt": "ChatGPT: Verwenden Sie eine Desktop-App mit lokaler MCP-Unterstützung. ChatGPT im Web benötigt eine separate Remote-Verbindung; diese Downloads richten sie nicht ein.",
+"compat.codex": "Codex einrichten",
+"compat.pre": "Zuerst uv installieren, dann ausführen:",
+"compat.other": "Andere Clients: uvx als Befehl und den Paketnamen als Argument verwenden. Folgen Sie der MCP-Anleitung Ihrer App.",
 "inst.s1": "① DIE ARMATUR BESORGEN",
 "inst.s2": "② EINRÜHREN (Claude Code)",
 "inst.note": "Dateibasierte Werkzeuge, die große Mehrheit, brauchen kein installiertes PowerPoint und laufen plattformübergreifend. Die Export- und Prüfwerkzeuge leihen sich das PowerPoint, das auf dem Rechner schon installiert ist, wenn eines da ist, um ihre eigene Arbeit zu rendern, zu exportieren und noch einmal zu prüfen. Vollständige Einrichtung im <a href='https://github.com/KitchenSink4AI/KitchenSink4PPT#install'>README</a>.",
@@ -1864,6 +1902,11 @@ fr: {
 "eff.note": "Les utilisateurs avancés qui veulent tout charger dès le départ peuvent l'épingler : <b>KS4P_MODE=full</b> dans l'environnement du serveur, ou une liste de packs séparés par des virgules. Les administrateurs peuvent verrouiller la sélection avec KS4P_PACK_POLICY=locked.",
 "h2.install": "Montage et raccordement",
 "inst.form": "BON DE COMMANDE № KS4P-1",
+"compat.lead": "Compatible avec Claude Desktop, Claude Code, Codex et les autres applications IA prenant en charge les serveurs MCP locaux, y compris les clients open source.",
+"compat.chatgpt": "ChatGPT : utilisez une application de bureau compatible avec les MCP locaux. La version web nécessite une connexion distante distincte, que ces téléchargements ne configurent pas.",
+"compat.codex": "Configurer Codex",
+"compat.pre": "Installez uv, puis exécutez :",
+"compat.other": "Autres clients : utilisez uvx comme commande et le nom du paquet comme argument. Suivez les instructions MCP de votre application.",
 "inst.s1": "① SE PROCURER LA ROBINETTERIE",
 "inst.s2": "② L'AJOUTER AU MÉLANGE (Claude Code)",
 "inst.note": "Les outils sur fichier, la grande majorité, ne demandent aucune installation de PowerPoint et tournent sur toutes les plateformes. Les outils d'export et de validation empruntent le PowerPoint déjà installé sur la machine quand il y en a un, pour rendre, exporter et revérifier leur propre travail. Configuration complète dans le <a href='https://github.com/KitchenSink4AI/KitchenSink4PPT#install'>README</a>.",
@@ -2019,6 +2062,11 @@ es: {
 "eff.note": "Los usuarios avanzados que quieran todo cargado desde el principio pueden fijarlo: <b>KS4P_MODE=full</b> en el entorno del servidor, o una lista de paquetes separada por comas. Los administradores pueden bloquear la selección con KS4P_PACK_POLICY=locked.",
 "h2.install": "Montaje y conexión",
 "inst.form": "HOJA DE PEDIDO № KS4P-1",
+"compat.lead": "Compatible con Claude Desktop, Claude Code, Codex y otras aplicaciones de IA que admitan servidores MCP locales, incluidos clientes de código abierto.",
+"compat.chatgpt": "ChatGPT: use una aplicación de escritorio compatible con MCP local. La versión web necesita una conexión remota aparte; estas descargas no la configuran.",
+"compat.codex": "Configurar Codex",
+"compat.pre": "Instale uv y ejecute:",
+"compat.other": "Otros clientes: use uvx como comando y el nombre del paquete como argumento. Siga las instrucciones MCP de su aplicación.",
 "inst.s1": "① CONSIGA LA GRIFERÍA",
 "inst.s2": "② MÉZCLELO (Claude Code)",
 "inst.note": "Las herramientas basadas en archivo, la gran mayoría, no necesitan PowerPoint instalado y corren en cualquier plataforma. Las herramientas de exportación y validación toman prestado el PowerPoint ya instalado en la máquina cuando lo hay, para renderizar, exportar y comprobar de nuevo su propio trabajo. Configuración completa en el <a href='https://github.com/KitchenSink4AI/KitchenSink4PPT#install'>README</a>.",
