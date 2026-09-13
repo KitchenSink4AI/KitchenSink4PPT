@@ -27,9 +27,12 @@ that adds this file, so the gate is green the day it lands and every hit
 after that is a regression. ``docs/index.html`` joined that list on
 2026-09-09, after four landing pages shipped figures their own READMEs
 contradicted; the published-figure guard at the bottom of this file
-covers the same class from the other direction. The ``src/`` trees are
-deliberately NOT in scope: the em dashes in their refusal strings are an
-author decision, not a gate decision. This is the KS4Web gate (``tests/unit/
+covers the same class from the other direction. The ``src/`` trees used to
+sit outside this gate, because the em dashes in their refusal strings were
+an author decision rather than a gate decision. The author ruled on
+2026-09-13 that no em dash belongs in any served text, the hints were
+reworded on 2026-09-14, and ``test_copy_guards.py`` now holds that tree to
+the same rule at the source level. This is the KS4Web gate (``tests/unit/
 test_ship_gate.py`` there), ported by the 2026-09-09 copy fill wave so the
 family is checked by one rule rather than by one product's discipline.
 """

@@ -157,7 +157,7 @@ def _latex_to_omath(latex: str) -> etree._Element:
     if _banned:
         raise PptMcpError(
             f"\\{_banned.group(1)} is a file/preamble macro, not equation "
-            "content; remove it — only math-mode LaTeX converts"
+            "content; remove it; only math-mode LaTeX converts"
         )
     fixed = _rewrite_aligned(latex)
     try:
@@ -198,7 +198,7 @@ def _latex_to_omath(latex: str) -> etree._Element:
         raise EquationConversionError(
             "LaTeX did not fully convert: unknown control sequence(s) "
             f"{shown} passed through as literal text "
-            f"(input was: {_echo(latex)}); check the macro names — the "
+            f"(input was: {_echo(latex)}); check the macro names; the "
             "presentation was not changed"
         )
     if not linear.strip() and latex.strip():

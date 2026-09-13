@@ -574,7 +574,7 @@ def com_export_handout(
         if slides_per_page != 3:
             raise PptMcpError(
                 "include_notes=True exports notes pages (one slide per "
-                "page); slides_per_page does not apply — drop it or use "
+                "page); slides_per_page does not apply; drop it or use "
                 "include_notes=False"
             )
         output_type = PP_PRINT_OUTPUT_NOTES_PAGES

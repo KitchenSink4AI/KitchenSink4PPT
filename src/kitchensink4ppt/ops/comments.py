@@ -887,7 +887,7 @@ def comment_report(pkg: PptxPackage) -> dict:
     open_threads = 0
     resolved_threads = 0
     slides_with = []
-    md: list[str] = [f"# Comment report — {pkg.path.name}", ""]
+    md: list[str] = [f"# Comment report: {pkg.path.name}", ""]
     for slide in listing["slides"]:
         if not slide["comments"]:
             continue

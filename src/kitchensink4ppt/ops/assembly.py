@@ -854,7 +854,7 @@ def split_deck(
         if not written:
             raise
         note = (
-            f" NOTE: the split is incomplete — {len(written)} output "
+            f" NOTE: the split is incomplete: {len(written)} output "
             f"file(s) were already written before this failure and remain "
             f"on disk: {', '.join(written)}."
         )
