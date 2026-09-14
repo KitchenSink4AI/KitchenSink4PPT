@@ -92,6 +92,8 @@ Requires Python 3.12+. Everything file-based runs on any OS; PDF and image
 export prefer PowerPoint via COM on Windows and fall back to LibreOffice
 headless where available. Nothing ever needs a network connection.
 
+For guided Windows setup, signed license receipts, and email support, see the KitchenSink4AI Business edition: https://kitchensink4.ai/products/business/
+
 ## Tiered loading: start light, grow mid-session
 
 The server starts in lite mode: 25 tools, roughly 5.5k tokens of tool
