@@ -1,4 +1,8 @@
 <!-- mcp-name: io.github.nometalalchemist/kitchensink4ppt -->
+<!-- The line above verifies the name server.json declares today. The line below
+     is the org namespace the next version bump moves to; both may sit here, because
+     the registry looks for the one string that matches server.json. -->
+<!-- mcp-name: io.github.KitchenSink4AI/kitchensink4ppt -->
 # 🖌️ KitchenSink4PPT
 
 [![Tests](https://github.com/KitchenSink4AI/KitchenSink4PPT/actions/workflows/tests.yml/badge.svg)](https://github.com/KitchenSink4AI/KitchenSink4PPT/actions/workflows/tests.yml)
