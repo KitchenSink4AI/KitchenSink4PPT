@@ -192,6 +192,10 @@ The same discipline as KitchenSink4Word, applied from day one:
 - **Locks.** Mutations of one file are serialized in-process and across
   processes; files open in PowerPoint are refused rather than corrupted.
 
+## Privacy Policy
+
+[[OWNER: privacy policy section, links https://kitchensink4.ai/privacy/]]
+
 ## Maturity
 
 Beta. The file layer (packages, slides, text, graphics, tables, charts,
