@@ -47,6 +47,7 @@ from . import packs as _packs
 from . import shipped as _shipped
 from .core import errors as _err
 from .core import readonly as _readonly
+from .core import tool_annotations as _toolann
 from .core import update_check as _upd
 from .core import star_nudge as _star_nudge
 from .core.package import PptxPackage
@@ -389,9 +390,9 @@ def _tool(pack: str | None = None):
             _FunctionTool.from_function(
                 wrapper,
                 tags={pack or "lite"},
-                annotations={
-                    "readOnlyHint": _readonly.read_only_hint(fn.__name__)
-                },
+                annotations=_toolann.annotations(
+                    fn.__name__, _readonly.read_only_hint(fn.__name__)
+                ),
             )
         )
         _packs.register(fn.__name__, pack, tool_obj)
