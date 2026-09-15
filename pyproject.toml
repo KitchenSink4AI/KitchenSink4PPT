@@ -10,6 +10,20 @@ keywords = [
     "mcp", "powerpoint", "pptx", "ooxml", "claude", "model-context-protocol",
     "presentations", "slides", "shapes", "svg", "vector-graphics", "tables",
 ]
+classifiers = [
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: End Users/Desktop",
+    "Natural Language :: English",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Text Processing :: Markup :: XML",
+]
 requires-python = ">=3.12"
 dependencies = [
     # PINNED, and the pin is a floor not a shrug: 3.4 is where the

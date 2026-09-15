@@ -2,7 +2,7 @@
 
 > Everything plus the kitchen sink for Microsoft PowerPoint: the KitchenSink-family .pptx MCP server. 142 tools organized as capability packs with tiered loading from day one. Headline capability: native tweakable graphics, meaning SVG converted to grouped native PowerPoint shapes with glued connectors, editable afterward by shape identity (move the node, the arrows follow). Also the first file-based structural table operations in any PowerPoint MCP server (merge cells, insert/delete rows and columns), slide CRUD done right (insert, deep duplicate, delete with cleanup, reorder, hide), create-from-template with theme-color-referenced fills, and render-to-verify export. Engineered not to corrupt: atomic validated saves, automatic backups before every mutation, byte-identical passthrough of untouched parts, published adversarial test evidence.
 
-This file describes v1.2.
+Release: v1.2.2
 Platform: file-based tools (the large majority) are cross-platform and need no PowerPoint installation; the export and validation tools (PDF, per-slide PNG, opens-clean check) use a local Microsoft PowerPoint via COM on Windows when present.
 MCP transport: stdio.
 
@@ -10,6 +10,7 @@ MCP transport: stdio.
 
 - pip: `pip install kitchensink4ppt`
 - uvx (no install): `uvx kitchensink4ppt`
+- Claude Desktop: download the `.mcpb` bundle from the latest GitHub release and open it. Requires `uv` on PATH.
 - Claude Code: `claude mcp add ppt -s user -- kitchensink4ppt`
 - Any other MCP client: run the `kitchensink4ppt` (or `ppt-mcp`) executable over stdio, e.g. `{"mcpServers": {"ppt": {"command": "kitchensink4ppt"}}}`
 - MCP registry name: `io.github.nometalalchemist/kitchensink4ppt`
@@ -64,12 +65,33 @@ Heavy editing with a safety net:
 - Slide order is resolved through the presentation's slide list, never ZIP entry order.
 - Release evidence for v1.2: 1,251 tests, over 1,500 adversarial calls through the raw MCP stdio transport, zero corruptions, verified by opening outputs in invisible PowerPoint and failing on any repair prompt.
 
+## Documented refusals
+
+These are contracts. Handle them; do not retry blindly. The 12 closed codes:
+
+- `AMBIGUOUS_LOCATION` several targets matched; use the unambiguous address from the candidates in the message.
+- `NOT_FOUND` re-run get_presentation_view or get_slide_info to see current slides, ids, and anchors.
+- `STALE_ANCHOR` the deck changed since the view was taken; re-run get_presentation_view and resend with fresh anchors.
+- `DOCUMENT_LOCKED` close the file in PowerPoint (or wait out the other process) and retry; dual-mode tools accept live='auto' to edit the open copy instead.
+- `VALIDATION_FAILED` the original file was NOT modified; the message says what the produced package failed.
+- `APP_NOT_RUNNING` this operation needs PowerPoint installed and reachable.
+- `APP_BUSY` PowerPoint is showing a dialog or running a command; clear it and retry.
+- `APP_BLOCKED` PowerPoint is not answering; wait or restart it.
+- `PROTECTED_VIEW` click Enable Editing in PowerPoint first.
+- `UNSUPPORTED_CONTENT` structurally unsupported or password-protected content, refused instead of written partially.
+- `CONFLICT` the destination path exists and overwrite was not requested.
+- `BAD_PARAMS` bad arguments, including a path outside the configured sandbox roots (`KS4P_ALLOWED_ROOTS`).
+
+Refusals are the reliability feature, not the failure mode. A refusal names
+what was wrong, leaves the file untouched, and carries the next call in
+`hint`. Retrying the same call unchanged is never the fix.
+
 ## The KitchenSink family
 
 - KitchenSink4Word (the original fixture, 221 operations across 110 tools for .docx): https://kitchensink4.ai/KitchenSink4Word/
 - KitchenSink4XL (the electrical aisle, 69 tools for .xlsx, every value labeled calculated, cached, or absent): https://kitchensink4.ai/KitchenSink4XL/
 - KitchenSink4Web (the garden section, browser automation with budget-priced page reads and a consent ladder): https://kitchensink4.ai/KitchenSink4Web/
-- Family storefront: https://kitchensink4.ai/products/community/
+- Family storefront: https://kitchensink4.ai/products/
 
 ## Links
 
