@@ -104,3 +104,7 @@ what was wrong, leaves the file untouched, and carries the next call in
 ## License
 
 AGPL-3.0. Free for any use under AGPL terms (copyleft: modifications to served copies must be shared). Commercial license available for use cases that cannot comply with AGPL: https://github.com/KitchenSink4AI/KitchenSink4PPT/issues/new?template=commercial_license.yml
+
+## Trademarks
+
+Not affiliated with, endorsed by, or sponsored by Microsoft Corporation. Microsoft and PowerPoint are trademarks of the Microsoft group of companies.
