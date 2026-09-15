@@ -11,24 +11,73 @@
 
 [Landing page](https://kitchensink4ai.github.io/KitchenSink4PPT/) · [llms.txt](https://kitchensink4ai.github.io/KitchenSink4PPT/llms.txt) (machine-readable capability manifest for agents and LLM crawlers)
 
-A full-featured PowerPoint (.pptx) MCP server: slides, text, native vector
-diagrams your hands can still move, structural tables, charts, speaker
-notes, and render-to-verify export, with budgeted reads that never flood a
-conversation. 142 tools. Works with Claude Code, Claude Desktop, Cursor, and
-any MCP client. Part of the KitchenSink4AI suite with kitchensink4word
-(Word), kitchensink4xl (Excel), and kitchensink4web (browser).
+**Build and revise PowerPoint decks with your AI assistant, with diagrams made of shapes you can still edit.**
+
+Create and revise real PowerPoint presentations from Claude Code, Codex CLI, Copilot CLI or any other MCP client that runs local tools. KitchenSink4PPT connects your assistant to .pptx files, and its diagrams are built from native shapes and connectors, so the slide is still yours to change after the AI is done. Files are processed on your computer; the only thing that leaves it is what your AI app sends to its own provider. The Community edition is free under the AGPL. The Business edition adds a Windows installer, a signed update channel, a licence your company can approve and support.
+
+**Works on:** Windows, macOS and Linux for the file tools. Live PowerPoint features need Windows with PowerPoint. PDF and image export need PowerPoint on Windows or a supported LibreOffice.
+
+## Install
+
+Pick the route for your AI app. The commands go in PowerShell on Windows or a terminal on macOS and Linux, not into an AI chat. The package routes need Python 3.12 or newer.
+
+**Claude Desktop**
+
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/), then quit and reopen Claude Desktop. Download the `.mcpb` file from [KitchenSink4PPT releases](https://github.com/KitchenSink4AI/KitchenSink4PPT/releases/latest). In Claude Desktop open Settings, then Extensions, then Advanced settings, then Install extension, and choose the file. The bundle fetches the Python package the first time it starts, so the first launch needs a network connection. Restart your session and check that the tools show as connected.
+
+**Claude Code or Codex CLI**
+
+Install uv, then run the line for your app and restart your session:
+
+```sh
+claude mcp add ppt -s user -- uvx kitchensink4ppt
+```
+
+```sh
+codex mcp add ppt -- uvx kitchensink4ppt
+```
+
+**Any other local MCP client**
+
+Use `uvx` as the command and `kitchensink4ppt` as its argument, or install the package and use `kitchensink4ppt` as the server command:
+
+```sh
+pip install kitchensink4ppt
+```
+
+Then follow your client's guide for adding a local MCP server. Installing the package on its own does not connect it to an AI app.
+
+**Business edition**
+
+Compare the editions on the [pricing page](https://kitchensink4.ai/pricing/). Already purchased? Your Windows installer and download link are in your [licence portal](https://get.kitchensink4.ai/my-license/).
+
+## What it can do
+
+142 tools with every pack enabled; 25 in the lite surface.
+
+- Build a deck from a template and revise its text and speaker notes.
+- Draw diagrams from editable shapes and connectors.
+- Turn supported SVG graphics into native PowerPoint shapes.
+- Align objects and apply consistent fonts, colors and layouts.
+- Build tables and charts that colleagues can keep editing.
+- Merge, split or compare decks and review comments.
+- Check slides for accessibility issues and apply the supported repairs.
+- Export PDF or slide images when a rendering application is installed.
+
+What is available depends on the packs you enable and the applications installed. The full tool reference is below.
+
+## Business edition
+
+Need a licence your company can approve and a setup someone supports? The Business edition pairs these tools with a Windows installer, a signed update channel and support under the Business terms. Update checks tell you when a covered release is available; nothing installs on its own. Compare the options on the [pricing page](https://kitchensink4.ai/pricing/). The Community edition stays free under the AGPL, including business use that meets its terms.
+
+## Privacy Policy
+
+The tools run on your computer, and KitchenSink4AI receives no documents and no usage data from them. Your AI app may send prompts, file contents and tool results to its own provider under that app's settings and terms. Installing downloads packages, and the Community version check contacts PyPI unless you disable it; those requests carry connection details such as your network address and never your documents. Cloud folders and backups follow their own settings. The [Privacy Policy](https://kitchensink4.ai/privacy/) covers the product, purchases and support records.
 
 Not affiliated with, endorsed by, or sponsored by Microsoft Corporation.
 Microsoft and PowerPoint are trademarks of the Microsoft group of companies.
 Dual-licensed: AGPL-3.0, or a commercial license for organizations that need
 to ship it in closed products ([details](#license)).
-
-Everything plus the kitchen sink for Microsoft PowerPoint: an MCP server for
-.pptx files, engineered not to corrupt. Slides, text, tables, charts, notes,
-export, and the one thing no other server in the ecosystem does: arbitrary
-vector graphics as native, editable PowerPoint shapes.
-
-New here? Start with the [Quickstart](docs/QUICKSTART.md).
 
 ## The headline: real graphics, not pictures of graphics
 
@@ -48,55 +97,29 @@ deck to can nudge any piece in seconds, with no regeneration round trip.
 `export_slide_image` renders a PNG so the agent can look at what it made and
 fix it.
 
-## Install
+## Pack inventory (142 tools total)
 
-### Claude Desktop: one click
+| Pack | Tools | ~Tokens | What is in it |
+|---|---|---|---|
+| lite core (always on) | 25 | 5.5k | anchored deck view, atomic batch edits, get/find/replace text (live-aware, SmartArt text included), slide insert/delete/duplicate/reorder, placeholder text, hyperlinks (set/remove/list with broken-link detection), info and enumeration, copy, snapshots, backups, diagnose, workflows, enable/disable_tools |
+| graphics | 27 | 7.1k | shapes, glued connectors, SVG compiler, one-call diagram generators (timeline, org chart, matrix, cycle, comparison), images, video/audio embed, groups, align/distribute, z-order, text boxes, run formatting, bullets, format painter (copy_format/copy_position), native LaTeX equations |
+| tables-charts | 19 | 4.1k | create table, bulk cells, merge/unmerge, row and column insert/delete, borders and fills, widths/heights, 74 built-in styles, CSV/JSON export/import, bar/line/pie/scatter/combo charts with editable data workbooks, chart formatting and data readback |
+| design | 25 | 5.1k | create presentation FROM template, apply layouts, theme read AND write (colors, fonts), brand extract/apply, layout guardrail checks, slide size, hide/move slide, autofit report, slide and master/layout backgrounds, full master and layout editing (placeholders, decoration shapes, create_layout), accessibility audit and repair |
+| assembly-export | 28 | 5.2k | speaker notes, sections, footers and slide numbers, PDF/PNG/handout export, engine detection, opens-clean validation, text extraction, cross-deck slide copy, deck merge and split, agenda slides, deck statistics, document properties, anonymize, slide-show setup and custom shows, slide transitions (fade/push/wipe/split/cut/random, millisecond durations, auto-advance) and bounded entrance animations (appear/fade/wipe, click builds, by-paragraph) |
+| review-sweeps | 13 | 2.4k | modern threaded comments (add, replies, resolve, cascade delete, dual-system listing), whole-deck review report, structural deck-to-deck diff (compare_decks), and the deck-wide sweeps: font inventory/replace (incl. charts and phantom declarations), color remap and literal-to-theme unification, proofing language, whole-deck logo replace, compress/purge |
+| com (Windows only) | 5 | 0.6k | PowerPoint status and zombie process check, plus editing the deck while it is OPEN in the user's PowerPoint: explicit save, scroll-to-slide, session status; eleven file tools route here automatically via `live='auto'` |
 
-Download `kitchensink4ppt.mcpb` from the
-[latest release](https://github.com/KitchenSink4AI/KitchenSink4PPT/releases/latest)
-and double-click it, or drag it into the Claude Desktop window. Desktop adds
-it as an extension and the sink is connected. Nothing to type, nothing to
-configure. The bundle launches the server with
-[uv](https://docs.astral.sh/uv/), so uv needs to be on your PATH
-(`pip install uv`); if Desktop does not pick the file up on a double-click,
-use Settings > Extensions > Advanced settings > Install extension.
+Full surface: about 29.9k tokens if you pin `KS4P_MODE=full` (numbers from
+`scripts/measure_surface.py`, not hand-math).
 
-### Claude Code: one line
+v1.1 consolidated nine packs into six. The v1.0 names
+`transitions-animations`, `review`, `sweeps`, and `com-live` still resolve
+to their new homes in `enable_tools`, `disable_tools`, and `KS4P_MODE`, so
+nothing that worked before stops working.
 
-```
-claude mcp add powerpoint -s user -- uvx kitchensink4ppt
-```
-
-That fetches and runs the server for you, so there is nothing to install
-first.
-
-### For developers: pip, source, other MCP clients
-
-Install the package and point any MCP client at the executable:
-
-```
-pip install kitchensink4ppt
-```
-
-```json
-{"mcpServers": {"powerpoint": {"command": "kitchensink4ppt"}}}
-```
-
-The `ppt-mcp` executable is an equivalent entry point. From a clone:
-
-```
-git clone https://github.com/KitchenSink4AI/KitchenSink4PPT
-cd KitchenSink4PPT
-python -m venv .venv
-.venv\Scripts\pip install -e .
-claude mcp add powerpoint -s user -- <absolute-path>\.venv\Scripts\ppt-mcp.exe
-```
-
-Requires Python 3.12+. Everything file-based runs on any OS; PDF and image
-export prefer PowerPoint via COM on Windows and fall back to LibreOffice
-headless where available. Nothing ever needs a network connection.
-
-For guided Windows setup, signed license receipts, and email support, see the KitchenSink4AI Business edition: https://kitchensink4.ai/products/business/
+Structural table operations on the file itself (merging, inserting and
+deleting rows AND columns, per-edge borders) exist in no other PowerPoint
+MCP server; they were previously COM-or-nothing.
 
 ## Tiered loading: start light, grow mid-session
 
@@ -143,30 +166,6 @@ Tip: in Claude Desktop's Tool permissions, set the Read-only tools group to
 Always Allow: those tools cannot change anything, and it stops most
 permission prompts.
 
-## Pack inventory (142 tools total)
-
-| Pack | Tools | ~Tokens | What is in it |
-|---|---|---|---|
-| lite core (always on) | 25 | 5.5k | anchored deck view, atomic batch edits, get/find/replace text (live-aware, SmartArt text included), slide insert/delete/duplicate/reorder, placeholder text, hyperlinks (set/remove/list with broken-link detection), info and enumeration, copy, snapshots, backups, diagnose, workflows, enable/disable_tools |
-| graphics | 27 | 7.1k | shapes, glued connectors, SVG compiler, one-call diagram generators (timeline, org chart, matrix, cycle, comparison), images, video/audio embed, groups, align/distribute, z-order, text boxes, run formatting, bullets, format painter (copy_format/copy_position), native LaTeX equations |
-| tables-charts | 19 | 4.1k | create table, bulk cells, merge/unmerge, row and column insert/delete, borders and fills, widths/heights, 74 built-in styles, CSV/JSON export/import, bar/line/pie/scatter/combo charts with editable data workbooks, chart formatting and data readback |
-| design | 25 | 5.1k | create presentation FROM template, apply layouts, theme read AND write (colors, fonts), brand extract/apply, layout guardrail checks, slide size, hide/move slide, autofit report, slide and master/layout backgrounds, full master and layout editing (placeholders, decoration shapes, create_layout), accessibility audit and repair |
-| assembly-export | 28 | 5.2k | speaker notes, sections, footers and slide numbers, PDF/PNG/handout export, engine detection, opens-clean validation, text extraction, cross-deck slide copy, deck merge and split, agenda slides, deck statistics, document properties, anonymize, slide-show setup and custom shows, slide transitions (fade/push/wipe/split/cut/random, millisecond durations, auto-advance) and bounded entrance animations (appear/fade/wipe, click builds, by-paragraph) |
-| review-sweeps | 13 | 2.4k | modern threaded comments (add, replies, resolve, cascade delete, dual-system listing), whole-deck review report, structural deck-to-deck diff (compare_decks), and the deck-wide sweeps: font inventory/replace (incl. charts and phantom declarations), color remap and literal-to-theme unification, proofing language, whole-deck logo replace, compress/purge |
-| com (Windows only) | 5 | 0.6k | PowerPoint status and zombie process check, plus editing the deck while it is OPEN in the user's PowerPoint: explicit save, scroll-to-slide, session status; eleven file tools route here automatically via `live='auto'` |
-
-Full surface: about 29.9k tokens if you pin `KS4P_MODE=full` (numbers from
-`scripts/measure_surface.py`, not hand-math).
-
-v1.1 consolidated nine packs into six. The v1.0 names
-`transitions-animations`, `review`, `sweeps`, and `com-live` still resolve
-to their new homes in `enable_tools`, `disable_tools`, and `KS4P_MODE`, so
-nothing that worked before stops working.
-
-Structural table operations on the file itself (merging, inserting and
-deleting rows AND columns, per-edge borders) exist in no other PowerPoint
-MCP server; they were previously COM-or-nothing.
-
 ## Safety story
 
 The same discipline as KitchenSink4Word, applied from day one:
@@ -191,10 +190,6 @@ The same discipline as KitchenSink4Word, applied from day one:
   out is checked.
 - **Locks.** Mutations of one file are serialized in-process and across
   processes; files open in PowerPoint are refused rather than corrupted.
-
-## Privacy Policy
-
-[[OWNER: privacy policy section, links https://kitchensink4.ai/privacy/]]
 
 ## Maturity
 
