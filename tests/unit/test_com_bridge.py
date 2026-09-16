@@ -236,6 +236,7 @@ def _run_scenario(tmp_path: Path, mode: str, *args: str) -> dict:
 # --------------------------------------------------------------- COM rounds
 
 
+@pytest.mark.live
 @pytest.mark.timeout(600)
 def test_com_export_round(tmp_path):
     """PDF export (bridge + auto routing), PNG slide export, source file
@@ -282,6 +283,7 @@ def test_com_export_round(tmp_path):
         assert out["status"]["powerpoint_running"] is False
 
 
+@pytest.mark.live
 @pytest.mark.timeout(600)
 def test_com_export_handout_round(tmp_path):
     """Handout PDF export (3-up, 9-up, notes pages) via ExportAsFixedFormat:
@@ -334,6 +336,7 @@ def test_export_handout_com_only_refusal_names_alternative(
     assert "PowerPoint" in msg and "export_pdf" in msg
 
 
+@pytest.mark.live
 @pytest.mark.timeout(600)
 def test_com_validate_round(tmp_path):
     """validate_opens_clean: clean verdict with full-load counts on a real
@@ -418,6 +421,7 @@ def test_export_pdf_missing_source():
         export_ops.export_pdf(str(REPO / "no_such_deck.pptx"))
 
 
+@pytest.mark.live
 @pytest.mark.timeout(600)
 def test_libreoffice_pdf_fallback(make_deck, tmp_path):
     """The non-COM fallback: soffice headless PDF conversion. Runs whenever

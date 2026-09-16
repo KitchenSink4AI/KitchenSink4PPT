@@ -302,6 +302,7 @@ class TestRemove:
         assert hl is not None and hl.get("action") == "ppaction://media"
 
 
+@pytest.mark.live
 def test_com_validates_link_deck(make_deck, tmp_path):
     """PowerPoint opens a deck with external + jump + text-range links clean."""
     import com_validate

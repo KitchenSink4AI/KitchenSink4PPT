@@ -1,5 +1,7 @@
 # KitchenSink4PPT : License Notice
 
+KitchenSink4PPT is Copyright (c) 2026 Alvut Consulting, LLC.
+
 KitchenSink4PPT is dual-licensed:
 
 **AGPL-3.0 (open source).** Free for anyone (individuals, academics, and

@@ -322,6 +322,7 @@ def _powerpnt_still_running_after_grace(seconds: float = 20.0) -> bool:
     return True
 
 
+@pytest.mark.live
 @pytest.mark.timeout(600)
 def test_com_validator_on_compressed_deck(tmp_path):
     """PowerPoint must open the compressed + purged military brief clean."""

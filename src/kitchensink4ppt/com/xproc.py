@@ -60,6 +60,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import socket
 import sys
 import tempfile
 import threading
@@ -82,8 +83,7 @@ APP_SCOPE = "powerpoint-app"
 #: "the other server was doing ordinary work".
 LOCK_WAIT_SECONDS = 120.0
 
-#: A lockfile older than this is broken regardless of PID liveness. No
-#: legitimate live session holds PowerPoint for ten minutes.
+#: Historical compatibility constant; live locks are never evicted by age.
 LOCK_STALE_SECONDS = 10 * 60
 
 #: A lockfile we cannot parse is only assumed abandoned after this long
@@ -222,7 +222,7 @@ def _publish_lockfile(lock_path: Path, holder: str) -> bool:
         "pid_created": _OWNER_CREATED,
         "time": time.time(),
         "holder": holder,
-        "host": os.environ.get("COMPUTERNAME", ""),
+        "host": _local_host(),
     })
     tmp = lock_path.parent / f".lock-{uuid.uuid4().hex}.tmp"
     try:
@@ -254,7 +254,7 @@ def _publish_lockfile(lock_path: Path, holder: str) -> bool:
 
 
 def _is_ours(info: dict) -> bool:
-    return info.get("token") == _OWNER_TOKEN
+    return not _foreign_host(info) and info.get("token") == _OWNER_TOKEN
 
 
 def _break_lock(lock_path: Path) -> None:
@@ -264,13 +264,13 @@ def _break_lock(lock_path: Path) -> None:
 
 def _is_stale(info: dict) -> bool:
     """A lock nobody can still be holding."""
+    if _foreign_host(info):
+        return False  # Wait/refuse; only the remote host can establish liveness.
     pid = info.get("pid", -1)
-    stamp = info.get("time", 0.0)
-    age = time.time() - stamp if isinstance(stamp, (int, float)) else None
     if not isinstance(pid, int) or not _pid_alive(pid):
         return True
-    if age is None or age > LOCK_STALE_SECONDS:
-        return True
+    # A slow live holder retains ownership regardless of elapsed time.
+    # Timeout the waiter; never admit a second writer based on age alone.
     if pid == os.getpid():
         # Our own PID under a foreign token (checked before this call): the
         # number was recycled and the writer is gone.
@@ -338,8 +338,8 @@ def _acquire_lockfile(lock_path: Path, holder: str, wait: float) -> bool:
                 "another kitchensink4ppt server process is driving PowerPoint "
                 f"right now ({detail}). Live COM sessions are serialized "
                 "across processes so two servers cannot interleave inside "
-                f"one edit. Waited {int(wait)}s; nothing was changed — "
-                "retry once that operation finishes."
+                f"one edit. Waited {int(wait)}s; nothing was changed. "
+                "Retry once that operation finishes."
             )
         time.sleep(_POLL_SECONDS)
 
@@ -427,3 +427,15 @@ def lock_state() -> dict:
         return {"cross_process": True, "lock_dir": str(d)}
     except Exception as exc:
         return {"cross_process": False, "reason": str(exc)}
+
+
+def _local_host() -> str:
+    return os.environ.get("COMPUTERNAME") or socket.gethostname()
+
+
+def _foreign_host(info: dict) -> bool:
+    # Legacy payloads without host metadata retain same-machine behavior.
+    # A named remote host cannot be assessed using this machine's PID table.
+    host = info.get("host")
+    return bool(host) and (not isinstance(host, str)
+                           or host.casefold() != _local_host().casefold())

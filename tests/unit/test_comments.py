@@ -539,6 +539,7 @@ print("RESULT " + json.dumps(out))
 """
 
 
+@pytest.mark.live
 @pytest.mark.timeout(600)
 def test_com_powerpoint_renders_comments_and_replies(tmp_path, make_deck):
     """The critical gate: PowerPoint itself must SEE the comments through

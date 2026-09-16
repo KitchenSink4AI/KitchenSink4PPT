@@ -478,6 +478,7 @@ def test_position_insert_and_section_membership(tmp_path, make_deck):
 # -------------------------------------------------------------- COM round
 
 
+@pytest.mark.live
 def test_com_validates_link_and_import_outputs(tmp_path):
     """One PowerPoint opens-clean round over both design modes (subprocess,
     tasklist gate, honest skip when the user's PowerPoint is open)."""

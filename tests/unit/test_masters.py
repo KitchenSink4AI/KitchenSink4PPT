@@ -478,6 +478,7 @@ def test_placeholder_selector_forms_and_ambiguity(tmp_path):
 # ---------------------------------------------------------------- COM gate
 
 
+@pytest.mark.live
 def test_master_edited_deck_opens_clean_in_powerpoint(tmp_path):
     """COM ground truth on a deck that took the whole Wave 8A surface:
     master title default, decoration shape, new layout, background, and a

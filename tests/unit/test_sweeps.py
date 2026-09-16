@@ -562,6 +562,7 @@ def _com_gate():
         )
 
 
+@pytest.mark.live
 @pytest.mark.timeout(600)
 def test_com_validator_on_swept_decks(tmp_path, make_deck):
     """PowerPoint itself must open every sweep output clean: font-swept

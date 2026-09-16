@@ -747,6 +747,7 @@ class TestNotesMasterDuplicationFinding:
         assert len(masters_after) == 1
 
 
+@pytest.mark.live
 @pytest.mark.timeout(600)
 def test_com_korean_deck_validates_and_exports(make_deck, tmp_path):
     """The Korean-heavy deck, under a Korean FILENAME, opens clean in the

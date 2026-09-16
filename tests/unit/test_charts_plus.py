@@ -377,6 +377,7 @@ class TestFormatChart:
         assert chart.has_legend
 
 
+@pytest.mark.live
 def test_com_validates_combo_and_formatted_deck(make_deck, tmp_path):
     """PowerPoint itself opens the combo + formatted deck clean."""
     import com_validate

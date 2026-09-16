@@ -118,16 +118,16 @@ def test_dead_pid_with_fresh_timestamp_is_stale(dead_pid):
     assert safesave._is_stale(info) is True
 
 
-def test_live_foreign_pid_with_ancient_timestamp_is_stale(sleeper):
-    """P-A1 leg two: age alone decides; a live holder that has sat on the
-    lock past LOCK_STALE_SECONDS is broken anyway."""
+def test_live_foreign_pid_with_ancient_timestamp_retains_ownership(sleeper):
+    """P-A1 leg two: liveness alone decides. A live holder that has sat on
+    the lock past LOCK_STALE_SECONDS keeps it, and the waiter times out."""
     info = {
         "pid": sleeper.pid,
         "time": 1.0,
         "token": "foreign",
         "pid_created": safesave._process_create_time(sleeper.pid),
     }
-    assert safesave._is_stale(info) is True
+    assert safesave._is_stale(info) is False
 
 
 def test_live_matching_fresh_lock_is_not_stale(sleeper):
@@ -448,13 +448,13 @@ def test_xproc_dead_pid_fresh_lock_is_stale(dead_pid):
     assert xproc._is_stale({"pid": dead_pid, "time": time.time()}) is True
 
 
-def test_xproc_ancient_lock_is_stale_even_with_live_holder(sleeper):
+def test_xproc_ancient_lock_with_live_holder_retains_ownership(sleeper):
     info = {
         "pid": sleeper.pid,
         "time": 1.0,
         "pid_created": xproc._process_create_time(sleeper.pid),
     }
-    assert xproc._is_stale(info) is True
+    assert xproc._is_stale(info) is False
 
 
 def test_xproc_live_matching_fresh_lock_is_not_stale(sleeper):

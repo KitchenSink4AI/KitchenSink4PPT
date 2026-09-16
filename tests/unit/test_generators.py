@@ -493,6 +493,7 @@ def _build_all_five(path: Path) -> None:
     pkg.save(do_backup=False)
 
 
+@pytest.mark.live
 @pytest.mark.timeout(360)
 def test_com_validation_all_five(tmp_path):
     """PowerPoint opens a deck holding all five generated diagrams with no
