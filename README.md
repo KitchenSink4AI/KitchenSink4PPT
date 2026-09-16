@@ -13,7 +13,7 @@
 
 **Build and revise PowerPoint decks with your AI assistant, with diagrams made of shapes you can still edit.**
 
-Create and revise real PowerPoint presentations from Claude Code, Codex CLI, Copilot CLI or any other MCP client that runs local tools. KitchenSink4PPT connects your assistant to .pptx files, and its diagrams are built from native shapes and connectors, so the slide is still yours to change after the AI is done. Files are processed on your computer; the only thing that leaves it is what your AI app sends to its own provider. The Community edition is free under the AGPL. The Business edition adds a Windows installer, a signed update channel, a licence your company can approve and support.
+Create and revise real PowerPoint presentations from Claude Code, Codex CLI, Copilot CLI or any other MCP client that runs local tools. KitchenSink4PPT connects your assistant to .pptx files, and its diagrams are built from native shapes and connectors, so the slide is still yours to change after the AI is done. Files are processed on your computer; the only thing that leaves it is what your AI app sends to its own provider. The Community edition is free under the AGPL. The Business edition adds a Windows installer, a signed update channel, a license your company can approve and support.
 
 **Works on:** Windows, macOS and Linux for the file tools. Live PowerPoint features need Windows with PowerPoint. PDF and image export need PowerPoint on Windows or a supported LibreOffice.
 
@@ -49,7 +49,7 @@ Then follow your client's guide for adding a local MCP server. Installing the pa
 
 **Business edition**
 
-Compare the editions on the [pricing page](https://kitchensink4.ai/pricing/). Already purchased? Your Windows installer and download link are in your [licence portal](https://get.kitchensink4.ai/my-license/).
+Compare the editions on the [pricing page](https://kitchensink4.ai/pricing/). Already purchased? Your Windows installer and download link are in your [license portal](https://get.kitchensink4.ai/my-license/).
 
 ## What it can do
 
@@ -68,7 +68,7 @@ What is available depends on the packs you enable and the applications installed
 
 ## Business edition
 
-Need a licence your company can approve and a setup someone supports? The Business edition pairs these tools with a Windows installer, a signed update channel and support under the Business terms. Update checks tell you when a covered release is available; nothing installs on its own. Compare the options on the [pricing page](https://kitchensink4.ai/pricing/). The Community edition stays free under the AGPL, including business use that meets its terms.
+Need a license your company can approve and a setup someone supports? The Business edition pairs these tools with a Windows installer, a signed update channel and support under the Business terms. Update checks tell you when a covered release is available; nothing installs on its own. Compare the options on the [pricing page](https://kitchensink4.ai/pricing/). The Community edition stays free under the AGPL, including business use that meets its terms.
 
 ## Privacy Policy
 
