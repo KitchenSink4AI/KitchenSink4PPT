@@ -266,6 +266,7 @@ def test_manage_section_requires_args(make_deck):
 # ------------------------------------------------------------------ COM gate
 
 
+@pytest.mark.live
 @pytest.mark.timeout(600)
 def test_com_validates_apply_layout_and_sections_output(tmp_path):
     """Real PowerPoint opens-clean verdict on a proposal-deck copy after

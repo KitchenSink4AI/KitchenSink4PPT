@@ -609,6 +609,7 @@ def _run_scenario(tmp_path: Path, mode: str, deck: Path) -> dict:
     return out
 
 
+@pytest.mark.live
 @pytest.mark.timeout(600)
 def test_live_edit_round(make_deck, tmp_path):
     """The comprehensive live round: attach, read, set text, chunked long
@@ -683,6 +684,7 @@ def test_live_edit_round(make_deck, tmp_path):
     assert out["our_zombies"] == []
 
 
+@pytest.mark.live
 @pytest.mark.timeout(600)
 def test_live_refusal_round(make_deck, tmp_path):
     """Read-only refusal (mutations refuse up front, reads still work),

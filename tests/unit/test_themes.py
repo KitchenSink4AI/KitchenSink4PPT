@@ -196,6 +196,7 @@ def test_theme_edit_survives_payload_validation(tmp_path):
     assert final["accent2"]["hex"] == "00FF00"
 
 
+@pytest.mark.live
 def test_recolor_renders_red_via_libreoffice(tmp_path):
     """Pixel-level recolor proof: theme accent1 -> FF0000 must actually
     paint the generated diagram red. LibreOffice renders slide 1 to PNG
@@ -235,6 +236,7 @@ def test_recolor_renders_red_via_libreoffice(tmp_path):
     )
 
 
+@pytest.mark.live
 def test_theme_edited_deck_opens_clean_in_powerpoint(tmp_path):
     """COM ground truth on a theme-edited output. Subprocess-isolated,
     tasklist-gated: skips honestly when PowerPoint is unavailable or the

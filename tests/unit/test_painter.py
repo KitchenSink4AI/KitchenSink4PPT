@@ -290,6 +290,7 @@ def test_copy_position_source_in_group_refused(tmp_path):
 # ============================================ COM opens-clean validation
 
 
+@pytest.mark.live
 def test_com_validates_painted_deck(tmp_path):
     """A deck styled by copy_format and aligned by copy_position opens
     clean in real PowerPoint (subprocess/tasklist-gated/PID-precise)."""

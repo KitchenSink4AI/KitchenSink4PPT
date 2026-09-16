@@ -632,6 +632,7 @@ print("RESULT " + json.dumps(out))
 """
 
 
+@pytest.mark.live
 @pytest.mark.timeout(600)
 def test_com_validates_merged_monster(tmp_path):
     """PowerPoint itself opens the three-source merged deck (sections,

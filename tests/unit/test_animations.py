@@ -676,6 +676,7 @@ print("RESULT " + json.dumps(out))
 """
 
 
+@pytest.mark.live
 @pytest.mark.timeout(600)
 def test_com_validates_animated_deck(tmp_path, make_deck):
     """PowerPoint itself opens a deck carrying our transitions (modern

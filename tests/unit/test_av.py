@@ -330,6 +330,7 @@ print("RESULT " + json.dumps(out))
 """
 
 
+@pytest.mark.live
 def test_com_validates_media_deck_and_mediatype(make_deck, tmp_path):
     """CRITICAL: PowerPoint opens the media deck clean AND reports the
     inserted frames as real media (Movie=3, Sound=2)."""

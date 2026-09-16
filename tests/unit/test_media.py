@@ -363,6 +363,7 @@ def test_server_insert_image_envelope(make_deck, tmp_path):
 # ------------------------------------------------------------------ COM gate
 
 
+@pytest.mark.live
 @pytest.mark.timeout(600)
 def test_com_validates_image_bearing_deck(make_deck, tmp_path):
     """Real PowerPoint opens-clean verdict on a deck that went through

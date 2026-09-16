@@ -514,6 +514,7 @@ def test_background_survives_save_validation(blank_deck, tmp_path):
 # ============================================ COM opens-clean validation
 
 
+@pytest.mark.live
 def test_com_validates_accessibility_deck(tmp_path):
     """Full-stack gate: a deck exercising set_alt_text, set_reading_order,
     apply_table_style first_row, solid + image backgrounds, and the
