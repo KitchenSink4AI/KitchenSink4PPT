@@ -3,7 +3,7 @@
      is the org namespace the next version bump moves to; both may sit here, because
      the registry looks for the one string that matches server.json. -->
 <!-- mcp-name: io.github.KitchenSink4AI/kitchensink4ppt -->
-# 🖌️ KitchenSink4PPT
+# 🖌️ KitchenSink4PPT Community Edition
 
 [![Tests](https://github.com/KitchenSink4AI/KitchenSink4PPT/actions/workflows/tests.yml/badge.svg)](https://github.com/KitchenSink4AI/KitchenSink4PPT/actions/workflows/tests.yml)
 [![PyPI](https://img.shields.io/pypi/v/kitchensink4ppt)](https://pypi.org/project/kitchensink4ppt/)
