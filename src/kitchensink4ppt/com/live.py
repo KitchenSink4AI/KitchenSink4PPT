@@ -152,7 +152,7 @@ def _classify(exc):
     if hrs & GONE_HRESULTS:
         return PowerPointDisconnected(
             "PowerPoint or the presentation closed while the tool was "
-            "running — the edit may be partially applied. If PowerPoint is "
+            "running; the edit may be partially applied. If PowerPoint is "
             "still open, Ctrl+Z steps back through the partial edits."
         )
     if hrs & BUSY_HRESULTS:
@@ -345,7 +345,7 @@ def _resolve_presentation(pythoncom, pywintypes, win32com, app, path: str):
         )
     hint = f" Open presentations: {open_names}" if open_names else ""
     raise DocumentNotOpenInPowerPoint(
-        f"{Path(path).name} is not open in the running PowerPoint — live "
+        f"{Path(path).name} is not open in the running PowerPoint; live "
         f"tools only work on open presentations.{hint} For closed files use "
         "the regular file-based tools."
     )
