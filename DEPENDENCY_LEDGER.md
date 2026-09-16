@@ -4,7 +4,7 @@ Every declared dependency, its license, and why it is here. Enforced by
 `tests/unit/test_dependency_ledger.py`, which fails the build if
 `pyproject.toml` grows a dependency that is not listed here. Ported from
 KitchenSink4Web, which carried the only ledger in the family until the
-2026-09-15 licence audit (finding D-02).
+2026-09-15 license audit (finding D-02).
 
 Licenses below were read from the installed package metadata in this repo's
 virtual environment (`importlib.metadata`), not from a search result.
@@ -31,7 +31,7 @@ table in this file. The enforcing test reads them positionally.
 | `lxml` | BSD-3-Clause | permissive | The XML engine, reached directly in 34 source files. This server edits the OOXML itself rather than through an object model, so lxml is the file tier. The BSD-3 no-endorsement clause is the only obligation and it binds redistribution, which does not happen here. |
 | `svgelements` | MIT | permissive | SVG parsing for the native vector path, where an SVG becomes editable grouped shapes rather than a pasted image. |
 | `latex2mathml` | MIT | permissive | First half of the equation path: LaTeX in, MathML out. |
-| `mathml2omml` | MIT | permissive | Second half: MathML to the OMML that PowerPoint actually stores. The wheel's License metadata field reads UNKNOWN, which is a packaging defect rather than an unlicensed release: the classifier says OSI Approved MIT License, and the wheel ships an MIT license text naming amedama that matches the upstream repository. Confirmed 2026-09-15 against the package's own license file, closing the caveat the licence audit raised. |
+| `mathml2omml` | MIT | permissive | Second half: MathML to the OMML that PowerPoint actually stores. The wheel's License metadata field reads UNKNOWN, which is a packaging defect rather than an unlicensed release: the classifier says OSI Approved MIT License, and the wheel ships an MIT license text naming amedama that matches the upstream repository. Confirmed 2026-09-15 against the package's own license file, closing the caveat the license audit raised. |
 | `regex` | Apache-2.0 AND CNRI-Python | both permissive | Backs the caller-pattern guard in `ops/_regex.py`. Needed rather than convenient: stdlib `re` has no match timeout, the server is single-threaded stdio, and one pathological caller pattern would deny service to the whole session. |
 | `packaging` | Apache-2.0 OR BSD-2-Clause | either, permissive | Version comparison in `core/update_check.py`. |
 | `pywin32` | PSF | permissive | The COM tier, which drives a real PowerPoint. Declared under a win32 platform marker, so it is never installed anywhere it cannot work. |
@@ -45,7 +45,7 @@ No copyleft. No obligation triggered by the current distribution model.
 | `pillow` | MIT-CMU | `optimize` | Image recompression in `ops/optimize.py`. Optional because a deck ships fine unoptimised. MIT-CMU is the historical-permission-notice variant Pillow ships; permissive, attribution on redistribution only. |
 | `pytest` | MIT | `dev` | Test-time only, never distributed. |
 | `pytest-timeout` | MIT | `dev` | Test-time only, and `required_plugins` in pyproject makes its absence fail the run rather than silently voiding every timeout. A COM hang once ran unbounded during a field round because of exactly that. |
-| `python-pptx` | MIT | `dev` | Primarily the independent test oracle: this server writes OOXML directly, so a second implementation reading the result back is the only check that is not marking its own homework. **It is also reached at runtime.** `ops/slides.py` imports it lazily inside `create_presentation` when no template is given, to copy the bytes of the default template python-pptx bundles. On a plain install that call raises ImportError, because this package is declared only in the `dev` extra. Recorded here as found on 2026-09-15 rather than fixed: moving it into the required install or vendoring a blank template is a packaging decision, not a licence one, and the MIT license carries no risk either way. |
+| `python-pptx` | MIT | `dev` | Primarily the independent test oracle: this server writes OOXML directly, so a second implementation reading the result back is the only check that is not marking its own homework. **It is also reached at runtime.** `ops/slides.py` imports it lazily inside `create_presentation` when no template is given, to copy the bytes of the default template python-pptx bundles. On a plain install that call raises ImportError, because this package is declared only in the `dev` extra. Recorded here as found on 2026-09-15 rather than fixed: moving it into the required install or vendoring a blank template is a packaging decision, not a license one, and the MIT license carries no risk either way. |
 
 ## Transitive obligations
 
