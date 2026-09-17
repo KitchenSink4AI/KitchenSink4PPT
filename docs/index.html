@@ -163,7 +163,7 @@ body.dusk .wetpaint{opacity:.95}
   border:3px solid var(--stamp);color:var(--stamp);padding:8px 14px;font-weight:600;
   font-size:12px;letter-spacing:.14em;text-transform:uppercase;border-radius:4px;
   opacity:.85;mask-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='4' height='4'%3E%3Crect width='4' height='4' fill='white'/%3E%3Ccircle cx='1' cy='1' r='.35' fill='black'/%3E%3C/svg%3E")}
-@media(max-width:640px){.stamp{display:none}}
+@media(max-width:699.98px){.stamp{display:none}}
 
 /* reveal on load */
 .rev{opacity:0;transform:translateY(14px);animation:rev .7s cubic-bezier(.2,.7,.2,1) forwards}
@@ -448,7 +448,6 @@ details.devnote .devbody code{background:var(--paper-deep);padding:1px 5px;font-
 
 /* footer */
 footer{border-top:3px double var(--ink);padding:36px 0 48px;font-size:12px;color:var(--ink-soft)}
-footer .row{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
 footer a{color:var(--patina)}
 .colophon{text-align:center;padding:22px 0 0;font-size:10px;letter-spacing:.28em;
   text-transform:uppercase;opacity:.45}
@@ -486,12 +485,8 @@ body.dusk .pendant .bulb{filter:sepia(.08) saturate(1.18) drop-shadow(0 4px 18px
 .dept h3{flex-wrap:wrap;row-gap:4px}
 .dept h3 .num{margin-left:auto;white-space:normal;text-align:right}
 .counter,.step,.demo-panel{min-width:0;overflow-wrap:anywhere}
-footer .row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:28px}
-footer .row>span{min-width:0;overflow-wrap:anywhere}
 @media(max-width:900px){
 
-  footer .row{grid-template-columns:1fr;gap:20px;text-align:center}
-  footer .row>span:last-child{text-align:center!important}
 }
 @media(max-width:640px){
   .wrap{padding-left:18px;padding-right:18px}
@@ -696,33 +691,8 @@ body.dusk .sinkrow .sink[href*="KitchenSink4PPT"]{--sink:var(--ink)!important}
   .deptline{font-size:9px;letter-spacing:.14em;gap:8px}
 }
 
-/* ---------- the edition roundel, then the Business box under the tile ------
-   The roundel now reads before the name, so its own top margin is dropped and
-   the catalogue box's 28px carries the gap above it. The Business link keeps
-   the words the banner carried and the shape of the page's primary button,
-   filled with the accent deepened toward the ink so the paper-coloured label
-   clears WCAG AA on every finish, the evening coats included. --biz-accent
-   walks the same fallback chain .edition-badge does, so one block serves the
-   four palettes. */
 .hero .edition-badge{margin:0 auto 10px}
 .hero .platform-hero-note{margin-bottom:0}
-.hero-biz{margin:14px auto 0;text-align:center}
-.hero-biz-btn{--biz-accent:var(--copper,var(--brass,var(--patina,var(--ink))));
-  --biz-ink:var(--biz-accent);
-  display:inline-flex;align-items:center;justify-content:center;
-  min-height:44px;max-width:100%;padding:11px 20px;
-  border:2px solid var(--biz-ink);background:var(--biz-ink);color:var(--paper);
-  font-family:'IBM Plex Mono',"Plex Mono Fallback",ui-monospace,monospace;
-  font-size:12px;font-weight:700;letter-spacing:.04em;line-height:1.4;
-  text-decoration:none;overflow-wrap:anywhere;
-  box-shadow:3px 3px 0 var(--ink);transition:all .15s}
-.hero-biz-btn:hover{transform:translate(-2px,-2px);box-shadow:5px 5px 0 var(--ink);
-  color:var(--paper);text-decoration:none}
-.hero-biz-btn:focus-visible{outline:3px solid var(--ink);outline-offset:4px}
-@supports (color:color-mix(in srgb,red 50%,blue)){
-  .hero-biz-btn{--biz-ink:color-mix(in srgb,var(--biz-accent) 70%,var(--ink))}
-}
-@media(max-width:560px){.hero-biz-btn{padding:11px 14px;font-size:11px;letter-spacing:.02em}}
 
 /* ---------- the awning, unrolled under the department line ---------- */
 .awning{height:44px;margin:0 0 17px;position:relative;
@@ -756,6 +726,49 @@ body.dusk .paintcan svg{filter:drop-shadow(0 3px 9px rgba(224,164,60,.22))}
   58%{opacity:1;transform:translateY(0) scaleY(1)}
   94%{opacity:1;transform:translateY(36px) scaleY(1.2)}
   100%{opacity:0;transform:translateY(42px)}}
+/* ==========================================================================
+   HERO ORDER, STICKY RAIL AND FOOTER (#847, owner ruling)
+   The Business link left the hero as a box and rejoined the button row as an
+   outline button, so the row is the one place a reader chooses what to do.
+   The rail sticks the way the corporate masthead does; every anchor target
+   carries the rail's real height as scroll-margin so a jump link lands clear
+   of it. The footer is one centred stack instead of two aligned columns.
+   ========================================================================== */
+:root{--rail-h:63px}
+.mast{position:sticky;top:0;z-index:40;background:var(--paper)}
+[id]{scroll-margin-top:var(--rail-h)}
+
+.hero-cta{display:flex;flex-wrap:wrap;align-items:stretch;justify-content:center;
+  gap:12px;margin-top:36px}
+.hero-cta .btn{display:inline-flex;align-items:center;justify-content:center;
+  min-height:44px;margin:0;text-align:center}
+.hero .platform-hero-note.mac-note{margin:10px auto 0}
+
+/* the idiom note reads as a footnote to the tagline, not a floating italic */
+.idiom-note{font-family:'IBM Plex Mono',"Plex Mono Fallback",ui-monospace,monospace;
+  font-size:11.5px;line-height:1.7;letter-spacing:.04em;color:var(--ink-soft);
+  max-width:640px;margin:18px auto 0;border-top:1px solid var(--rule);padding-top:14px;
+  font-style:normal;opacity:1}
+.idiom-note:empty{display:none;border:0;padding:0;margin:0}
+
+footer{padding-top:28px;font-size:12px;line-height:1.7;text-align:center}
+.footer-links{display:flex;flex-wrap:wrap;align-items:center;justify-content:center;
+  gap:8px 16px;max-width:888px;margin:0 auto 16px;padding:0 24px;
+  font-size:11px;letter-spacing:.12em;text-transform:uppercase}
+.footer-links a{white-space:nowrap;text-decoration:none}
+.footer-links a:hover{text-decoration:underline}
+.f-copy{margin:0 auto 12px}
+.f-lic{max-width:720px;margin:0 auto 14px}
+.f-lic a{overflow-wrap:anywhere}
+.f-tm{max-width:720px;margin:0 auto 12px;opacity:.5;font-size:11px}
+footer .colophon{text-align:center}
+.f-views{margin:8px auto 0}
+@media(max-width:699.98px){:root{--rail-h:59px}}
+@media(max-width:560px){
+  .hero-cta{flex-direction:column;align-items:stretch}
+  .hero-cta .btn{width:100%}
+  .footer-links{gap:8px 12px}
+}
 </style>
 </head>
 <body>
@@ -846,7 +859,6 @@ body.dusk .paintcan svg{filter:drop-shadow(0 3px 9px rgba(224,164,60,.22))}
   <p class="edition-badge rev d2" data-i18n="hero.edition">Community Edition</p>
   <h1 class="rev d2">Kitchen&shy;Sink<span class="four">4</span>PPT</h1>
   <p class="platform-label" data-i18n="platform.hero">Windows · macOS · Linux</p>
-  <p class="hero-biz rev d2"><a class="hero-biz-btn" href="https://kitchensink4.ai/products/business/">Business Editions and commercial Fixtures? Click here</a></p>
   <p class="tagline rev d3" data-i18n="hero.tagline">Everything <em>plus</em> the kitchen sink for Microsoft&nbsp;PowerPoint: the .pptx&nbsp;MCP&nbsp;server that builds diagrams your hands can still move.</p>
   <p class="idiom-note rev d3" data-i18n="hero.idiom"></p>
   <div class="specs-strip rev d4">
@@ -855,9 +867,10 @@ body.dusk .paintcan svg{filter:drop-shadow(0 3px 9px rgba(224,164,60,.22))}
     <div class="spec"><span class="n">1,646</span><span class="l" data-i18n="spec.stress">Stress calls</span></div>
     <div class="spec"><span class="n">0</span><span class="l" data-i18n="spec.corr">Corruptions</span></div>
   </div>
-  <div class="rev d5" style="margin-top:36px">
-    <a class="btn primary" href="#install" data-i18n="btn.install">Install the Sink (Community Edition)</a>
+  <div class="rev d5 hero-cta">
+    <a class="btn primary" href="#install" data-i18n="btn.install">Install the Sink</a>
     <a class="btn" href="https://github.com/KitchenSink4AI/KitchenSink4PPT" data-i18n="btn.source">Read the Source</a>
+    <a class="btn" href="https://kitchensink4.ai/products/business/" data-i18n="btn.biz">Business editions</a>
   </div>
   <a class="demo-invite rev d5" href="#headline" data-i18n="hero.invite">↓ or try it first: there is a diagram below you can drag, and the arrows follow</a>
 </header>
@@ -1106,15 +1119,23 @@ body.dusk .paintcan svg{filter:drop-shadow(0 3px 9px rgba(224,164,60,.22))}
 </section>
 
 <footer>
-  <div class="wrap row">
-    <span data-i18n="f.left">&copy; 2026 Alvut Consulting, LLC &middot; Licensed <b>AGPL-3.0</b>: free for any use that meets the AGPL's terms, including its source-sharing obligations.<br>Commercial licenses for organizations that need to ship these in closed products (<a href='mailto:licensing@kitchensink4.ai'>licensing@kitchensink4.ai</a>).</span>
-    <span style="text-align:right" data-i18n="f.right"><a href="https://github.com/KitchenSink4AI/KitchenSink4PPT">Source code</a> · <a href="https://github.com/KitchenSink4AI/KitchenSink4PPT/issues/new/choose">Report a glitch</a></span>
-  </div>
-  <div class="wrap" style="text-align:center;padding:6px 0;font-size:11px"><a href="https://kitchensink4.ai/corporate/" data-i18n="f.corp">The office upstairs: KitchenSink4AI →</a></div>
-  <div class="wrap" style="text-align:center;padding:6px 0;opacity:.5;font-size:11px">Not affiliated with or endorsed by Microsoft Corporation. Microsoft and PowerPoint are trademarks of Microsoft Corporation.</div>
-  <div class="wrap" style="text-align:center;padding:10px 0"><img src="https://visitor-badge.laobi.icu/badge?page_id=nometalalchemist.KitchenSink4PPT&left_color=%231e3550&right_color=%232e6e55&left_text=views" alt="views" height="18" style="vertical-align:middle"></div>
-<div class="wrap colophon">SET IN FRAUNCES &amp; IBM PLEX MONO · CATALOG № 142</div>
-<nav class="footer-links" aria-label="Contact, privacy, and sale terms"><a href="#service" data-i18n="m.service">SERVICE</a> · <a href="https://pypi.org/project/kitchensink4ppt/">PYPI</a> · <a href="https://kitchensink4.ai/contact/" data-i18n="f.contact">Contact</a> · <a href="https://kitchensink4.ai/privacy/" data-i18n="f.privacy">Privacy</a> · <a href="https://kitchensink4.ai/terms-of-sale/" data-i18n="f.terms">Terms of sale</a> · <a href="https://kitchensink4.ai/refunds/" data-i18n="f.refunds">Refunds</a> · <a href="https://kitchensink4.ai/company/" data-i18n="f.company">Company</a></nav>
+  <nav class="footer-links wrap" aria-label="Site, contact, and sale terms">
+    <a href="https://kitchensink4.ai/products/" data-i18n="sw.store">The Works</a>
+    <a href="https://github.com/KitchenSink4AI/KitchenSink4PPT" data-i18n="f.src">Source code</a>
+    <a href="https://github.com/KitchenSink4AI/KitchenSink4PPT/issues/new/choose" data-i18n="f.glitch">Report a glitch</a>
+    <a href="#service" data-i18n="m.service">SERVICE</a>
+    <a href="https://pypi.org/project/kitchensink4ppt/">PYPI</a>
+    <a href="https://kitchensink4.ai/contact/" data-i18n="f.contact">Contact</a>
+    <a href="https://kitchensink4.ai/privacy/" data-i18n="f.privacy">Privacy</a>
+    <a href="https://kitchensink4.ai/terms-of-sale/" data-i18n="f.terms">Terms of sale</a>
+    <a href="https://kitchensink4.ai/refunds/" data-i18n="f.refunds">Refunds</a>
+    <a href="https://kitchensink4.ai/company/" data-i18n="f.company">Company</a>
+  </nav>
+  <p class="f-copy wrap">&copy; 2026 Alvut Consulting, LLC &middot; AGPL-3.0</p>
+  <p class="f-lic wrap" data-i18n="f.lic">Free for any use that meets the AGPL's terms, including its source-sharing obligations. Commercial licenses for closed products: <a href='mailto:licensing@kitchensink4.ai'>licensing@kitchensink4.ai</a></p>
+  <p class="f-tm wrap">Not affiliated with or endorsed by Microsoft Corporation. Microsoft and PowerPoint are trademarks of Microsoft Corporation.</p>
+  <p class="colophon wrap">SET IN FRAUNCES &amp; IBM PLEX MONO · CATALOG № 142</p>
+  <p class="f-views wrap"><img src="https://visitor-badge.laobi.icu/badge?page_id=nometalalchemist.KitchenSink4PPT&left_color=%231e3550&right_color=%232e6e55&left_text=views" alt="views" height="18" style="vertical-align:middle"></p>
 </footer>
 
 <script>
@@ -1260,7 +1281,7 @@ en: {
 "spec.tests": "Tests",
 "spec.stress": "Stress calls",
 "spec.corr": "Corruptions",
-"btn.install": "Install the Sink (Community Edition)",
+"btn.install": "Install the Sink",
 "btn.source": "Read the Source",
 "hero.invite": "↓ or try it first: there is a diagram below you can drag, and the arrows follow",
 "sw.store": "The Works",
@@ -1374,9 +1395,10 @@ en: {
 "fam3.g": "Browse the store →",
 "fam4.p": "Everything plus the kitchen sink for the web: budgeted page reads that name what went unread, structured extraction with named evidence, and a consent ladder that cannot be talked into payments. Read-only out of the box.",
 "fam4.g": "Visit the garden aisle →",
-"f.left": "&copy; 2026 Alvut Consulting, LLC &middot; Licensed <b>AGPL-3.0</b>: free for any use that meets the AGPL's terms, including its source-sharing obligations.<br>Commercial licenses for organizations that need to ship these in closed products (<a href='mailto:licensing@kitchensink4.ai'>licensing@kitchensink4.ai</a>).",
-"f.corp": "The office upstairs: KitchenSink4AI →",
-"f.right": "<a href=\"https://github.com/KitchenSink4AI/KitchenSink4PPT\">Source code</a> · <a href=\"https://github.com/KitchenSink4AI/KitchenSink4PPT/issues/new/choose\">Report a glitch</a>",
+"f.lic": "Free for any use that meets the AGPL's terms, including its source-sharing obligations. Commercial licenses for closed products: <a href='mailto:licensing@kitchensink4.ai'>licensing@kitchensink4.ai</a>",
+"f.src": "Source code",
+"f.glitch": "Report a glitch",
+"btn.biz": "Business editions",
 "inst.dev": "For developers: pip, source, other MCP clients",
 "inst.dp1": "Install the package and point any MCP client at the executable:",
 "inst.dp2": "Running from a clone works the same way; point the command at the <code>ppt-mcp</code> executable in the clone's virtual environment. Full setup is in the <a href='https://github.com/KitchenSink4AI/KitchenSink4PPT#install'>README</a>.",
@@ -1415,7 +1437,7 @@ ko: {
 "spec.tests": "테스트",
 "spec.stress": "스트레스 호출",
 "spec.corr": "손상 건수",
-"btn.install": "싱크대 설치하기 (Community Edition)",
+"btn.install": "싱크대 설치하기",
 "btn.source": "소스 읽어보기",
 "hero.invite": "↓ 먼저 써 보셔도 됩니다: 아래에 직접 드래그할 수 있는 다이어그램이 있고, 화살표가 따라옵니다",
 "sw.store": "전체 매장",
@@ -1529,9 +1551,10 @@ ko: {
 "fam3.g": "매장 둘러보기 →",
 "fam4.p": "웹 도구라면 없는 게 없습니다. 예산이 정해진 페이지 읽기는 읽지 않고 넘어간 부분을 이름으로 알려 주고, 구조화된 추출은 근거를 이름으로 짚어 주며, 동의 사다리는 결제까지 말로 구슬릴 수 없습니다. 기본 상태는 읽기 전용입니다.",
 "fam4.g": "원예 코너 방문하기 →",
-"f.left": "&copy; 2026 Alvut Consulting, LLC &middot; <b>AGPL-3.0</b> 라이선스: 소스 공개 의무를 포함한 AGPL 조건을 충족하는 모든 용도에 무료.<br>비공개 제품에 담아 배포해야 하는 조직을 위한 상업용 라이선스(<a href='mailto:licensing@kitchensink4.ai'>licensing@kitchensink4.ai</a>).",
-"f.corp": "위층 사무실: KitchenSink4AI →",
-"f.right": "<a href=\"https://github.com/KitchenSink4AI/KitchenSink4PPT\">소스 코드</a> · <a href=\"https://github.com/KitchenSink4AI/KitchenSink4PPT/issues/new/choose\">오류 신고</a>",
+"f.lic": "소스 공개 의무를 포함한 AGPL 조건을 충족하는 모든 용도에 무료입니다. 비공개 제품을 위한 상업용 라이선스: <a href='mailto:licensing@kitchensink4.ai'>licensing@kitchensink4.ai</a>",
+"f.src": "소스 코드",
+"f.glitch": "오류 신고",
+"btn.biz": "Business 에디션",
 "inst.dev": "개발자용: pip, 소스, 다른 MCP 클라이언트",
 "inst.dp1": "패키지를 설치하고 원하는 MCP 클라이언트가 실행 파일을 가리키게 하면 됩니다:",
 "inst.dp2": "클론에서 실행할 때도 같은 방식이며, 클론의 가상 환경에 있는 <code>ppt-mcp</code> 실행 파일을 가리키면 됩니다. 전체 설정은 <a href='https://github.com/KitchenSink4AI/KitchenSink4PPT#install'>README</a>에 있습니다.",
@@ -1570,7 +1593,7 @@ ja: {
 "spec.tests": "テスト",
 "spec.stress": "負荷呼び出し",
 "spec.corr": "破損",
-"btn.install": "流しを設置する (Community Edition)",
+"btn.install": "流しを設置する",
 "btn.source": "ソースを読む",
 "hero.invite": "↓ まず試してみてください:下にドラッグできる図があり、矢印がついてきます",
 "sw.store": "ストア全体",
@@ -1684,9 +1707,10 @@ ja: {
 "fam3.g": "店内を見る →",
 "fam4.p": "ウェブのためなら何でも揃う。予算のついたページ読み取りは読み残した箇所を名前で挙げ、構造化された抽出は根拠を名指しし、同意の段階は言葉巧みに支払いへ進ませることができません。出荷時は読み取り専用です。",
 "fam4.g": "園芸コーナーへ →",
-"f.left": "&copy; 2026 Alvut Consulting, LLC &middot; <b>AGPL-3.0</b> ライセンス:ソースコード公開義務を含むAGPLの条件を満たすあらゆる用途で無料。<br>クローズドな製品に組み込んで提供する必要がある組織向けには商用ライセンスをご用意しています(<a href='mailto:licensing@kitchensink4.ai'>licensing@kitchensink4.ai</a>)。",
-"f.corp": "上の階の事務所：KitchenSink4AI →",
-"f.right": "<a href=\"https://github.com/KitchenSink4AI/KitchenSink4PPT\">ソースコード</a> · <a href=\"https://github.com/KitchenSink4AI/KitchenSink4PPT/issues/new/choose\">不具合を報告</a>",
+"f.lic": "ソースコード公開義務を含む AGPL の条件を満たすあらゆる用途で無料です。クローズドな製品向けの商用ライセンス: <a href='mailto:licensing@kitchensink4.ai'>licensing@kitchensink4.ai</a>",
+"f.src": "ソースコード",
+"f.glitch": "不具合を報告",
+"btn.biz": "Business エディション",
 "inst.dev": "開発者向け: pip、ソース、その他の MCP クライアント",
 "inst.dp1": "パッケージを入れて、任意の MCP クライアントから実行ファイルを指すだけです:",
 "inst.dp2": "クローンから動かす場合も同じで、クローンの仮想環境にある <code>ppt-mcp</code> 実行ファイルを指してください。設定の全体は <a href='https://github.com/KitchenSink4AI/KitchenSink4PPT#install'>README</a> にあります。",
@@ -1725,7 +1749,7 @@ zh: {
 "spec.tests": "测试",
 "spec.stress": "压力调用",
 "spec.corr": "损坏",
-"btn.install": "安装这台水槽 (Community Edition)",
+"btn.install": "安装这台水槽",
 "btn.source": "阅读源码",
 "hero.invite": "↓ 或者先试试:下面有一张可以拖动的图,箭头会跟着走",
 "sw.store": "整个商店",
@@ -1839,9 +1863,10 @@ zh: {
 "fam3.g": "逛逛店里 →",
 "fam4.p": "为网页而备，应有尽有：有预算的页面读取会点名说出哪些没读到，结构化提取会点名给出证据，而同意阶梯不会被话术哄着去付款。出厂状态是只读。",
 "fam4.g": "去园艺货架逛逛 →",
-"f.left": "&copy; 2026 Alvut Consulting, LLC &middot; 依 <b>AGPL-3.0</b> 授权:凡符合 AGPL 条款(含其源码公开义务)的用途均免费。<br>需要把这些装进闭源产品发行的组织可购买商业许可(<a href='mailto:licensing@kitchensink4.ai'>licensing@kitchensink4.ai</a>)。",
-"f.corp": "楼上的办公室：KitchenSink4AI →",
-"f.right": "<a href=\"https://github.com/KitchenSink4AI/KitchenSink4PPT\">源代码</a> · <a href=\"https://github.com/KitchenSink4AI/KitchenSink4PPT/issues/new/choose\">报告问题</a>",
+"f.lic": "凡符合 AGPL 条款(含其源码公开义务)的用途均免费。闭源产品的商业许可: <a href='mailto:licensing@kitchensink4.ai'>licensing@kitchensink4.ai</a>",
+"f.src": "源代码",
+"f.glitch": "报告问题",
+"btn.biz": "Business 版本",
 "inst.dev": "开发者选项:pip、源码、其他 MCP 客户端",
 "inst.dp1": "安装这个包,然后让任意 MCP 客户端指向可执行文件:",
 "inst.dp2": "从克隆仓库运行的方式相同,指向克隆虚拟环境里的 <code>ppt-mcp</code> 可执行文件即可。完整设置见 <a href='https://github.com/KitchenSink4AI/KitchenSink4PPT#install'>README</a>。",
@@ -1880,7 +1905,7 @@ de: {
 "spec.tests": "Tests",
 "spec.stress": "Stress-Aufrufe",
 "spec.corr": "Beschädigungen",
-"btn.install": "Spüle installieren (Community Edition)",
+"btn.install": "Spüle installieren",
 "btn.source": "Quelltext lesen",
 "hero.invite": "↓ oder erst ausprobieren: unten ist ein Diagramm zum Ziehen, und die Pfeile folgen",
 "sw.store": "Der ganze Laden",
@@ -1994,9 +2019,10 @@ de: {
 "fam3.g": "Den Laden durchstöbern →",
 "fam4.p": "Das Web mit allem Drum und Dran: budgetierte Seitenlesungen benennen, was ungelesen blieb, strukturierte Extraktion benennt ihre Belege, und eine Zustimmungsleiter lässt sich nicht zu Zahlungen überreden. Ab Werk nur lesend.",
 "fam4.g": "Zum Gartengang →",
-"f.left": "&copy; 2026 Alvut Consulting, LLC &middot; Lizenziert unter <b>AGPL-3.0</b>: kostenlos für jede Nutzung, die die Bedingungen der AGPL einschließlich ihrer Pflicht zur Quelloffenlegung erfüllt.<br>Kommerzielle Lizenzen für Organisationen, die diese in geschlossenen Produkten ausliefern müssen (<a href='mailto:licensing@kitchensink4.ai'>licensing@kitchensink4.ai</a>).",
-"f.corp": "Das Büro über dem Laden: KitchenSink4AI →",
-"f.right": "<a href=\"https://github.com/KitchenSink4AI/KitchenSink4PPT\">Quellcode</a> · <a href=\"https://github.com/KitchenSink4AI/KitchenSink4PPT/issues/new/choose\">Fehler melden</a>",
+"f.lic": "Kostenlos für jede Nutzung, die die Bedingungen der AGPL einschließlich ihrer Pflicht zur Quelloffenlegung erfüllt. Kommerzielle Lizenzen für geschlossene Produkte: <a href='mailto:licensing@kitchensink4.ai'>licensing@kitchensink4.ai</a>",
+"f.src": "Quellcode",
+"f.glitch": "Fehler melden",
+"btn.biz": "Business-Editionen",
 "inst.dev": "Für Entwickler: pip, Quellcode, andere MCP-Clients",
 "inst.dp1": "Paket installieren und einen beliebigen MCP-Client auf die ausführbare Datei zeigen lassen:",
 "inst.dp2": "Aus einem Klon heraus läuft es genauso, dann zeigt der Befehl auf die ausführbare Datei <code>ppt-mcp</code> in der virtuellen Umgebung des Klons. Die vollständige Einrichtung steht in der <a href='https://github.com/KitchenSink4AI/KitchenSink4PPT#install'>README</a>.",
@@ -2035,7 +2061,7 @@ fr: {
 "spec.tests": "Tests",
 "spec.stress": "Appels d'endurance",
 "spec.corr": "Corruptions",
-"btn.install": "Installer l'évier (Community Edition)",
+"btn.install": "Installer l'évier",
 "btn.source": "Lire la source",
 "hero.invite": "↓ ou essayez d'abord : il y a plus bas un diagramme à faire glisser, et les flèches suivent",
 "sw.store": "Toute la boutique",
@@ -2149,9 +2175,10 @@ fr: {
 "fam3.g": "Parcourir la boutique →",
 "fam4.p": "Absolument tout pour le web, jusqu'au moindre détail : des lectures de page avec budget qui nomment ce qui n'a pas été lu, une extraction structurée aux preuves nommées, et une échelle de consentement qu'on ne peut pas convaincre de payer. En lecture seule à la sortie de la boîte.",
 "fam4.g": "Visiter le rayon jardin →",
-"f.left": "&copy; 2026 Alvut Consulting, LLC &middot; Sous licence <b>AGPL-3.0</b> : gratuit pour tout usage conforme aux conditions de l'AGPL, y compris son obligation de partage du code source.<br>Licences commerciales pour les organisations qui doivent les diffuser dans des produits fermés (<a href='mailto:licensing@kitchensink4.ai'>licensing@kitchensink4.ai</a>).",
-"f.corp": "Le bureau à l'étage : KitchenSink4AI →",
-"f.right": "<a href=\"https://github.com/KitchenSink4AI/KitchenSink4PPT\">Code source</a> · <a href=\"https://github.com/KitchenSink4AI/KitchenSink4PPT/issues/new/choose\">Signaler un problème</a>",
+"f.lic": "Gratuit pour tout usage conforme aux conditions de l'AGPL, y compris son obligation de partage du code source. Licences commerciales pour les produits fermés : <a href='mailto:licensing@kitchensink4.ai'>licensing@kitchensink4.ai</a>",
+"f.src": "Code source",
+"f.glitch": "Signaler un problème",
+"btn.biz": "Éditions Business",
 "inst.dev": "Pour les développeurs : pip, sources, autres clients MCP",
 "inst.dp1": "Installez le paquet, puis pointez n'importe quel client MCP sur l'exécutable :",
 "inst.dp2": "Depuis un clone, c'est identique : pointez la commande sur l'exécutable <code>ppt-mcp</code> de l'environnement virtuel du clone. Installation complète dans le <a href='https://github.com/KitchenSink4AI/KitchenSink4PPT#install'>README</a>.",
@@ -2190,7 +2217,7 @@ es: {
 "spec.tests": "Pruebas",
 "spec.stress": "Llamadas de estrés",
 "spec.corr": "Corrupciones",
-"btn.install": "Instalar el fregadero (Community Edition)",
+"btn.install": "Instalar el fregadero",
 "btn.source": "Leer el código",
 "hero.invite": "↓ o pruébelo primero: abajo hay un diagrama que puede arrastrar, y las flechas lo siguen",
 "sw.store": "Toda la tienda",
@@ -2304,9 +2331,10 @@ es: {
 "fam3.g": "Recorrer la tienda →",
 "fam4.p": "De todo para la web, hasta lo que no imaginas: lecturas de página con presupuesto que nombran lo que quedó sin leer, extracción estructurada con pruebas nombradas y una escalera de consentimiento a la que no se la puede convencer de pagar. Solo lectura de fábrica.",
 "fam4.g": "Visite el pasillo de jardín →",
-"f.left": "&copy; 2026 Alvut Consulting, LLC &middot; Con licencia <b>AGPL-3.0</b>: gratis para cualquier uso que cumpla los términos de la AGPL, incluida su obligación de compartir el código fuente.<br>Licencias comerciales para las organizaciones que necesiten distribuirlos en productos cerrados (<a href='mailto:licensing@kitchensink4.ai'>licensing@kitchensink4.ai</a>).",
-"f.corp": "La oficina de arriba: KitchenSink4AI →",
-"f.right": "<a href=\"https://github.com/KitchenSink4AI/KitchenSink4PPT\">Código fuente</a> · <a href=\"https://github.com/KitchenSink4AI/KitchenSink4PPT/issues/new/choose\">Informar de un fallo</a>",
+"f.lic": "Gratis para cualquier uso que cumpla los términos de la AGPL, incluida su obligación de compartir el código fuente. Licencias comerciales para productos cerrados: <a href='mailto:licensing@kitchensink4.ai'>licensing@kitchensink4.ai</a>",
+"f.src": "Código fuente",
+"f.glitch": "Informar de un fallo",
+"btn.biz": "Ediciones Business",
 "inst.dev": "Para desarrolladores: pip, código fuente, otros clientes MCP",
 "inst.dp1": "Instale el paquete y apunte cualquier cliente MCP al ejecutable:",
 "inst.dp2": "Desde un clon funciona igual: apunte el comando al ejecutable <code>ppt-mcp</code> del entorno virtual del clon. La instalación completa está en el <a href='https://github.com/KitchenSink4AI/KitchenSink4PPT#install'>README</a>.",
