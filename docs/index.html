@@ -136,7 +136,10 @@ a:hover{text-decoration-style:wavy;text-decoration-thickness:1px;text-underline-
 body.dusk .pool{transform:scaleX(1.5) scaleY(1.25)}
 body.dusk .dept:before, body.dusk .spec:before, body.dusk .sec-head .no:before{
   background-image:linear-gradient(180deg, rgba(255,255,255,.38), rgba(255,255,255,0) 65%)}
-.wetpaint{display:block;width:max-content;margin:8px auto 0;font-size:9px;letter-spacing:.26em;
+/* The sticker is rotated, so its box grows past the text and used to graze
+   the catalogue box below it once the hero reordered. It belongs to the
+   mark, so it keeps its own air above and below and nothing else moves. */
+.wetpaint{display:block;width:max-content;margin:10px auto 16px;font-size:9px;letter-spacing:.26em;
   text-transform:uppercase;color:var(--stamp);border:1.5px solid var(--stamp);padding:2px 9px;
   border-radius:3px;transform:rotate(-2deg);opacity:0;transition:opacity .5s}
 body.dusk .wetpaint{opacity:.95}
@@ -469,8 +472,8 @@ footer a{color:var(--patina)}
    indigo and slate, pale copy, and a warm brass lamp rather than olive stock. */
 body.dusk{
   --paper:#20283c;--paper-deep:#2c3550;--ink:#f3eef8;--ink-soft:#c9c3d8;
-  --patina:#9bcac4;--patina-bright:#b8ded8;--glow:#f0bd68;--stamp:#ef8980;
-  --rule:#59647f;--chip:#6c83b5;--chip-mid:#947db0;--pool-op:.78;
+  --patina:#9bcac4;--patina-bright:#b8ded8;--glow:#d9a54c;--stamp:#ef8980;
+  --rule:#59647f;--chip:#6c83b5;--chip-mid:#947db0;--pool-op:.55;
   --dusk-tint:rgba(126,96,173,.28);
   --shadow:0 2px 0 var(--rule),0 12px 32px rgba(4,8,20,.32);
   background-image:radial-gradient(ellipse at 20% -10%,var(--dusk-tint),transparent 56%),
@@ -656,6 +659,18 @@ details.nav-menu.lang-menu>summary{height:32px;padding:0 10px;
    Five sinks exist today, so the menu is not rendered and this is dormant. */
 @media(min-width:700px){.sinkrow .sink-folded{display:none}}
 @media(max-width:699.98px){.sinkrow .sink-more{display:none}}
+/* The aisle colours are mixed for the light paper and all but vanish on the
+   dark ground (1.03:1 to 2.06:1 measured), so the evening coat carries a
+   light tint of each aisle's own hue instead, every one of them past 4.5:1
+   on both dark grounds the row sits on: the body at desktop and the darker
+   scrolling strip under 700px. The current sink keeps the pale ink and its
+   2px underline, and stays the lightest thing in the row. The generator
+   stamps --sink as a style attribute, which is why these have to shout. */
+body.dusk .sinkrow .sink[href*="/products/"]{--sink:#86aad5!important}
+body.dusk .sinkrow .sink[href*="KitchenSink4Word"]{--sink:#d69b71!important}
+body.dusk .sinkrow .sink[href*="KitchenSink4XL"]{--sink:#caab68!important}
+body.dusk .sinkrow .sink[href*="KitchenSink4Web"]{--sink:#6ec48b!important}
+body.dusk .sinkrow .sink[href*="KitchenSink4PPT"]{--sink:var(--ink)!important}
 
 /* ---------- the department line ---------- */
 .deptline{display:flex;align-items:center;justify-content:space-between;gap:16px;
@@ -730,7 +745,17 @@ details.nav-menu.lang-menu>summary{height:32px;padding:0 10px;
 .paintcan svg{display:block;width:100%;height:auto;overflow:visible}
 .paintcan:focus-visible{outline:2px dashed var(--patina);outline-offset:4px}
 .paintcan.pulled{animation:pull .35s ease-out}
-body.dusk .paintcan svg{filter:drop-shadow(0 4px 18px rgba(224,164,60,.45))}
+/* The evening coat lights the can with a lamp, not a reactor: half the halo
+   alpha and half the blur of the first pass, and the pool dimmed to match.
+   The daytime state is untouched. */
+body.dusk .paintcan svg{filter:drop-shadow(0 3px 9px rgba(224,164,60,.22))}
+/* the drop leaves the bristle tip, falls past the rim, and the brush loads
+   another; same loop and easing as the Word mark's faucet drip */
+.paintcan .drop{animation:drop-fall 3.4s ease-in infinite}
+@keyframes drop-fall{0%,50%{opacity:0;transform:translateY(-4px) scaleY(.7)}
+  58%{opacity:1;transform:translateY(0) scaleY(1)}
+  94%{opacity:1;transform:translateY(36px) scaleY(1.2)}
+  100%{opacity:0;transform:translateY(42px)}}
 </style>
 </head>
 <body>
@@ -804,10 +829,10 @@ body.dusk .paintcan svg{filter:drop-shadow(0 4px 18px rgba(224,164,60,.45))}
         <rect x="55" y="80" width="80" height="26" fill="none" stroke="var(--ink)" stroke-width="3"></rect>
         <ellipse cx="95" cy="50" rx="40" ry="8" fill="var(--paper-deep)" stroke="var(--ink)" stroke-width="3"></ellipse>
         <ellipse cx="95" cy="50" rx="33" ry="5.5" fill="var(--patina)"></ellipse>
-        <path d="M28 58 l78 -14 l2 12 l-78 14 z" fill="var(--paper-deep)" stroke="var(--ink)" stroke-width="3" stroke-linejoin="round"></path>
-        <path d="M106 44 l16 -3 l2 12 l-16 3 z" fill="#f5efe0" stroke="var(--ink)" stroke-width="3" stroke-linejoin="round"></path>
-        <path d="M122 41 l28 -5 c4 5 4 10 -1 14 l-25 3 z" fill="var(--patina)" stroke="var(--ink)" stroke-width="3" stroke-linejoin="round"></path>
-        <path d="M150 62 c-4 6-4 9 0 12 c4-3 4-6 0-12 z" fill="var(--patina-bright)"></path>
+        <path d="M28 48 l78 -14 l2 12 l-78 14 z" fill="var(--paper-deep)" stroke="var(--ink)" stroke-width="3" stroke-linejoin="round"></path>
+        <path d="M106 34 l16 -3 l2 12 l-16 3 z" fill="#f5efe0" stroke="var(--ink)" stroke-width="3" stroke-linejoin="round"></path>
+        <path d="M122 31 l28 -5 c4 5 4 10 -1 14 l-25 3 z" fill="var(--patina)" stroke="var(--ink)" stroke-width="3" stroke-linejoin="round"></path>
+        <path class="drop" d="M150 52 c-4 6-4 9 0 12 c4-3 4-6 0-12 z" fill="var(--patina-bright)"></path>
         <path d="M55 70 c0 46 80 46 80 0" fill="none" stroke="var(--ink)" stroke-width="2.5" stroke-linecap="round"></path>
         <circle cx="55" cy="70" r="3" fill="var(--ink)"></circle>
         <circle cx="135" cy="70" r="3" fill="var(--ink)"></circle>
