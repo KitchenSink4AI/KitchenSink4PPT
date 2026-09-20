@@ -29,6 +29,8 @@ into this math; edits under a rotated group carry a warning.
 
 from __future__ import annotations
 
+import copy as _copy
+
 from lxml import etree
 
 from ..core.errors import PptMcpError, TargetNotFound, UnsupportedStructure
@@ -86,6 +88,146 @@ def _split_text_style(style: dict | None) -> tuple[dict | None, dict]:
     base = {k: v for k, v in folded.items() if k in _TXBODY_STYLE_KEYS}
     extra = {k: v for k, v in folded.items() if k in _TXBODY_EXTRA_KEYS}
     return base, extra
+
+
+#: Bullet children of a:pPr, plus the marker that switches bullets OFF.
+#: Carrying these is what keeps set_bullets(style="none") from being undone
+#: by a later retext.
+_BULLET_TAGS = ("a:buNone", "a:buAutoNum", "a:buChar", "a:buBlip", "a:buFont")
+
+
+def _merge_rpr(old_rpr: etree._Element, new_rpr: etree._Element):
+    """Old run properties, with everything the caller just named laid on
+    top. Returns (merged, carried) where carried names the categories that
+    came from the old run.
+
+    The freshly built a:rPr states exactly what text_style asked for, plus
+    lang and dirty, so overlaying it onto a copy of the old one preserves
+    colour, typeface, size, bold and italic that nobody asked to change.
+    """
+    from ._runmap import FILL_CHOICE_TAGS, RPR_ORDER, rank_insert, remove_children
+
+    merged = _copy.deepcopy(old_rpr)
+    merged.tag = new_rpr.tag
+    carried: set[str] = set()
+    if merged.get("sz"):
+        carried.add("size")
+    for attr, value in new_rpr.attrib.items():
+        if attr == "lang" and merged.get("lang"):
+            continue
+        if attr in ("sz", "b", "i", "u"):
+            carried.discard({"sz": "size"}.get(attr, attr))
+        merged.set(attr, value)
+    if merged.find(qn("a:solidFill")) is not None or merged.find(
+        qn("a:gradFill")
+    ) is not None:
+        carried.add("run_color")
+    if merged.find(qn("a:latin")) is not None:
+        carried.add("font")
+    for child in new_rpr:
+        tag = etree.QName(child).localname
+        if f"a:{tag}" in FILL_CHOICE_TAGS:
+            remove_children(merged, FILL_CHOICE_TAGS)
+            carried.discard("run_color")
+        elif tag in ("latin", "ea", "cs"):
+            remove_children(merged, ("a:latin", "a:ea", "a:cs"))
+            carried.discard("font")
+        else:
+            remove_children(merged, (f"a:{tag}",))
+        rank_insert(merged, _copy.deepcopy(child), RPR_ORDER)
+    return merged, carried
+
+
+def _carry_text_properties(
+    old: etree._Element, new: etree._Element, named: set
+) -> list[str]:
+    """Carry the previous text body's properties onto its replacement, for
+    everything the caller did not name.
+
+    A single-style replace used to build a brand-new body from defaults, so
+    replacing a body's text re-centred paragraphs that were left-aligned,
+    put bullet glyphs back on paragraphs where set_bullets(style="none")
+    had removed them, reset the vertical anchor, and dropped explicit run
+    colour. None of that was requested and none of it was reported;
+    `changed: ["text"]` was all the caller got back. Text replacement now
+    touches text, and touches formatting only where the caller named it.
+    """
+    carried: set[str] = set()
+
+    old_bodypr = old.find(qn("a:bodyPr"))
+    new_bodypr = new.find(qn("a:bodyPr"))
+    if old_bodypr is not None and new_bodypr is not None:
+        kept_anchor = new_bodypr.get("anchor")
+        kept_wrap = new_bodypr.get("wrap")
+        replacement = _copy.deepcopy(old_bodypr)
+        if "anchor" in named:
+            if kept_anchor is None:
+                replacement.attrib.pop("anchor", None)
+            else:
+                replacement.set("anchor", kept_anchor)
+        elif replacement.get("anchor") != kept_anchor:
+            carried.add("anchor")
+        if "wrap" in named:
+            if kept_wrap is None:
+                replacement.attrib.pop("wrap", None)
+            else:
+                replacement.set("wrap", kept_wrap)
+        new.replace(new_bodypr, replacement)
+
+    old_lst = old.find(qn("a:lstStyle"))
+    new_lst = new.find(qn("a:lstStyle"))
+    if old_lst is not None and len(old_lst) and new_lst is not None:
+        new.replace(new_lst, _copy.deepcopy(old_lst))
+        carried.add("list_style")
+
+    old_paras = old.findall(qn("a:p"))
+    if not old_paras:
+        return sorted(carried)
+
+    for i, para in enumerate(new.findall(qn("a:p"))):
+        # A replacement with MORE paragraphs than the original takes the
+        # last one's shape, which is what pressing Enter in PowerPoint does.
+        source = old_paras[min(i, len(old_paras) - 1)]
+
+        old_ppr = source.find(qn("a:pPr"))
+        new_ppr = para.find(qn("a:pPr"))
+        if new_ppr is not None:
+            kept_align = new_ppr.get("algn")
+            if old_ppr is None:
+                # The original inherited everything. Preserve that rather
+                # than pinning the default alignment onto it.
+                if "align" not in named:
+                    para.remove(new_ppr)
+            else:
+                replacement = _copy.deepcopy(old_ppr)
+                if "align" in named:
+                    if kept_align is None:
+                        replacement.attrib.pop("algn", None)
+                    else:
+                        replacement.set("algn", kept_align)
+                elif replacement.get("algn") != kept_align:
+                    carried.add("alignment")
+                if any(
+                    replacement.find(qn(t)) is not None for t in _BULLET_TAGS
+                ):
+                    carried.add("bullets")
+                if replacement.get("lvl"):
+                    carried.add("level")
+                para.replace(new_ppr, replacement)
+
+        src_rpr = source.find(f"{qn('a:r')}/{qn('a:rPr')}")
+        if src_rpr is None:
+            src_rpr = source.find(qn("a:endParaRPr"))
+        if src_rpr is None:
+            continue
+        for tag in ("a:rPr", "a:endParaRPr"):
+            for rpr in para.findall(f"{qn('a:r')}/{qn(tag)}") + (
+                para.findall(qn(tag))
+            ):
+                merged, got = _merge_rpr(src_rpr, rpr)
+                rpr.getparent().replace(rpr, merged)
+                carried |= got
+    return sorted(carried)
 
 
 def _apply_extra_run_props(body: etree._Element, extra: dict) -> None:
@@ -819,6 +961,7 @@ def set_shape(
     elem, chain = _find_shape(pkg, part, shape)
     changed: list[str] = []
     warnings: list[str] = []
+    preserved: list[str] = []
 
     if (x is not None or y is not None) and (dx is not None or dy is not None):
         raise PptMcpError("use absolute x/y or delta dx/dy, not both")
@@ -905,11 +1048,15 @@ def set_shape(
         old = elem.find(qn("p:txBody"))
         base_style, extra_style = _split_text_style(text_style)
         new_body = g.txbody(text, base_style)
-        _apply_extra_run_props(new_body, extra_style)
         if old is not None:
+            named = set(base_style or {}) | set(extra_style)
+            carried = _carry_text_properties(old, new_body, named)
+            if carried:
+                preserved = carried
             elem.replace(old, new_body)
         else:
             elem.append(new_body)
+        _apply_extra_run_props(new_body, extra_style)
         changed.append("text")
     elif text_style is not None:
         raise PptMcpError(
@@ -945,6 +1092,8 @@ def set_shape(
         "slide_index": rec["index"],
         "slide_id": rec["slide_id"],
     }
+    if preserved:
+        result["preserved"] = preserved
     if warnings:
         result["warnings"] = warnings
     return result
