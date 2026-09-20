@@ -1,9 +1,9 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.nometalalchemist/kitchensink4ppt",
+  "name": "io.github.KitchenSink4AI/kitchensink4ppt",
   "title": "KitchenSink4PPT",
   "description": "PowerPoint (.pptx) MCP server: editable vector diagrams, tables, budgeted reads, render-to-verify",
-  "version": "1.2.3",
+  "version": "1.3.0",
   "websiteUrl": "https://kitchensink4.ai/KitchenSink4PPT/",
   "repository": {
     "url": "https://github.com/KitchenSink4AI/KitchenSink4PPT",
@@ -13,7 +13,7 @@
     {
       "registryType": "pypi",
       "identifier": "kitchensink4ppt",
-      "version": "1.2.3",
+      "version": "1.3.0",
       "transport": {
         "type": "stdio"
       }
