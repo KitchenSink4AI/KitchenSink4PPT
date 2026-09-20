@@ -114,3 +114,123 @@ def test_a_deck_that_fits_keeps_its_historical_get_text_shape(tmp_path):
     pkg = PptxPackage(str(_wordy_deck(tmp_path / "small.pptx", slides=2)))
     result = rd.get_text(pkg)
     assert list(result) == ["slide_count", "slides", "text"]
+
+
+# --------------------------------------------------------------- #873
+
+
+@pytest.fixture()
+def drawable(make_deck):
+    """(pkg, slide index) with an empty slide to draw on."""
+    from kitchensink4ppt.ops import slides as sl
+
+    pkg = PptxPackage(make_deck("field.pptx", extra_slides=0))
+    return pkg, sl.insert_slide(pkg, 0)["index"]
+
+
+def _ln_of(pkg, slide, shape_id):
+    from kitchensink4ppt.core.package import qn
+    from kitchensink4ppt.ops import shapes as shp
+    from kitchensink4ppt.ops.read import get_slide_info
+
+    part = get_slide_info(pkg, slide)["part"]
+    elem, _chain = shp._find_shape(pkg, part, shape_id)
+    return elem.find(f"{qn('p:spPr')}/{qn('a:ln')}")
+
+
+def test_line_type_none_suppresses_the_outline_like_fill_type_none(drawable):
+    """#873A: line={"type":"none"} emitted a bare <a:ln/>, which suppresses
+    nothing; the p:style lnRef still painted a themed border. Its sibling
+    fill={"type":"none"} got this right, so the two disagreed."""
+    from kitchensink4ppt.core.package import qn
+    from kitchensink4ppt.ops import shapes as shp
+
+    pkg, slide = drawable
+    res = shp.insert_shape(
+        pkg, slide, "rect", 1, 1, 4, 1,
+        fill={"type": "solid", "color": "E0F3FB"},
+        line={"type": "none"},
+    )
+    ln = _ln_of(pkg, slide, res["shape_id"])
+    assert ln is not None
+    assert ln.find(qn("a:noFill")) is not None, etree.tostring(ln)
+
+
+def test_connector_writes_the_arrowhead_the_caller_named(drawable):
+    """#873B: end_arrow / start_arrow were dropped in silence, and an
+    unarrowed line looks like a designed line, so a render review passes."""
+    from kitchensink4ppt.core.package import qn
+    from kitchensink4ppt.ops import shapes as shp
+
+    pkg, slide = drawable
+    a = shp.insert_shape(pkg, slide, "rect", 1, 1, 1, 1)["shape_id"]
+    b = shp.insert_shape(pkg, slide, "rect", 5, 3, 1, 1)["shape_id"]
+    res = shp.insert_connector(
+        pkg, slide, "straight", start_shape=a, end_shape=b,
+        line={"color": "00405C", "width": 2.25, "dash": "dash",
+              "end_arrow": "triangle"},
+    )
+    ln = _ln_of(pkg, slide, res["shape_id"])
+    assert ln.get("w") == "28575"
+    assert ln.find(qn("a:prstDash")).get("val") == "dash"
+    tail = ln.find(qn("a:tailEnd"))
+    assert tail is not None, etree.tostring(ln)
+    assert tail.get("type") == "triangle"
+
+
+@pytest.mark.parametrize(
+    "alias,tag", [
+        ("head", "a:headEnd"), ("head_end", "a:headEnd"),
+        ("start_arrow", "a:headEnd"), ("tail", "a:tailEnd"),
+        ("tail_end", "a:tailEnd"), ("end_arrow", "a:tailEnd"),
+    ],
+)
+def test_every_arrowhead_alias_reaches_the_same_element(alias, tag):
+    """#873B: the schema words and the words a caller reaches for both
+    land, so neither spelling is a silent no-op."""
+    from kitchensink4ppt.core.package import qn
+    from kitchensink4ppt.ops import geometry as geo
+
+    ln = geo.line_element({"width": 1, alias: {"type": "stealth", "w": "lg"}})
+    el = ln.find(qn(tag))
+    assert el is not None, f"{alias} wrote nothing"
+    assert el.get("type") == "stealth"
+    assert el.get("w") == "lg"
+
+
+def test_two_aliases_for_one_end_refuse_rather_than_one_winning():
+    """#873B: silently picking a winner is the same defect one layer up."""
+    from kitchensink4ppt.core.errors import PptMcpError
+    from kitchensink4ppt.ops import geometry as geo
+
+    with pytest.raises(PptMcpError) as exc:
+        geo.line_element({"tail": "triangle", "end_arrow": "stealth"})
+    assert "twice" in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    "spec,what", [
+        ({"width": 2, "endarrow": "triangle"}, "line"),
+        ({"width": 2, "colour": "FF0000"}, "line"),
+    ],
+)
+def test_unknown_line_keys_refuse_instead_of_dropping(spec, what):
+    """#873: silent key-dropping is the shared root cause of both halves."""
+    from kitchensink4ppt.core.errors import PptMcpError
+    from kitchensink4ppt.ops import geometry as geo
+
+    with pytest.raises(PptMcpError) as exc:
+        geo.line_element(spec)
+    assert "unknown" in str(exc.value).lower()
+
+
+def test_unknown_fill_keys_refuse_instead_of_dropping():
+    """#873: the same contract on the sibling parameter."""
+    from kitchensink4ppt.core.errors import PptMcpError
+    from kitchensink4ppt.ops import geometry as geo
+
+    with pytest.raises(PptMcpError):
+        geo.fill_element({"type": "solid", "color": "FF0000", "opacity": 0.5})
+    # the spelled-right keys still work
+    assert geo.fill_element({"type": "solid", "color": "FF0000",
+                             "alpha": 0.5}) is not None
