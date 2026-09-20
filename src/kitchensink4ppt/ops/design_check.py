@@ -24,13 +24,17 @@ Honesty rules (binding):
 
 The checks and their heuristics:
 
-- overlap: pairwise slide-space bbox intersection over TOP-LEVEL shapes
-  (a group is one box; its interior is the group's own business). A pair
-  is flagged when the intersection exceeds min_overlap_pct (default 40%)
-  of the SMALLER shape's area. Deliberate containment is not overlap: when
-  one box fully contains the other AND sits behind it in z-order it is a
-  background/panel, and the pair is skipped. Connectors and hidden shapes
-  never participate (touching shapes is a connector's job).
+- overlap: pairwise slide-space bbox intersection, at the top level AND
+  between siblings inside each group. A top-level pair is flagged when the
+  intersection exceeds min_overlap_pct (default 40%) of the SMALLER
+  shape's area; an in-group pair when it exceeds min_group_overlap_in
+  (default 0.05") in BOTH dimensions, because a diagram's real collisions
+  are corner clips a percentage-of-area rule never reaches. Deliberate
+  containment is not overlap: when one box fully contains the other AND
+  sits behind it in z-order it is a background/panel, and the pair is
+  skipped. In-group members whose name matches exclude_names (connectors,
+  ticks, spines, bands and the rest of the families meant to touch) are
+  left out. Connectors and hidden shapes never participate.
 - off_slide: bbox vs p:sldSz. Fully outside = error (invisible content);
   partially outside = warning once the overhang exceeds
   partial_tolerance_in (default 0.1", so deliberate full-bleed edges do
@@ -54,17 +58,24 @@ The checks and their heuristics:
 - missing_title: no title/ctrTitle placeholder carrying text. Severity
   info, not warning: section breaks and full-bleed visuals legitimately
   have no title, but screen readers and Outline view want one.
-- contrast: effective text color vs effective shape fill, WCAG-ish ratio.
-  schemeClr resolves through the slide's clrMap override chain and the
-  master's theme; lumMod/lumOff/tint/shade are approximated in HLS space.
-  Background resolution order: shape solidFill -> p:style fillRef -> (for
-  transparent shapes) the containing shape behind it -> slide/layout/
-  master p:bg -> theme bg1. Gradient fills are approximated
-  by their average stop color; picture/pattern fills are skipped (a
-  renderer question, honestly out of reach). Runs with no resolvable
-  explicit color assume mapped tx1. Flags below min_ratio (default 4.5;
-  large text >= 18pt or bold >= 14pt uses large_min_ratio, default 3.0);
-  ratios under 2.0 escalate to error.
+- contrast: effective text color vs the color the text is READ AGAINST,
+  WCAG-ish ratio. schemeClr resolves through the slide's clrMap override
+  chain and the master's theme; lumMod/lumOff/tint/shade are approximated
+  in HLS space. Run color resolves through the whole chain (rPr,
+  paragraph defRPr, shape lstStyle, p:style fontRef, layout placeholder,
+  master placeholder, master txStyles, mapped tx1) and the finding names
+  the source. Backdrop resolution: the shape's own fill first, where
+  a:noFill in spPr beats the p:style fillRef; a shape that paints nothing
+  of its own takes the composite of every shape BENEATH the text's centre,
+  by z, down to the slide/layout/master p:bg and theme bg1, alpha
+  included. That composite is what finds text placed on top of something
+  else, which is the commonest real contrast failure in a designed deck.
+  Table cells are judged against their own tcPr fill. Gradients are
+  averaged; a picture or pattern anywhere in the stack, or a cell taking
+  its fill from the table style part, is reported as its own info finding
+  rather than passing silently. Flags below min_ratio (default 4.5; large
+  text >= 18pt or bold >= 14pt uses large_min_ratio, default 3.0); ratios
+  under 2.0 escalate to error.
 - diagram_glue: the un-tweakable-diagram smell. A connector end with no
   stCxn/endCxn glue whose endpoint touches a shape's bbox (within
   touch_tolerance_in, default 0.05") LOOKS attached but will not follow
@@ -107,17 +118,39 @@ _RT_SLIDE_MASTER = (
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster"
 )
 
+#: Shape families that are MEANT to touch their neighbours. A diagram's
+#: connectors, tick marks, spines and bands sit on or against the things
+#: they annotate, so pairing them inside a group produces nothing but
+#: noise. Matched case-insensitively against the shape name.
+DEFAULT_TOUCHING_NAMES = (
+    "connector", "tick", "spine", "leader", "marker", "band", "curve",
+    "arrow", "axis", "bracket", "callout", "rule", "divider", "underline",
+)
+
+
 #: Check registry: name -> (default options, caveat text). Order is
 #: presentation order in results.
 CHECKS: dict[str, tuple[dict, str]] = {
     "overlap": (
-        {"min_overlap_pct": 40.0},
-        "bbox intersection between top-level shapes; skipped as deliberate "
-        "composition: a shape fully inside another that sits behind it "
-        "(background/panel), two untexted autoshapes overlapping (template "
-        "band layering), and content sitting >=85% on an untexted shape "
-        "behind it (label-on-panel); rotation is ignored (boxes are "
-        "unrotated)",
+        {
+            "min_overlap_pct": 40.0,
+            "min_group_overlap_in": 0.05,
+            "exclude_names": list(DEFAULT_TOUCHING_NAMES),
+        },
+        "bbox intersection, between top-level shapes and between siblings "
+        "INSIDE each group (a percentage of the smaller shape at the top "
+        "level, an absolute min_group_overlap_in in both dimensions inside "
+        "a group, where a corner clip no percentage rule reaches is still "
+        "a defect); skipped as deliberate composition: a shape fully "
+        "inside another that sits behind it (background/panel), two "
+        "untexted autoshapes overlapping (template band layering), content "
+        "sitting >=85% on an untexted shape behind it (label-on-panel), "
+        "and in-group members whose name matches exclude_names, the "
+        "families meant to touch; placeholders with inherited geometry are "
+        "resolved through the layout; rotation is ignored (boxes are "
+        "unrotated). An in-group finding is geometry: a badge deliberately "
+        "pinned half-on a box reads the same as a collision, so each one "
+        "carries overlap_in for the caller to judge with",
     ),
     "off_slide": (
         {"partial_tolerance_in": 0.1},
@@ -161,14 +194,19 @@ CHECKS: dict[str, tuple[dict, str]] = {
     ),
     "contrast": (
         {"min_ratio": 4.5, "large_min_ratio": 3.0},
-        "WCAG-style ratio against the resolved solid (or averaged "
-        "gradient) fill; only runs with an explicit color in the shape's "
-        "own XML (rPr, paragraph defRPr, or lstStyle) are judged - colors "
-        "inherited from the layout/master text styles are skipped, "
-        "picture/pattern fills are skipped, translucent solid fills are "
-        "composited over the resolved backdrop (skipped when the backdrop "
-        "is unresolvable), and lumMod/lumOff/tint/shade are approximated, "
-        "so treat borderline ratios as render-and-look",
+        "WCAG-style ratio. Run colour resolves through the whole chain "
+        "(rPr, paragraph defRPr, shape lstStyle, p:style fontRef, layout "
+        "placeholder, master placeholder, master txStyles, mapped tx1) and "
+        "the finding names the source. The backdrop is the shape's own "
+        "fill when it has one (a:noFill in spPr beats the p:style "
+        "fillRef), otherwise every shape beneath the text's centre "
+        "composited by z down to the slide background, alpha included. "
+        "Table cells are judged against their own tcPr fill. A backdrop "
+        "that cannot be resolved to a colour (picture, pattern, a table "
+        "style's fill) is reported as its own info finding instead of "
+        "passing silently. Gradients are averaged and "
+        "lumMod/lumOff/tint/shade are approximated, so treat borderline "
+        "ratios as render-and-look",
     ),
     "diagram_glue": (
         {"touch_tolerance_in": 0.05},
@@ -332,6 +370,9 @@ class _SlideCtx:
 
     def _resolve_group_boxes(self) -> None:
         chains: dict[int, list] = {}
+        # id -> the id of the OUTERMOST group it lives in, so the overlap
+        # check can compare the members of one diagram against each other.
+        roots: dict[int, int] = {}
 
         def _walk(container, chain):
             for child in container:
@@ -341,9 +382,11 @@ class _SlideCtx:
                     sid = _shape_id(child)
                     if sid is not None and chain:
                         chains[sid] = chain
+                        roots[sid] = _shape_id(chain[0])
 
         _walk(self.sp_tree, [])
         for srec in self.all:
+            srec["group_root"] = roots.get(srec["id"])
             if srec["box"] is None and srec["id"] in chains:
                 srec["box"], srec["box_inherited"] = _gentle_box(
                     srec["elem"], chains[srec["id"]]
@@ -645,30 +688,64 @@ def _blend_hex(top_hex: str, under_hex: str, alpha: float) -> str:
     return "".join(out)
 
 
-def _backdrop_hex(srec: dict, ctx: "_SlideCtx", resolver: _ColorResolver) -> tuple[str | None, str | None]:
-    """Effective backdrop of a transparent shape: the smallest visible
-    shape whose bbox contains it and that sits EARLIER in document order
-    (behind), else the slide background."""
+def _backdrop_hex(
+    srec: dict, ctx: "_SlideCtx", resolver: _ColorResolver
+) -> tuple[str | None, str | None]:
+    """The colour a shape's text is actually read against: every visible
+    shape BENEATH it whose box contains the text's centre, composited in
+    z order down to the slide background.
+
+    This used to demand that the shape beneath fully CONTAIN the one in
+    front, and it took only the smallest such shape rather than the stack.
+    That missed the commonest real contrast failure in a designed deck:
+    an unfilled text box floating on a band, where the label overhangs the
+    band it sits on. The centre is what sits on the colour, and a
+    half-transparent band over another band is what the eye sees, so the
+    whole stack gets composited.
+
+    Returns (hex, None) or (None, reason). A picture or pattern anywhere
+    in the stack, or a background no static read can resolve, comes back
+    as a REASON, which the caller reports rather than passing silently.
+    """
     box = srec.get("box")
-    if box is not None:
-        behind = []
-        for other in ctx.all:
-            if other is srec or other["hidden"] or other["box"] is None:
-                continue
-            if other["kind"] == "connector":
-                continue
-            if not _contains(other["box"], box):
-                continue
-            if ctx.all.index(other) < ctx.all.index(srec):
-                behind.append(other)
-        if behind:
-            under = min(behind, key=lambda s: s["box"][2] * s["box"][3])
-            hexval, skip = _own_fill_hex(under["elem"], resolver)
-            if skip:
-                return None, skip
-            if hexval and hexval != _TRANSPARENT:
-                return hexval, None
-    return _background_hex(resolver), None
+    base = _background_hex(resolver)
+    if base is None:
+        return None, "slide background is a picture, pattern or gradient"
+    if box is None:
+        return base, None
+
+    cx = box[0] + box[2] / 2.0
+    cy = box[1] + box[3] / 2.0
+    order = {id(s["elem"]): i for i, s in enumerate(ctx.all)}
+    mine = order.get(id(srec["elem"]), -1)
+
+    stack: list[tuple[str, float]] = []
+    for other in ctx.all:
+        if other is srec or other["hidden"] or other["box"] is None:
+            continue
+        if other["kind"] == "connector":
+            continue
+        if order.get(id(other["elem"]), -1) >= mine:
+            continue  # in front of the text, or the text itself
+        ox, oy, ocx, ocy = other["box"]
+        if not (ox <= cx <= ox + ocx and oy <= cy <= oy + ocy):
+            continue
+        if other["kind"] in ("picture", "chart", "diagram"):
+            # A photograph under the text has no single colour to measure
+            # against, and picking one would be a confident guess.
+            return None, f"{other['kind']} beneath the text ({_label(other)})"
+        hexval, skip = _own_fill_hex(other["elem"], resolver)
+        if skip:
+            return None, f"{skip} on {_label(other)}, beneath the text"
+        if hexval is None or hexval == _TRANSPARENT:
+            continue
+        alpha = _own_fill_alpha(other["elem"])
+        stack.append((hexval, 1.0 if alpha is None else alpha))
+
+    current = base
+    for hexval, alpha in stack:  # document order is bottom-up
+        current = _blend_hex(hexval, current, alpha)
+    return current, None
 
 
 def _background_hex(resolver: _ColorResolver) -> str | None:
@@ -717,6 +794,41 @@ def _contains(outer, inner, eps: float = 9525.0) -> bool:
     )
 
 
+def _touching_family(s: dict, words) -> bool:
+    name = (s.get("name") or "").lower()
+    return any(word in name for word in words)
+
+
+def _decoration(s: dict) -> bool:
+    """Untexted plain shape: template band, strip or panel material."""
+    return (
+        etree.QName(s["elem"]).localname == "sp"
+        and not shape_text(s["elem"]).strip()
+    )
+
+
+def _deliberate_composition(a: dict, b: dict, inter: float) -> bool:
+    """True when two intersecting boxes are a designed stack, not a
+    collision. The same three rules hold inside a group as at the top
+    level, and applying them there is what keeps a diagram's labels from
+    being reported against the shapes they are labelling."""
+    # Full inclusion with the outer BEHIND: a background or a panel.
+    if _contains(a["box"], b["box"]) and a["z"] < b["z"]:
+        return True
+    if _contains(b["box"], a["box"]) and b["z"] < a["z"]:
+        return True
+    # Decoration on decoration: template layering.
+    if _decoration(a) and _decoration(b):
+        return True
+    # Label on panel: the front shape sits almost entirely on an untexted
+    # shape behind it.
+    back, front_s = (a, b) if a["z"] < b["z"] else (b, a)
+    front_area = front_s["box"][2] * front_s["box"][3]
+    return bool(
+        _decoration(back) and front_area > 0 and inter / front_area >= 0.85
+    )
+
+
 def _check_overlap(ctx: _SlideCtx, opts: dict) -> list[dict]:
     findings = []
     cand = [
@@ -730,36 +842,13 @@ def _check_overlap(ctx: _SlideCtx, opts: dict) -> list[dict]:
     ]
     min_pct = float(opts["min_overlap_pct"])
 
-    def _decoration(s: dict) -> bool:
-        # Untexted plain shape: template band/strip/panel material.
-        return (
-            etree.QName(s["elem"]).localname == "sp"
-            and not shape_text(s["elem"]).strip()
-        )
-
     for i in range(len(cand)):
         for j in range(i + 1, len(cand)):
             a, b = cand[i], cand[j]
             inter = _boxes_intersect_area(a["box"], b["box"])
             if inter <= 0:
                 continue
-            # Deliberate containment: full inclusion with the outer BEHIND.
-            if _contains(a["box"], b["box"]) and a["z"] < b["z"]:
-                continue
-            if _contains(b["box"], a["box"]) and b["z"] < a["z"]:
-                continue
-            # Decoration-on-decoration: template layering, not a collision.
-            if _decoration(a) and _decoration(b):
-                continue
-            # Label-on-panel: the front shape sits (almost) entirely on an
-            # untexted backdrop shape behind it - deliberate composition.
-            back, front_s = (a, b) if a["z"] < b["z"] else (b, a)
-            front_area = front_s["box"][2] * front_s["box"][3]
-            if (
-                _decoration(back)
-                and front_area > 0
-                and inter / front_area >= 0.85
-            ):
+            if _deliberate_composition(a, b, inter):
                 continue
             smaller = min(a["box"][2] * a["box"][3], b["box"][2] * b["box"][3])
             pct = inter / smaller * 100.0
@@ -783,6 +872,81 @@ def _check_overlap(ctx: _SlideCtx, opts: dict) -> list[dict]:
                     overlap_pct=round(pct, 1),
                 )
             )
+    findings.extend(_check_group_overlap(ctx, opts))
+    return findings
+
+
+def _check_group_overlap(ctx: _SlideCtx, opts: dict) -> list[dict]:
+    """Overlap between SIBLINGS inside a group.
+
+    The top-level pass treats a group as one box, on the reasoning that a
+    group's interior is its own business. That reasoning fails on exactly
+    the slides this server's own diagram tooling produces, since
+    generate_diagram and svg_to_shapes both return grouped output: every
+    real collision in a timeline is between two boxes inside the group,
+    and the check went blind on all of them.
+
+    Two things keep this usable as a gate rather than a hint. Members of
+    families meant to touch (connectors, ticks, spines, bands) are
+    excluded by name, and the bar is an ABSOLUTE overlap in BOTH
+    dimensions rather than a percentage: a corner clip of a couple of
+    hundredths of an inch between two timeline boxes is a real defect that
+    no percentage-of-area rule would ever reach.
+    """
+    words = opts.get("exclude_names") or DEFAULT_TOUCHING_NAMES
+    if isinstance(words, str):
+        words = (words,)
+    words = tuple(w.lower() for w in words)
+    bar = float(opts.get("min_group_overlap_in", 0.05)) * EMU_PER_INCH
+
+    groups: dict[int, list[dict]] = {}
+    for s in ctx.all:
+        root = s.get("group_root")
+        if root is None or s["hidden"] or s["kind"] == "connector":
+            continue
+        if s["box"] is None or s["box"][2] <= 0 or s["box"][3] <= 0:
+            continue
+        if _touching_family(s, words):
+            continue
+        groups.setdefault(root, []).append(s)
+
+    findings = []
+    for root, members in groups.items():
+        for i in range(len(members)):
+            for j in range(i + 1, len(members)):
+                a, b = members[i], members[j]
+                ax, ay, acx, acy = a["box"]
+                bx, by, bcx, bcy = b["box"]
+                ow = min(ax + acx, bx + bcx) - max(ax, bx)
+                oh = min(ay + acy, by + bcy) - max(ay, by)
+                if ow <= bar or oh <= bar:
+                    continue
+                if _deliberate_composition(
+                    a, b, _boxes_intersect_area(a["box"], b["box"])
+                ):
+                    continue
+                front = b if b["z"] > a["z"] else a
+                findings.append(
+                    ctx.finding(
+                        "overlap",
+                        "warning",
+                        f"inside group {root}, {_label(a)} and {_label(b)} "
+                        f"overlap by {ow / EMU_PER_INCH:.3f} x "
+                        f"{oh / EMU_PER_INCH:.3f} in; {_label(front)} is in "
+                        "front",
+                        f"set_shape(slide={ctx.rec['index']}, "
+                        f"shape={front['id']}, dx=..., dy=...) moves the "
+                        "member itself (moving the group moves both), or "
+                        f"ungroup_shapes(slide={ctx.rec['index']}, "
+                        f"shape={root}) first if the layout needs rebuilding",
+                        shape_ids=[a["id"], b["id"]],
+                        group_id=root,
+                        overlap_in=[
+                            round(ow / EMU_PER_INCH, 3),
+                            round(oh / EMU_PER_INCH, 3),
+                        ],
+                    )
+                )
     return findings
 
 
@@ -1120,16 +1284,78 @@ def _check_missing_title(ctx: _SlideCtx, opts: dict) -> list[dict]:
     ]
 
 
+def _lvl_defrpr(body: etree._Element | None, lvl: int):
+    """The a:defRPr of one outline level in a txBody's own lstStyle."""
+    if body is None:
+        return None
+    lst = body.find(qn("a:lstStyle"))
+    if lst is None:
+        return None
+    lvlppr = lst.find(qn(f"a:lvl{min(max(lvl, 0), 8) + 1}pPr"))
+    return lvlppr.find(qn("a:defRPr")) if lvlppr is not None else None
+
+
+def _inherited_defrprs(ctx: "_SlideCtx", elem: etree._Element, lvl: int):
+    """[(defRPr, source)] from the layout placeholder, the master
+    placeholder, and the master text style, in that order."""
+    out = []
+    key = _inh.placeholder_key(_inh.placeholder_of(elem))
+    if key is None:
+        return out
+    layout_part = _inh.layout_part_of(ctx.pkg, ctx.part)
+    master_part = _inh.master_part_of(ctx.pkg, layout_part)
+    for part_twin, label in (
+        (_inh.layout_twin(ctx.pkg, layout_part, key), "layout"),
+        (_inh.master_twin(ctx.pkg, master_part, key), "master placeholder"),
+    ):
+        if part_twin is None:
+            continue
+        defrpr = _lvl_defrpr(part_twin.find(qn("p:txBody")), lvl)
+        if defrpr is not None:
+            out.append((defrpr, label))
+    if master_part and ctx.pkg.has_part(master_part):
+        styles = ctx.pkg.root(master_part).find(qn("p:txStyles"))
+        if styles is not None:
+            node = styles.find(
+                qn(_MASTER_TX_STYLE[_inh.family_of(key[0])])
+            )
+            if node is not None:
+                lvlppr = node.find(qn(f"a:lvl{min(max(lvl, 0), 8) + 1}pPr"))
+                defrpr = (
+                    lvlppr.find(qn("a:defRPr"))
+                    if lvlppr is not None else None
+                )
+                if defrpr is not None:
+                    out.append((defrpr, "master"))
+    return out
+
+
+#: Placeholder family -> the master text style backing it.
+_MASTER_TX_STYLE = {
+    "title": "p:titleStyle",
+    "body": "p:bodyStyle",
+    "other": "p:otherStyle",
+}
+
+
 def _run_text_color(
     r: etree._Element,
     p: etree._Element,
     body: etree._Element,
     resolver: _ColorResolver,
-) -> tuple[str | None, float | None, bool]:
-    """(hex or None, explicit size pt or None, bold) for one run, chasing
-    the shape's OWN property chain: run rPr -> paragraph pPr/defRPr ->
-    txBody lstStyle level defRPr. Colors inherited from the layout/master
-    text styles are NOT resolved: hex None means "skip, don't guess"."""
+    ctx: "_SlideCtx | None" = None,
+    elem: etree._Element | None = None,
+) -> tuple[str | None, float | None, bool, str]:
+    """(hex or None, explicit size pt or None, bold, source) for one run.
+
+    The chain is the whole chain now: run rPr, paragraph defRPr, the
+    shape's own lstStyle, the shape's p:style fontRef, the layout
+    placeholder, the master placeholder, the master text styles, and
+    finally the theme's mapped tx1. It used to stop after the shape's own
+    XML and return None for everything else, which silently exempted every
+    ordinary bulleted body slide from the contrast check: those runs carry
+    no colour of their own, which is exactly why they are worth checking.
+    """
     lvl = 0
     ppr = p.find(qn("a:pPr"))
     if ppr is not None and ppr.get("lvl"):
@@ -1137,27 +1363,27 @@ def _run_text_color(
             lvl = int(ppr.get("lvl"))
         except ValueError:
             lvl = 0
-    lst = body.find(qn("a:lstStyle"))
-    lvl_defrpr = None
-    if lst is not None:
-        lvlppr = lst.find(qn(f"a:lvl{lvl + 1}pPr"))
-        if lvlppr is not None:
-            lvl_defrpr = lvlppr.find(qn("a:defRPr"))
-    chain = [
-        r.find(qn("a:rPr")),
-        ppr.find(qn("a:defRPr")) if ppr is not None else None,
-        lvl_defrpr,
+    chain: list[tuple[etree._Element | None, str]] = [
+        (r.find(qn("a:rPr")), "run"),
+        (ppr.find(qn("a:defRPr")) if ppr is not None else None, "paragraph"),
+        (_lvl_defrpr(body, lvl), "shape"),
     ]
+    if ctx is not None and elem is not None:
+        chain.extend(_inherited_defrprs(ctx, elem, lvl))
+
     hexval = None
+    source = "unresolved"
     size = None
     bold = None
-    for props in chain:
+    for props, label in chain:
         if props is None:
             continue
         if hexval is None:
             solid = props.find(qn("a:solidFill"))
             if solid is not None:
                 hexval = resolver.resolve(_first_color_child(solid))
+                if hexval:
+                    source = label
         if size is None and props.get("sz") is not None:
             try:
                 size = int(props.get("sz")) / 100.0
@@ -1165,7 +1391,105 @@ def _run_text_color(
                 pass
         if bold is None and props.get("b") is not None:
             bold = props.get("b") == "1"
-    return hexval, size, bool(bold)
+
+    if hexval is None and elem is not None:
+        # p:style/fontRef is how an inserted autoshape gets its text
+        # colour, and it is why white-on-white happens after a retext.
+        fontref = elem.find(f"{qn('p:style')}/{qn('a:fontRef')}")
+        if fontref is not None:
+            hexval = resolver.resolve(_first_color_child(fontref))
+            if hexval:
+                source = "style/fontRef"
+    if hexval is None:
+        hexval = resolver.scheme_hex("tx1")
+        if hexval:
+            source = "theme default"
+    return hexval, size, bool(bold), source
+
+
+def _cell_fill_hex(
+    tc: etree._Element, resolver: _ColorResolver
+) -> tuple[str | None, str | None]:
+    """(hex | _TRANSPARENT | None, reason) for one table cell's own fill.
+    A cell with no a:tcPr fill takes its colour from the table STYLE part,
+    which this read does not resolve, so it comes back as a reason."""
+    tcpr = tc.find(qn("a:tcPr"))
+    if tcpr is None:
+        return None, "cell fill comes from the table style part"
+    for child in tcpr:
+        local = etree.QName(child).localname
+        if local == "solidFill":
+            return resolver.resolve(_first_color_child(child)), None
+        if local == "noFill":
+            return _TRANSPARENT, None
+        if local in ("blipFill", "pattFill", "gradFill"):
+            return None, f"{local} cell fill"
+    return None, "cell fill comes from the table style part"
+
+
+def _worst_run(
+    ctx: _SlideCtx,
+    elem: etree._Element,
+    body: etree._Element,
+    paragraphs: list,
+    bg_hex: str,
+    resolver: _ColorResolver,
+    min_ratio: float,
+    large_min: float,
+) -> dict | None:
+    worst: dict | None = None
+    for p in paragraphs:
+        for r in p.findall(qn("a:r")):
+            t = r.find(qn("a:t"))
+            if t is None or not (t.text or "").strip():
+                continue
+            fg_hex, size, bold, source = _run_text_color(
+                r, p, body, resolver, ctx, elem
+            )
+            if fg_hex is None:
+                continue
+            ratio = contrast_ratio(fg_hex, bg_hex)
+            large = (size is not None) and (
+                size >= 18.0 or (bold and size >= 14.0)
+            )
+            threshold = large_min if large else min_ratio
+            if ratio >= threshold:
+                continue
+            if worst is None or ratio < worst["ratio"]:
+                worst = {
+                    "ratio": ratio,
+                    "fg": fg_hex,
+                    "threshold": threshold,
+                    "source": source,
+                    "sample": (t.text or "").strip()[:40],
+                }
+    return worst
+
+
+def _contrast_finding(ctx, s, worst, bg_hex) -> dict:
+    suggested = "000000" if _rel_luminance(bg_hex) > 0.35 else "FFFFFF"
+    severity = "error" if worst["ratio"] < 2.0 else "warning"
+    where = (
+        "" if worst["source"] == "run"
+        else f", colour from the {worst['source']}"
+    )
+    return ctx.finding(
+        "contrast",
+        severity,
+        f"{_label(s)}: text #{worst['fg']} on #{bg_hex} has contrast "
+        f"{round(worst['ratio'], 2)}:1, below the {worst['threshold']}:1 "
+        f"target ({worst['sample']!r}){where}; approximated from resolved "
+        "solid colors, not a render",
+        f"format_text(slide={ctx.rec['index']}, shape={s['id']}, "
+        f'color="{suggested}") fixes the text, or set_shape(slide='
+        f"{ctx.rec['index']}, shape={s['id']}, fill=...) changes "
+        "the background",
+        shape_ids=[s["id"]],
+        ratio=round(worst["ratio"], 2),
+        text_color=worst["fg"],
+        fill_color=bg_hex,
+        color_source=worst["source"],
+    )
 
 
 def _check_contrast(ctx: _SlideCtx, opts: dict) -> list[dict]:
@@ -1174,10 +1498,20 @@ def _check_contrast(ctx: _SlideCtx, opts: dict) -> list[dict]:
     large_min = float(opts["large_min_ratio"])
     resolver = ctx.resolver()
     for s in ctx.all:
-        if s["hidden"] or etree.QName(s["elem"]).localname != "sp":
+        if s["hidden"]:
+            continue
+        if s["kind"] == "table":
+            findings.extend(
+                _check_table_contrast(ctx, s, resolver, min_ratio, large_min)
+            )
+            continue
+        if etree.QName(s["elem"]).localname != "sp":
             continue
         if not shape_text(s["elem"]).strip():
             continue
+        # a:noFill in spPr beats the p:style fillRef: the renderer honours
+        # the explicit refusal to paint, and a check that read the fillRef
+        # anyway invented a colour the slide does not show.
         bg_hex, skip_reason = _own_fill_hex(s["elem"], resolver)
         if bg_hex == _TRANSPARENT:
             bg_hex, skip_reason = _backdrop_hex(s, ctx, resolver)
@@ -1195,59 +1529,92 @@ def _check_contrast(ctx: _SlideCtx, opts: dict) -> list[dict]:
                 else:
                     bg_hex = _blend_hex(bg_hex, behind, alpha)
         if skip_reason or bg_hex is None:
-            continue  # image/pattern fill or unresolvable: honestly skipped
+            # An unresolvable backdrop is a RESULT, not a silent pass: the
+            # text may be invisible and this check cannot tell.
+            findings.append(
+                ctx.finding(
+                    "contrast",
+                    "info",
+                    f"{_label(s)} carries text over an unresolvable "
+                    f"backdrop ({skip_reason or 'no colour resolved'}); "
+                    "its contrast was NOT checked",
+                    f"export_slide_image(slide={ctx.rec['index']}) and look, "
+                    f"or set_shape(slide={ctx.rec['index']}, "
+                    f"shape={s['id']}, fill=...) to give it a known fill",
+                    shape_ids=[s["id"]],
+                    unresolvable_backdrop=skip_reason or "no colour resolved",
+                )
+            )
+            continue
         body = s["elem"].find(qn("p:txBody"))
         if body is None:
             continue
-        worst: dict | None = None
-        for p in txbody_paragraphs(s["elem"]):
-            for r in p.findall(qn("a:r")):
-                t = r.find(qn("a:t"))
-                if t is None or not (t.text or "").strip():
-                    continue
-                fg_hex, size, bold = _run_text_color(r, p, body, resolver)
-                if fg_hex is None:
-                    continue  # inherited color: honestly skipped, not guessed
-                ratio = contrast_ratio(fg_hex, bg_hex)
-                large = (size is not None) and (
-                    size >= 18.0 or (bold and size >= 14.0)
-                )
-                threshold = large_min if large else min_ratio
-                if ratio >= threshold:
-                    continue
-                if worst is None or ratio < worst["ratio"]:
-                    worst = {
-                        "ratio": ratio,
-                        "fg": fg_hex,
-                        "threshold": threshold,
-                        "sample": (t.text or "").strip()[:40],
-                    }
-        if worst is None:
-            continue
-        suggested = (
-            "000000" if _rel_luminance(bg_hex) > 0.35 else "FFFFFF"
+        worst = _worst_run(
+            ctx, s["elem"], body, txbody_paragraphs(s["elem"]), bg_hex,
+            resolver, min_ratio, large_min,
         )
-        severity = "error" if worst["ratio"] < 2.0 else "warning"
-        findings.append(
+        if worst is not None:
+            findings.append(_contrast_finding(ctx, s, worst, bg_hex))
+    return findings
+
+
+def _check_table_contrast(
+    ctx: _SlideCtx,
+    s: dict,
+    resolver: _ColorResolver,
+    min_ratio: float,
+    large_min: float,
+) -> list[dict]:
+    """Cell text against the cell's own fill. One finding for the worst
+    cell, plus at most one info when the table style holds the colours."""
+    tbl = table_element(s["elem"])
+    if tbl is None:
+        return []
+    worst: dict | None = None
+    worst_bg = None
+    unresolved = 0
+    for tc in tbl.iter(qn("a:tc")):
+        body = tc.find(qn("a:txBody"))
+        if body is None:
+            continue
+        paragraphs = body.findall(qn("a:p"))
+        if not any(
+            (t.text or "").strip()
+            for p in paragraphs for t in p.iter(qn("a:t"))
+        ):
+            continue
+        bg_hex, reason = _cell_fill_hex(tc, resolver)
+        if bg_hex == _TRANSPARENT:
+            bg_hex, reason = _backdrop_hex(s, ctx, resolver)
+        if reason or bg_hex is None:
+            unresolved += 1
+            continue
+        cell_worst = _worst_run(
+            ctx, s["elem"], body, paragraphs, bg_hex, resolver,
+            min_ratio, large_min,
+        )
+        if cell_worst and (worst is None or cell_worst["ratio"] < worst["ratio"]):
+            worst, worst_bg = cell_worst, bg_hex
+    out = []
+    if worst is not None:
+        out.append(_contrast_finding(ctx, s, worst, worst_bg))
+    if unresolved:
+        out.append(
             ctx.finding(
                 "contrast",
-                severity,
-                f"{_label(s)}: text #{worst['fg']} on fill #{bg_hex} has "
-                f"contrast {round(worst['ratio'], 2)}:1, below the "
-                f"{worst['threshold']}:1 target "
-                f"({worst['sample']!r}); approximated from resolved "
-                "solid colors, not a render",
-                f"format_text(slide={ctx.rec['index']}, shape={s['id']}, "
-                f'color="{suggested}") fixes the text, or set_shape(slide='
-                f"{ctx.rec['index']}, shape={s['id']}, fill=...) changes "
-                "the background",
+                "info",
+                f"{_label(s)} has {unresolved} cell(s) whose fill comes "
+                "from the table style part, which this check does not "
+                "resolve; their contrast was NOT checked",
+                f"export_slide_image(slide={ctx.rec['index']}) and look, or "
+                f"format_table_cells(slide={ctx.rec['index']}, "
+                f"table={s['id']}, ..., fill=...) to set explicit cell "
+                "fills",
                 shape_ids=[s["id"]],
-                ratio=round(worst["ratio"], 2),
-                text_color=worst["fg"],
-                fill_color=bg_hex,
+                unresolved_cells=unresolved,
             )
         )
-    return findings
+    return out
 
 
 def _check_diagram_glue(ctx: _SlideCtx, opts: dict) -> list[dict]:

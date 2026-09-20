@@ -781,3 +781,247 @@ def test_render_and_review_names_the_packs_its_fixes_need():
     packs = wf.get_workflows(task="render-and-review")["packs"]
     assert "graphics" in packs
     assert "tables-charts" in packs
+
+
+# --------------------------------------------------------------- #871
+
+
+def _contrast(pkg, slide, **opts):
+    from kitchensink4ppt.ops import design_check as dc
+
+    checks = [{"check": "contrast", **opts}] if opts else ["contrast"]
+    return dc.check_layout(pkg, slide=slide, checks=checks)["findings"]
+
+
+def test_contrast_sees_the_band_a_label_is_floating_on(drawable):
+    """#871 defect 1: white labels on a pale band measured 1.17:1 and the
+    check never saw them, because it compared each run against its OWN
+    shape's fill and the labels are unfilled text boxes sitting on the
+    band beneath them."""
+    from kitchensink4ppt.ops import shapes as shp
+
+    pkg, slide = drawable
+    # A pale band, then an unfilled label on top of it in white. The label
+    # OVERHANGS the band's bottom edge, which is how real ones sit: the
+    # old rule needed the band to contain the whole label box.
+    shp.insert_shape(pkg, slide, "rect", 0.5, 2.0, 10.0, 1.2,
+                     fill="F7EAE7", line={"type": "none"},
+                     name="US lane band")
+    label = shp.insert_shape(
+        pkg, slide, "rect", 0.8, 2.9, 1.2, 0.5,
+        fill={"type": "none"}, line={"type": "none"}, text="US",
+        text_style={"size": 20, "color": "FFFFFF"},
+    )["shape_id"]
+
+    hits = [f for f in _contrast(pkg, slide) if label in f["shape_ids"]]
+    assert hits, "white on a pale band was not flagged"
+    assert hits[0]["severity"] == "error"
+    assert hits[0]["ratio"] < 2.0
+    # The band, not the white slide the old rule fell through to.
+    assert hits[0]["fill_color"] == "F7EAE7"
+
+
+def test_dark_on_dark_over_an_overhanging_band_is_not_passed(drawable):
+    """#871: the sharper half of the same miss. Falling through to the
+    white slide background made dark text on a dark band look like good
+    contrast, so the check reported nothing at all."""
+    from kitchensink4ppt.ops import shapes as shp
+
+    pkg, slide = drawable
+    shp.insert_shape(pkg, slide, "rect", 0.5, 2.0, 10.0, 1.2,
+                     fill="1F3864", line={"type": "none"}, name="lane band")
+    label = shp.insert_shape(
+        pkg, slide, "rect", 0.8, 2.9, 1.6, 0.5,
+        fill={"type": "none"}, line={"type": "none"}, text="ROK",
+        text_style={"size": 20, "color": "203A60"},
+    )["shape_id"]
+
+    hits = [f for f in _contrast(pkg, slide) if label in f["shape_ids"]]
+    assert hits, "navy on navy was passed as if it sat on the white slide"
+    assert hits[0]["fill_color"] == "1F3864"
+
+
+def test_a_translucent_band_composites_before_it_is_judged(drawable):
+    """#871: the band in the field case was accent1 at 12% alpha, and the
+    colour the eye sees is the composite, not the full-strength accent."""
+    from kitchensink4ppt.ops import shapes as shp
+
+    pkg, slide = drawable
+    shp.insert_shape(
+        pkg, slide, "rect", 0.5, 2.0, 10.0, 1.2, name="wash",
+        fill={"type": "solid", "color": "C00000", "alpha": 0.12},
+        line={"type": "none"},
+    )
+    label = shp.insert_shape(
+        pkg, slide, "rect", 0.8, 2.3, 1.2, 0.5,
+        fill={"type": "none"}, line={"type": "none"}, text="US",
+        text_style={"size": 20, "color": "FFFFFF"},
+    )["shape_id"]
+    hits = [f for f in _contrast(pkg, slide) if label in f["shape_ids"]]
+    assert hits, "white over a 12% wash on white was not flagged"
+    # Composited, not judged against full-strength C00000 (which white
+    # would pass against).
+    assert hits[0]["fill_color"] != "C00000"
+
+
+def test_no_fill_in_spPr_beats_the_style_fillRef(drawable):
+    """#871: the opposite half of the same gap produced seven false
+    positives, judging text against an orange invented from p:style when
+    the shape carries a:noFill and paints nothing."""
+    from kitchensink4ppt.ops import design_check as dc
+    from kitchensink4ppt.ops import shapes as shp
+
+    pkg, slide = drawable
+    sid = shp.insert_shape(
+        pkg, slide, "rect", 1, 1, 3, 1, fill={"type": "none"},
+        line={"type": "none"}, text="milestone",
+        text_style={"size": 12, "color": "1F3864"},
+    )["shape_id"]
+    part = __import__(
+        "kitchensink4ppt.ops.read", fromlist=["get_slide_info"]
+    ).get_slide_info(pkg, slide)["part"]
+    elem, _chain = shp._find_shape(pkg, part, sid)
+    ctx = dc._SlideCtx(pkg, {"part": part, "index": slide, "slide_id": 0})
+    srec = next(s for s in ctx.all if s["id"] == sid)
+    hexval, skip = dc._own_fill_hex(elem, ctx.resolver())
+    assert hexval == dc._TRANSPARENT and skip is None
+    # And the backdrop it falls through to is the white slide, not accent1.
+    backdrop, reason = dc._backdrop_hex(srec, ctx, ctx.resolver())
+    assert reason is None
+    assert backdrop == "FFFFFF"
+    assert not [f for f in _contrast(pkg, slide) if sid in f["shape_ids"]]
+
+
+def test_an_unresolvable_backdrop_is_reported_not_passed(drawable, tmp_path):
+    """#871: a picture under the text means the check cannot know, and
+    'cannot know' is a result, not a pass."""
+    from PIL import Image
+
+    from kitchensink4ppt.ops import media as md
+    from kitchensink4ppt.ops import shapes as shp
+
+    pkg, slide = drawable
+    img = tmp_path / "bg.png"
+    Image.new("RGB", (64, 64), (200, 200, 200)).save(img)
+    md.insert_image(pkg, slide, str(img), 0.5, 0.5, 6, 4)
+    label = shp.insert_shape(
+        pkg, slide, "rect", 1.0, 1.0, 2.0, 0.6,
+        fill={"type": "none"}, line={"type": "none"}, text="over a photo",
+        text_style={"size": 14, "color": "FFFFFF"},
+    )["shape_id"]
+
+    hits = [f for f in _contrast(pkg, slide) if label in f["shape_ids"]]
+    assert hits, "text over a picture was passed in silence"
+    assert hits[0]["severity"] == "info"
+    assert "unresolvable_backdrop" in hits[0]
+
+
+def test_an_inherited_run_colour_is_judged_and_its_source_named(
+    inheriting_placeholder
+):
+    """#871: the old caveat exempted every ordinary bulleted body slide
+    from the contrast check, since those runs carry no colour of their
+    own. That is exactly why they are worth checking."""
+    from kitchensink4ppt.core.package import qn as _qn
+    from kitchensink4ppt.ops.read import get_slide_info
+    from kitchensink4ppt.ops import shapes as shp
+
+    pkg, slide, _sid = inheriting_placeholder
+    part = get_slide_info(pkg, slide)["part"]
+
+    tree = pkg.root(part).find(f"{_qn('p:cSld')}/{_qn('p:spTree')}")
+    target = None
+    for sp in tree.iter(_qn("p:sp")):
+        ph = sp.find(f"{_qn('p:nvSpPr')}/{_qn('p:nvPr')}/{_qn('p:ph')}")
+        if ph is None or (ph.get("type") or "body") in ("title", "ctrTitle"):
+            continue
+        body = sp.find(_qn("p:txBody"))
+        for p in list(body.findall(_qn("a:p"))):
+            body.remove(p)
+        p = etree.SubElement(body, _qn("a:p"))
+        r = etree.SubElement(p, _qn("a:r"))
+        etree.SubElement(r, _qn("a:rPr")).set("lang", "en-US")
+        etree.SubElement(r, _qn("a:t")).text = "White on white, inherited."
+        target, target_elem = shp._shape_id(sp), sp
+        break
+    if target is None:
+        pytest.skip("the generated layout has no body placeholder")
+
+    # Paint the LAYOUT placeholder's text white; the slide background is
+    # white and the run itself says nothing about colour.
+    from kitchensink4ppt.ops import inherit as inh
+
+    layout = inh.layout_part_of(pkg, part)
+    key = inh.placeholder_key(inh.placeholder_of(target_elem))
+    twin = inh.layout_twin(pkg, layout, key)
+    assert twin is not None
+    lst = twin.find(f"{_qn('p:txBody')}/{_qn('a:lstStyle')}")
+    if lst is None:
+        body = twin.find(_qn("p:txBody"))
+        lst = etree.Element(_qn("a:lstStyle"))
+        body.insert(1, lst)
+    lvl = lst.find(_qn("a:lvl1pPr"))
+    if lvl is None:
+        lvl = etree.SubElement(lst, _qn("a:lvl1pPr"))
+    defrpr = lvl.find(_qn("a:defRPr"))
+    if defrpr is None:
+        defrpr = etree.SubElement(lvl, _qn("a:defRPr"))
+    for child in list(defrpr):
+        if etree.QName(child).localname.endswith("Fill"):
+            defrpr.remove(child)
+    fill = etree.Element(_qn("a:solidFill"))
+    etree.SubElement(fill, _qn("a:srgbClr")).set("val", "FFFFFF")
+    defrpr.insert(0, fill)
+    pkg.mark_dirty(layout)
+
+    hits = [f for f in _contrast(pkg, slide) if target in f["shape_ids"]]
+    assert hits, "an inherited white-on-white run was not judged"
+    assert hits[0]["color_source"] == "layout"
+    assert hits[0]["text_color"] == "FFFFFF"
+
+
+def test_overlap_recurses_into_groups(drawable):
+    """#871 defect 2: every real collision in the field deck's timeline
+    was between two boxes inside a group, and the check compared only
+    top-level shapes. A deck built with this server's own diagram tooling
+    is grouped, so it was structurally invisible."""
+    from kitchensink4ppt.ops import design_check as dc
+    from kitchensink4ppt.ops import shapes as shp
+
+    pkg, slide = drawable
+    a = shp.insert_shape(pkg, slide, "rect", 1.0, 1.0, 2.0, 1.0,
+                         text="1953", name="Milestone A")["shape_id"]
+    b = shp.insert_shape(pkg, slide, "rect", 2.925, 1.0, 2.0, 1.0,
+                         text="1978", name="Milestone B")["shape_id"]
+    grp = shp.group_shapes(pkg, slide, [a, b], name="Timeline")["group_id"]
+
+    hits = [
+        f for f in dc.check_layout(pkg, slide=slide, checks=["overlap"])[
+            "findings"]
+        if f.get("group_id") == grp
+    ]
+    assert hits, "a 0.075in corner clip inside a group was not flagged"
+    assert set(hits[0]["shape_ids"]) == {a, b}
+    assert hits[0]["overlap_in"][0] == pytest.approx(0.075, abs=0.01)
+
+
+def test_families_meant_to_touch_are_left_out_of_the_group_pass(drawable):
+    """#871: the exclusion list is what keeps the in-group pass usable as
+    a gate. A timeline's tick sits ON its label by design."""
+    from kitchensink4ppt.ops import design_check as dc
+    from kitchensink4ppt.ops import shapes as shp
+
+    pkg, slide = drawable
+    label = shp.insert_shape(pkg, slide, "rect", 1.0, 1.0, 2.0, 1.0,
+                             text="1953", name="Milestone A")["shape_id"]
+    tick = shp.insert_shape(pkg, slide, "rect", 1.4, 1.4, 0.2, 0.2,
+                            name="tick 1")["shape_id"]
+    grp = shp.group_shapes(pkg, slide, [label, tick], name="Timeline")[
+        "group_id"]
+
+    hits = [
+        f for f in dc.check_layout(pkg, slide=slide, checks=["overlap"])[
+            "findings"]
+        if f.get("group_id") == grp
+    ]
+    assert hits == [], f"the tick was flagged against its label: {hits}"
