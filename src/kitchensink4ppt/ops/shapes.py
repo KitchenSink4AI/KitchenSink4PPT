@@ -138,9 +138,39 @@ def _merge_rpr(old_rpr: etree._Element, new_rpr: etree._Element):
     return merged, carried
 
 
+#: a:bodyPr autofit children. The ELEMENT is the mode and gets carried;
+#: the attributes on it are PowerPoint's cache of how far it had to shrink
+#: the OLD text, and carrying those onto new text is a rendering defect.
+_AUTOFIT_TAGS = ("a:normAutofit", "a:spAutoFit", "a:noAutofit")
+_AUTOFIT_CACHE_ATTRS = ("fontScale", "lnSpcReduction")
+
+
+def _reset_autofit_cache(bodypr: etree._Element) -> bool:
+    """Drop the cached autofit numbers, keep the mode. Returns whether
+    anything was actually dropped.
+
+    PowerPoint renders from `normAutofit@fontScale` until the frame is
+    next edited in the app, so a box that once overflowed kept shrinking
+    text that now fits: a placeholder retexted from a paragraph to three
+    words still rendered at 40%. Clearing the numbers makes PowerPoint
+    recompute on open; clearing the element would change the shape's
+    autofit BEHAVIOUR, which nobody asked for.
+    """
+    dropped = False
+    for tag in _AUTOFIT_TAGS:
+        el = bodypr.find(qn(tag))
+        if el is None:
+            continue
+        for attr in _AUTOFIT_CACHE_ATTRS:
+            if el.get(attr) is not None:
+                el.attrib.pop(attr)
+                dropped = True
+    return dropped
+
+
 def _carry_text_properties(
     old: etree._Element, new: etree._Element, named: set
-) -> list[str]:
+) -> tuple[list[str], dict]:
     """Carry the previous text body's properties onto its replacement, for
     everything the caller did not name.
 
@@ -151,8 +181,13 @@ def _carry_text_properties(
     colour. None of that was requested and none of it was reported;
     `changed: ["text"]` was all the caller got back. Text replacement now
     touches text, and touches formatting only where the caller named it.
+
+    Returns (carried categories, facts). `facts` reports what the carry
+    could NOT preserve, because a `preserved` list that only ever says
+    what survived is a half-truth on a body whose runs disagreed.
     """
     carried: set[str] = set()
+    facts: dict = {}
 
     old_bodypr = old.find(qn("a:bodyPr"))
     new_bodypr = new.find(qn("a:bodyPr"))
@@ -160,6 +195,12 @@ def _carry_text_properties(
         kept_anchor = new_bodypr.get("anchor")
         kept_wrap = new_bodypr.get("wrap")
         replacement = _copy.deepcopy(old_bodypr)
+        if _reset_autofit_cache(replacement):
+            facts["autofit_scale_reset"] = True
+        if replacement.find(qn("a:normAutofit")) is not None or (
+            replacement.find(qn("a:spAutoFit")) is not None
+        ):
+            carried.add("autofit_mode")
         if "anchor" in named:
             if kept_anchor is None:
                 replacement.attrib.pop("anchor", None)
@@ -182,7 +223,15 @@ def _carry_text_properties(
 
     old_paras = old.findall(qn("a:p"))
     if not old_paras:
-        return sorted(carried)
+        return sorted(carried), facts
+
+    # A paragraph whose runs disagreed about their formatting cannot be
+    # carried: the replacement is one run, so it can only take ONE run's
+    # properties, and it takes the first. That loss predates this carry
+    # (a full rebuild lost it too), but reporting `preserved` over it
+    # without saying so would be the carry claiming credit for a wreck.
+    if any(_runs_disagree(p) for p in old_paras):
+        facts["runs_collapsed_to_first"] = True
 
     for i, para in enumerate(new.findall(qn("a:p"))):
         # A replacement with MORE paragraphs than the original takes the
@@ -227,7 +276,34 @@ def _carry_text_properties(
                 merged, got = _merge_rpr(src_rpr, rpr)
                 rpr.getparent().replace(rpr, merged)
                 carried |= got
-    return sorted(carried)
+    return sorted(carried), facts
+
+
+#: rPr attributes and child tags that make two runs visually different.
+_RUN_IDENTITY_ATTRS = ("sz", "b", "i", "u", "strike", "cap", "spc", "baseline")
+
+
+def _run_signature(run: etree._Element) -> tuple:
+    """What a run looks like, reduced to something comparable."""
+    rpr = run.find(qn("a:rPr"))
+    if rpr is None:
+        return ()
+    attrs = tuple(
+        (a, rpr.get(a)) for a in _RUN_IDENTITY_ATTRS if rpr.get(a) is not None
+    )
+    fill = rpr.find(qn("a:solidFill"))
+    color = ""
+    if fill is not None and len(fill):
+        child = fill[0]
+        color = f"{etree.QName(child).localname}:{child.get('val')}"
+    latin = rpr.find(qn("a:latin"))
+    return attrs + (color, latin.get("typeface") if latin is not None else "")
+
+
+def _runs_disagree(para: etree._Element) -> bool:
+    """True when a paragraph's runs are not all formatted alike."""
+    sigs = {_run_signature(r) for r in para.findall(qn("a:r"))}
+    return len(sigs) > 1
 
 
 def _apply_extra_run_props(body: etree._Element, extra: dict) -> None:
@@ -986,6 +1062,7 @@ def set_shape(
     changed: list[str] = []
     warnings: list[str] = []
     preserved: list[str] = []
+    text_facts: dict = {}
 
     if (x is not None or y is not None) and (dx is not None or dy is not None):
         raise PptMcpError("use absolute x/y or delta dx/dy, not both")
@@ -1081,9 +1158,12 @@ def set_shape(
         new_body = g.txbody(text, base_style)
         if old is not None:
             named = set(base_style or {}) | set(extra_style)
-            carried = _carry_text_properties(old, new_body, named)
+            carried, carry_facts = _carry_text_properties(
+                old, new_body, named
+            )
             if carried:
                 preserved = carried
+            text_facts.update(carry_facts)
             elem.replace(old, new_body)
         else:
             elem.append(new_body)
@@ -1125,6 +1205,9 @@ def set_shape(
     }
     if preserved:
         result["preserved"] = preserved
+    # What the carry could NOT preserve, stated rather than left to be
+    # discovered in a render.
+    result.update(text_facts)
     if warnings:
         result["warnings"] = warnings
     return result
