@@ -1197,13 +1197,23 @@ def _overflow_heuristic(
     bodypr: etree._Element | None,
     font_scale_pct: float,
     lnspc_reduction_pct: float,
+    box: tuple[float, float, float, float] | None = None,
+    size_pt: float | None = None,
 ) -> dict | None:
     """Rough fit estimate: average glyph width model against the frame's
     inner box. Labeled heuristic because it uses no real font metrics; the
-    honest fit authority is PowerPoint's own renderer."""
+    honest fit authority is PowerPoint's own renderer.
+
+    `box` supplies (x, y, cx, cy) for a shape with no a:xfrm of its own,
+    and `size_pt` a font size resolved through the layout/master chain.
+    Callers that can resolve those pass them; without them a placeholder
+    inheriting its geometry cannot be estimated at all and an unsized run
+    falls back to a flat guess."""
     xfrm = elem.find(f"{qn('p:spPr')}/{qn('a:xfrm')}")
     ext = xfrm.find(qn("a:ext")) if xfrm is not None else None
-    if ext is None:
+    if ext is None and box is not None:
+        cx, cy = int(box[2]), int(box[3])
+    elif ext is None:
         return {
             "heuristic": True,
             "likely_overflow": None,
@@ -1212,7 +1222,8 @@ def _overflow_heuristic(
                 "layout placeholder); fit cannot be estimated here"
             ),
         }
-    cx, cy = int(ext.get("cx")), int(ext.get("cy"))
+    else:
+        cx, cy = int(ext.get("cx")), int(ext.get("cy"))
     inner_w = cx - _ins(bodypr, "lIns", 91440) - _ins(bodypr, "rIns", 91440)
     inner_h = cy - _ins(bodypr, "tIns", 45720) - _ins(bodypr, "bIns", 45720)
     if inner_w <= 0 or inner_h <= 0:
@@ -1221,8 +1232,14 @@ def _overflow_heuristic(
             "likely_overflow": True,
             "note": "frame insets consume the whole shape",
         }
-    sz = _first_run_size(body) or 1800  # centipoints; 18pt default guess
-    pt = sz / 100.0 * (font_scale_pct / 100.0)
+    raw = _first_run_size(body)
+    if raw is not None:
+        base_pt = raw / 100.0
+    elif size_pt is not None:
+        base_pt = size_pt
+    else:
+        base_pt = 18.0  # last-resort guess when nothing resolves
+    pt = base_pt * (font_scale_pct / 100.0)
     char_w = 0.5 * pt * EMU_PER_POINT  # average glyph width model
     line_h = 1.2 * pt * EMU_PER_POINT * (1.0 - lnspc_reduction_pct / 100.0)
     lines = 0

@@ -509,3 +509,130 @@ def test_apply_edits_reaches_the_anchor_as_text_anchor(drawable):
     }])
     _rpr, _ppr, body = _first_rpr(pkg, slide, sid)
     assert body.find(_qn("a:bodyPr")).get("anchor") == "b"
+
+
+# --------------------------------------------------------------- #870
+
+
+def _master_body_size(pkg, slide_part, pt: float) -> None:
+    """Pin the master's bodyStyle level-1 size, the size an ordinary body
+    run on a templated deck actually renders at."""
+    from kitchensink4ppt.core.package import qn as _qn
+    from kitchensink4ppt.ops import inherit as inh
+
+    layout = inh.layout_part_of(pkg, slide_part)
+    master = inh.master_part_of(pkg, layout)
+    styles = pkg.root(master).find(_qn("p:txStyles"))
+    body = styles.find(_qn("p:bodyStyle"))
+    lvl = body.find(_qn("a:lvl1pPr"))
+    defrpr = lvl.find(_qn("a:defRPr"))
+    if defrpr is None:
+        defrpr = etree.SubElement(lvl, _qn("a:defRPr"))
+    defrpr.set("sz", str(int(pt * 100)))
+    pkg.mark_dirty(master)
+
+
+def test_tiny_text_resolves_a_size_inherited_from_the_master(
+    inheriting_placeholder
+):
+    """#870: the check read a:rPr @sz and skipped every run without one,
+    which is every ordinary body run on a templated deck. Those runs are
+    exactly the ones rendering at the master's size."""
+    from kitchensink4ppt.core.package import qn as _qn
+    from kitchensink4ppt.ops import design_check as dc
+    from kitchensink4ppt.ops.read import get_slide_info
+    from kitchensink4ppt.ops import shapes as shp
+
+    pkg, slide, _sid = inheriting_placeholder
+    part = get_slide_info(pkg, slide)["part"]
+    _master_body_size(pkg, part, 8.0)
+
+    # Give the body placeholder text carrying NO explicit size.
+    tree = pkg.root(part).find(f"{_qn('p:cSld')}/{_qn('p:spTree')}")
+    target = None
+    for sp in tree.iter(_qn("p:sp")):
+        ph = sp.find(f"{_qn('p:nvSpPr')}/{_qn('p:nvPr')}/{_qn('p:ph')}")
+        if ph is None or (ph.get("type") or "body") in ("title", "ctrTitle"):
+            continue
+        body = sp.find(_qn("p:txBody"))
+        for p in list(body.findall(_qn("a:p"))):
+            body.remove(p)
+        p = etree.SubElement(body, _qn("a:p"))
+        r = etree.SubElement(p, _qn("a:r"))
+        etree.SubElement(r, _qn("a:rPr")).set("lang", "en-US")
+        etree.SubElement(r, _qn("a:t")).text = (
+            "A body line long enough not to read as a short label."
+        )
+        target = shp._shape_id(sp)
+        break
+    if target is None:
+        pytest.skip("the generated layout has no body placeholder")
+
+    findings = dc.check_layout(pkg, slide=slide, checks=["tiny_text"])[
+        "findings"]
+    hit = [f for f in findings if target in f["shape_ids"]]
+    assert hit, f"8pt inherited body text was not flagged: {findings}"
+    assert hit[0]["inherited_size"] is True
+    assert 8.0 in hit[0]["sizes_pt"]
+    assert "master" in " ".join(hit[0]["size_sources"])
+
+
+def test_an_explicit_size_still_reports_as_its_own(drawable):
+    """#870 guard: resolution does not relabel what the slide states."""
+    from kitchensink4ppt.ops import design_check as dc
+    from kitchensink4ppt.ops import shapes as shp
+
+    pkg, slide = drawable
+    sid = shp.insert_shape(
+        pkg, slide, "rect", 1, 1, 6, 2,
+        text="A body line long enough not to read as a short label.",
+        text_style={"size": 6},
+    )["shape_id"]
+    findings = dc.check_layout(pkg, slide=slide, checks=["tiny_text"])[
+        "findings"]
+    hit = [f for f in findings if sid in f["shape_ids"]]
+    assert hit
+    assert hit[0]["inherited_size"] is False
+    assert hit[0]["size_sources"] == ["run"]
+
+
+def test_overflow_can_estimate_a_placeholder_that_inherits_its_box(
+    inheriting_placeholder
+):
+    """#870, overflow-adjacent: the estimate dead-ended twice on the same
+    shape, once for the missing xfrm and once on a flat 18pt guess. The
+    v1 build got zero findings on slides whose body ran off the bottom."""
+    from kitchensink4ppt.core.package import qn as _qn
+    from kitchensink4ppt.ops import design_check as dc
+    from kitchensink4ppt.ops.read import get_slide_info
+    from kitchensink4ppt.ops import shapes as shp
+
+    pkg, slide, _sid = inheriting_placeholder
+    part = get_slide_info(pkg, slide)["part"]
+    _master_body_size(pkg, part, 28.0)
+
+    tree = pkg.root(part).find(f"{_qn('p:cSld')}/{_qn('p:spTree')}")
+    target = None
+    for sp in tree.iter(_qn("p:sp")):
+        ph = sp.find(f"{_qn('p:nvSpPr')}/{_qn('p:nvPr')}/{_qn('p:ph')}")
+        if ph is None or (ph.get("type") or "body") in ("title", "ctrTitle"):
+            continue
+        body = sp.find(_qn("p:txBody"))
+        for p in list(body.findall(_qn("a:p"))):
+            body.remove(p)
+        for i in range(24):
+            p = etree.SubElement(body, _qn("a:p"))
+            r = etree.SubElement(p, _qn("a:r"))
+            etree.SubElement(r, _qn("a:rPr")).set("lang", "en-US")
+            etree.SubElement(r, _qn("a:t")).text = (
+                f"Line {i}: far more body copy than this frame can hold, "
+                "set at the master's twenty-eight point body size."
+            )
+        target = shp._shape_id(sp)
+        break
+    if target is None:
+        pytest.skip("the generated layout has no body placeholder")
+
+    findings = dc.check_layout(pkg, slide=slide, checks=["overflow"])[
+        "findings"]
+    assert [f for f in findings if target in f["shape_ids"]], findings
