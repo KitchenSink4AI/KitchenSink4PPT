@@ -230,6 +230,15 @@ CHECKS: dict[str, tuple[dict, str]] = {
 # ---------------------------------------------------------------- options
 
 
+def _is_word_list(default) -> bool:
+    """Whether an option's default marks it as a list of name words, the
+    shape exclude_names has."""
+    return (
+        isinstance(default, list)
+        and all(isinstance(d, str) for d in default)
+    )
+
+
 def _normalize_checks(checks) -> list[tuple[str, dict]]:
     """Validate the checks array: None = all checks with defaults; entries
     are check names or {"check": name, <option>: value} dicts."""
@@ -277,6 +286,12 @@ def _normalize_checks(checks) -> list[tuple[str, dict]]:
             )
         merged = dict(defaults)
         for k, v in opts.items():
+            # A word list is the one option kind a bare string is a
+            # reasonable request for, and list("band") would silently
+            # spell it out into four one-letter words.
+            if _is_word_list(defaults[k]) and isinstance(v, str):
+                merged[k] = [v]
+                continue
             try:
                 merged[k] = type(defaults[k])(v)
             except (TypeError, ValueError):
@@ -284,6 +299,19 @@ def _normalize_checks(checks) -> list[tuple[str, dict]]:
                     f"option {k}={v!r} for check {name!r} must be "
                     f"{type(defaults[k]).__name__}"
                 ) from None
+        # The container was validated above and the ELEMENTS were not, so
+        # a number inside exclude_names reached .casefold() and raised a
+        # raw AttributeError instead of the refusal every other bad value
+        # gets.
+        for k, v in merged.items():
+            if not _is_word_list(defaults[k]):
+                continue
+            for entry in v:
+                if not isinstance(entry, str):
+                    raise PptMcpError(
+                        f"option {k} entry {entry!r} for check {name!r} "
+                        f"must be str, not {type(entry).__name__}"
+                    )
         if name not in seen:
             seen.add(name)
             out.append((name, merged))
