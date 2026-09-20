@@ -13,9 +13,14 @@ Honesty rules (binding):
 - Every check is a static-XML heuristic, not a renderer. Each check that
   approximates says so in its caveat, which ships in the result. The fit
   authority remains PowerPoint's renderer (export_slide_images + look).
-- A check that cannot evaluate a shape (no explicit geometry, image fill,
-  inherited font size) SKIPS it and counts the skip in the check's caveat
-  data rather than guessing.
+- A check that cannot evaluate a shape (image fill, a backdrop no static
+  read can resolve) SKIPS it and counts the skip in the check's caveat
+  data rather than guessing. Inherited geometry and inherited font size
+  are NOT in that class any more: they are resolved through the layout
+  and master chain (ops/inherit.py), because a placeholder that takes its
+  box and its size from the layout is the normal case on a templated
+  deck, and skipping it made the checks blind exactly where the risk is
+  highest.
 
 The checks and their heuristics:
 
@@ -30,12 +35,15 @@ The checks and their heuristics:
   partially outside = warning once the overhang exceeds
   partial_tolerance_in (default 0.1", so deliberate full-bleed edges do
   not fire).
-- tiny_text: explicit run sizes (a:rPr/a:defRPr @sz) below a floor.
-  Shapes whose whole text is one short line (<= label_max_chars, default
-  30) count as labels (floor label_min_pt, default 10); everything else is
-  body (floor body_min_pt, default 14). Table cells use the label floor.
-  Runs with no explicit size inherit from the layout/master chain, which
-  this check does not resolve; they are skipped and counted.
+- tiny_text: run sizes below a floor. Shapes whose whole text is one short
+  line (<= label_max_chars, default 30) count as labels (floor
+  label_min_pt, default 10); everything else is body (floor body_min_pt,
+  default 14). Table cells use the label floor and are judged on explicit
+  sizes only, since a cell inherits from the table style part. Everywhere
+  else a run with no explicit sz is RESOLVED through the chain (paragraph
+  defRPr, shape lstStyle, layout placeholder, master placeholder, master
+  txStyles, presentation default) and the finding names the source;
+  strict=True also reports runs that resolve nowhere.
 - overflow: ops/text.py's Phase 3 estimate (average glyph width vs the
   frame's inner box) honoring cached normAutofit scales. Labeled
   heuristic: no real font metrics, so treat a hit as "render and look",
@@ -72,6 +80,7 @@ from lxml import etree
 from ..core import budget as _budget
 from ..core.errors import PptMcpError, UnsupportedStructure
 from ..core.package import PptxPackage, qn, resolve_target
+from . import inherit as _inh
 from .design import COLOR_SLOTS, _theme_part_of
 from .read import (
     _ph,
@@ -116,9 +125,20 @@ CHECKS: dict[str, tuple[dict, str]] = {
         "deliberate full-bleed",
     ),
     "tiny_text": (
-        {"body_min_pt": 14.0, "label_min_pt": 10.0, "label_max_chars": 30},
-        "explicit run sizes only; sizes inherited from the layout/master "
-        "chain are not resolved and those runs are skipped",
+        {
+            "body_min_pt": 14.0,
+            "label_min_pt": 10.0,
+            "label_max_chars": 30,
+            "strict": False,
+        },
+        "run sizes resolved through the chain (run, paragraph, shape "
+        "lstStyle, layout placeholder, master placeholder, master "
+        "txStyles, presentation default); findings carry size_sources and "
+        "inherited_size so an inherited size can be told from one written "
+        "on the slide. Table cells are judged on explicit sizes only, "
+        "since a cell inherits from the table style part rather than this "
+        "chain. strict=True adds an info finding for runs whose size does "
+        "not resolve anywhere instead of passing them",
     ),
     "overflow": (
         {"min_fill_ratio": 1.4},
@@ -224,13 +244,30 @@ def _normalize_checks(checks) -> list[tuple[str, dict]]:
 # ------------------------------------------------------------ slide context
 
 
-def _gentle_box(elem: etree._Element, chain: list) -> tuple[float, float, float, float] | None:
-    """Slide-space bbox, or None when the shape has no explicit geometry
-    (a placeholder inheriting from its layout). Never raises."""
+def _gentle_box(
+    elem: etree._Element,
+    chain: list,
+    pkg: PptxPackage | None = None,
+    part: str | None = None,
+) -> tuple[tuple[float, float, float, float] | None, bool]:
+    """(slide-space bbox, inherited) for one shape. Never raises.
+
+    A placeholder with an empty p:spPr has no box of its own, and returning
+    None for it used to make it invisible to every geometry check: the
+    overlap and off_slide checks passed slides where a body placeholder
+    printed straight through the caption below it. The box it RENDERS with
+    is in the layout or the master, so the chain is resolved and the answer
+    says it was inherited.
+    """
     try:
-        return _slide_box(elem, chain)
+        return _slide_box(elem, chain), False
     except (UnsupportedStructure, PptMcpError, ValueError, TypeError):
-        return None
+        pass
+    if pkg is not None and part is not None and not chain:
+        box = _inh.inherited_box(pkg, part, elem)
+        if box is not None:
+            return tuple(float(v) for v in box), True
+    return None, False
 
 
 def _slide_size(pkg: PptxPackage) -> tuple[int, int]:
@@ -276,13 +313,16 @@ class _SlideCtx:
                     "hidden": _is_hidden(elem),
                 }
                 if parent is None:
-                    srec["box"] = _gentle_box(elem, [])
+                    srec["box"], srec["box_inherited"] = _gentle_box(
+                        elem, [], pkg, self.part
+                    )
                     self.top.append(srec)
                     if kind != "group":
                         self.all.append(srec)
                 else:
                     # box resolved through the ancestor chain lazily below
                     srec["box"] = None
+                    srec["box_inherited"] = False
                     srec["group_id"] = parent
                     if kind != "group":
                         self.all.append(srec)
@@ -305,7 +345,9 @@ class _SlideCtx:
         _walk(self.sp_tree, [])
         for srec in self.all:
             if srec["box"] is None and srec["id"] in chains:
-                srec["box"] = _gentle_box(srec["elem"], chains[srec["id"]])
+                srec["box"], srec["box_inherited"] = _gentle_box(
+                    srec["elem"], chains[srec["id"]]
+                )
 
     def resolver(self) -> "_ColorResolver":
         if self._resolver is None:
@@ -801,7 +843,12 @@ def _clamp_in(pos: float, size: float, bound: float) -> float:
 
 
 def _explicit_sizes(paragraphs: list[etree._Element]) -> tuple[list[float], int]:
-    """(explicit run sizes in pt for runs that carry text, skipped count)."""
+    """(explicit run sizes in pt for runs that carry text, skipped count).
+
+    Table cells only. A cell's inherited size comes from the table style
+    part, not from the placeholder chain, so resolving it the way a shape's
+    runs resolve would produce a confident wrong number.
+    """
     sizes: list[float] = []
     skipped = 0
     for p in paragraphs:
@@ -821,37 +868,99 @@ def _explicit_sizes(paragraphs: list[etree._Element]) -> tuple[list[float], int]
     return sizes, skipped
 
 
+def _run_sizes(
+    ctx: "_SlideCtx",
+    elem: etree._Element,
+    paragraphs: list[etree._Element],
+) -> tuple[list[tuple[float, str]], int]:
+    """([(size in pt, where it came from)], unresolved count) for every run
+    that carries text.
+
+    This used to read a:rPr @sz and skip anything without one, which is
+    every ordinary body run on a templated deck: those runs render at the
+    master's size, around 24pt on a 16:9 Title-and-Content layout, so the
+    check went blind exactly where the overflow risk is highest. The chain
+    is resolved through ops/inherit.py now, and a run whose size still
+    cannot be found is counted rather than quietly passed.
+    """
+    sizes: list[tuple[float, str]] = []
+    unresolved = 0
+    for p in paragraphs:
+        for r in p.findall(qn("a:r")):
+            t = r.find(qn("a:t"))
+            if t is None or not (t.text or "").strip():
+                continue
+            size, source = _inh.resolve_run_size_pt(
+                ctx.pkg, ctx.part, elem, p, r.find(qn("a:rPr"))
+            )
+            if size is None:
+                unresolved += 1
+                continue
+            sizes.append((size, source))
+    return sizes, unresolved
+
+
 def _check_tiny_text(ctx: _SlideCtx, opts: dict) -> list[dict]:
     findings = []
     body_min = float(opts["body_min_pt"])
     label_min = float(opts["label_min_pt"])
     label_chars = int(opts["label_max_chars"])
+    strict = bool(opts.get("strict", False))
     for s in ctx.all:
         if s["hidden"]:
             continue
+        unresolved = 0
         if s["kind"] == "table":
             tbl = table_element(s["elem"])
             if tbl is None:
                 continue
-            sizes: list[float] = []
+            sized: list[tuple[float, str]] = []
             for tc in tbl.iter(qn("a:tc")):
-                cell_sizes, _sk = _explicit_sizes(
+                cell_sizes, skipped = _explicit_sizes(
                     tc.findall(f"{qn('a:txBody')}/{qn('a:p')}")
                 )
-                sizes.extend(cell_sizes)
+                sized.extend((sz, "run") for sz in cell_sizes)
+                unresolved += skipped
             floor, role = label_min, "table"
         else:
             paras = txbody_paragraphs(s["elem"])
             if not paras:
                 continue
-            sizes, _skipped = _explicit_sizes(paras)
+            sized, unresolved = _run_sizes(ctx, s["elem"], paras)
             text = shape_text(s["elem"]).strip()
             is_label = len(text) <= label_chars and "\n" not in text
             floor = label_min if is_label else body_min
             role = "label" if is_label else "body"
-        too_small = sorted({sz for sz in sizes if sz < floor})
+
+        if strict and unresolved:
+            findings.append(
+                ctx.finding(
+                    "tiny_text",
+                    "info",
+                    f"{_label(s)} has {unresolved} run(s) whose font size "
+                    "does not resolve through the layout, the master or "
+                    "the presentation default; size was not checked there",
+                    "render the slide (export_slide_images) and read the "
+                    "size off the picture, or set one explicitly with "
+                    f"format_text(slide={ctx.rec['index']}, "
+                    f"shape={s['id']}, size_pt=...)",
+                    shape_ids=[s["id"]],
+                    unresolved_runs=unresolved,
+                )
+            )
+        too_small = sorted({sz for sz, _src in sized if sz < floor})
         if not too_small:
             continue
+        # Where the offending sizes came from decides where the fix goes:
+        # an inherited size is the layout's or the master's problem until
+        # somebody overrides it on the slide.
+        sources = sorted({
+            src for sz, src in sized if sz < floor and src != "run"
+        })
+        note = (
+            f"; size inherited from the {', '.join(sources)} text style"
+            if sources else ""
+        )
         findings.append(
             ctx.finding(
                 "tiny_text",
@@ -859,13 +968,15 @@ def _check_tiny_text(ctx: _SlideCtx, opts: dict) -> list[dict]:
                 f"{_label(s)} has {role} text at "
                 f"{', '.join(f'{sz:g}pt' for sz in too_small)}, below the "
                 f"{floor:g}pt {role} floor; unreadable from the back of "
-                "the room",
+                f"the room{note}",
                 f"format_text(slide={ctx.rec['index']}, shape={s['id']}, "
                 f"size_pt={floor:g}) raises every run in the shape (add "
                 "paragraph=/start=/end= to target one run)",
                 shape_ids=[s["id"]],
                 sizes_pt=too_small,
                 floor_pt=floor,
+                size_sources=sorted({src for _sz, src in sized}),
+                inherited_size=bool(sources),
             )
         )
     return findings
@@ -888,7 +999,26 @@ def _check_overflow(ctx: _SlideCtx, opts: dict) -> list[dict]:
             if norm is not None:
                 font_scale = _pct_value(norm.get("fontScale"), 100.0)
                 lnspc = _pct_value(norm.get("lnSpcReduction"), 0.0)
-        est = _overflow_heuristic(s["elem"], body, bodypr, font_scale, lnspc)
+        # Both inputs this estimate needs are inheritable, and both used to
+        # dead-end: no xfrm returned "cannot be estimated" and an unsized
+        # run fell back to a flat 18pt guess. The layout and master know
+        # the answers, so the resolved values go in.
+        paras = body.findall(qn("a:p"))
+        resolved_pt = None
+        for p in paras:
+            r = p.find(qn("a:r"))
+            if r is None:
+                continue
+            resolved_pt, _src = _inh.resolve_run_size_pt(
+                ctx.pkg, ctx.part, s["elem"], p, r.find(qn("a:rPr"))
+            )
+            if resolved_pt is not None:
+                break
+        est = _overflow_heuristic(
+            s["elem"], body, bodypr, font_scale, lnspc,
+            box=s["box"] if s.get("box_inherited") else None,
+            size_pt=resolved_pt,
+        )
         if not est or est.get("likely_overflow") is not True:
             continue
         ratio = est.get("fill_ratio")
