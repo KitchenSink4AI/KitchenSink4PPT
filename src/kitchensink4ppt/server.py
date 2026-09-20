@@ -2167,7 +2167,7 @@ def insert_table_cols(
     """Insert count empty columns before 0-based column `at`. widths:
     'shift' (new columns copy the neighbor width and the table widens,
     PowerPoint's behavior) or 'fit' (existing columns compress so total
-    width holds). Inserting inside a merged span refuses; spans covering
+    width holds; alias 'rescale'). Inserting inside a merged span refuses; spans covering
     the seam grow. A structural op no other file-based PowerPoint server
     has. Saves atomically with two-slot backup; backup=False skips
     rotation."""
@@ -2192,7 +2192,8 @@ def delete_table_cols(
 ) -> dict:
     """Delete count columns starting at 0-based column `at`. widths:
     'shift' (table narrows) or 'fit' (survivors stretch to keep total
-    width). Merge handling mirrors row deletion: fully-covered regions go,
+    width; alias 'rescale'). Merge handling mirrors row deletion:
+    fully-covered regions go,
     tail loss shrinks the span, deleting an origin column with survivors
     refuses (unmerge first). The last column cannot be deleted. Saves
     atomically with two-slot backup; backup=False skips rotation."""
