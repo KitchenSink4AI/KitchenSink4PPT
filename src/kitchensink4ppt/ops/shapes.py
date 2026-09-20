@@ -424,6 +424,30 @@ def _require_xfrm(elem: etree._Element) -> etree._Element:
     return xfrm
 
 
+def _seed_xfrm(
+    pkg: PptxPackage, part: str, elem: etree._Element
+) -> etree._Element | None:
+    """Give a layout-inheriting placeholder its FIRST explicit a:xfrm,
+    copied from whatever it currently renders with.
+
+    The old refusal was circular: it told the caller to set an absolute
+    position and size first, and set_shape is the tool that does that, so
+    a full x/y/w/h call could not get past it. The box a placeholder
+    renders with is one or two hops up the chain (ops/inherit.py), so the
+    honest move is to seed from there and let the caller's values land on
+    top. A shape whose chain has no box either still refuses.
+    """
+    from . import inherit as _inh
+
+    box = _inh.inherited_box(pkg, part, elem)
+    if box is None:
+        return None
+    x, y, cx, cy = box
+    sppr = _spPr_of(elem)
+    g.insert_spPr_child(sppr, g.xfrm_element(x, y, cx, cy))
+    return _xfrm_of(elem)
+
+
 # ------------------------------------------------------- coordinate algebra
 
 
@@ -967,6 +991,13 @@ def set_shape(
         raise PptMcpError("use absolute x/y or delta dx/dy, not both")
 
     geo_change = any(v is not None for v in (x, y, dx, dy, w, h))
+    if geo_change and _xfrm_of(elem) is None:
+        seeded = _seed_xfrm(pkg, part, elem)
+        if seeded is not None:
+            warnings.append(
+                f"shape {shape} had no explicit geometry; seeded its xfrm "
+                "from the box it inherited before applying the change"
+            )
     if geo_change:
         xfrm = _require_xfrm(elem)
         ax, bx, ay, by, rotated = _chain_transform(chain)
