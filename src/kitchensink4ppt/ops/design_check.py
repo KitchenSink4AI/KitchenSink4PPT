@@ -86,6 +86,7 @@ from __future__ import annotations
 
 import colorsys
 import re as _re
+import unicodedata as _ud
 
 from lxml import etree
 
@@ -818,10 +819,26 @@ def _contains(outer, inner, eps: float = 9525.0) -> bool:
 _NAME_TOKENS = _re.compile(r"\w+")
 
 
+def _nfc_fold(text: str) -> str:
+    """One spelling, one case, for both sides of the comparison.
+
+    NFC first, because a combining mark is not a word character: the
+    decomposed spelling of "bänd" (a + U+0308 + nd), which is what a name
+    authored on macOS routinely carries, tokenized to {"ba", "nd"} and
+    could never match the precomposed exclusion word the user typed.
+    casefold, not lower, because casefold is the case-insensitive
+    comparison Unicode actually defines.
+    """
+    return _ud.normalize("NFC", text or "").casefold()
+
+
 def _name_tokens(text: str) -> set[str]:
-    """Casefolded word tokens of a name. casefold, not lower, because it
-    is the case-insensitive comparison Unicode actually defines."""
-    return {t.casefold() for t in _NAME_TOKENS.findall(text or "")}
+    """Casefolded word tokens of a name, normalized before tokenizing so
+    a decomposed name splits where a reader would split it."""
+    return {
+        t.casefold()
+        for t in _NAME_TOKENS.findall(_ud.normalize("NFC", text or ""))
+    }
 
 
 def _touching_family(s: dict, words) -> bool:
@@ -937,10 +954,11 @@ def _check_group_overlap(ctx: _SlideCtx, opts: dict) -> list[dict]:
     )
     if isinstance(words, str):
         words = (words,)
-    # Casefolded the same way the names are, so a non-ASCII exclusion word
-    # compares equal to the token it is meant to match. (_normalize_checks
-    # already refuses a None here, so there is no None branch to write.)
-    words = tuple(w.casefold() for w in words)
+    # Normalized and casefolded the same way the names are, so a non-ASCII
+    # exclusion word compares equal to the token it is meant to match
+    # whichever spelling either side carries. (_normalize_checks already
+    # refuses a None here, so there is no None branch to write.)
+    words = tuple(_nfc_fold(w) for w in words)
     bar = float(opts.get("min_group_overlap_in", 0.05)) * EMU_PER_INCH
 
     groups: dict[int, list[dict]] = {}
