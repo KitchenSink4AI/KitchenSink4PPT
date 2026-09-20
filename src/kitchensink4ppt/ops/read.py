@@ -871,7 +871,14 @@ def get_text(
     twice in this answer, once per slide and once joined, so the budget
     counts both. When slides are held back, `page` names how many and the
     offset that continues the read, and the joined "text" covers exactly
-    the slides that came back."""
+    the slides that came back.
+
+    A short read keeps its historical shape exactly (slide_count, slides,
+    text). A paged read puts `page` and `returned` FIRST, ahead of the
+    bulk: the whole payload's weight sits in "text", so a page block
+    written after it is the first thing a client-side truncation eats,
+    and a caller then reads a full-looking dump whose only warning has
+    been cut off. The warning goes where it survives."""
     slides = []
     for rec in slides_in_scope(pkg, scope):
         parts = [t for _e, _k, t in _slide_texts(pkg, rec["part"]) if t]
@@ -906,14 +913,19 @@ def get_text(
     )
     kept_slides = [entry for entry, _b in kept]
     kept_blocks = [block for _e, block in kept]
-    result = {
+    if page is None:
+        return {
+            "slide_count": len(slides),
+            "slides": kept_slides,
+            "text": "\n\n".join(kept_blocks),
+        }
+    return {
+        "page": page,
+        "returned": len(kept_slides),
         "slide_count": len(slides),
         "slides": kept_slides,
         "text": "\n\n".join(kept_blocks),
     }
-    if page is not None:
-        result["page"] = page
-    return result
 
 
 def _snippet(text: str, start: int, end: int, radius: int = 30) -> str:

@@ -128,12 +128,15 @@ def test_docstring_budget_and_no_em_dashes():
         "get_workflows", "diagnose", "validate", "manage_section",
         "generate_diagram", "manage_custom_show",
     }
-    # These four readers answer under an output budget and page, and a
+    # These readers answer under an output budget and page, and a
     # description that did not say so would be lying by omission on exactly
     # the decks where it matters. They get room for the paging contract and
-    # nothing more; they land at 151 to 175, so this ceiling still bites.
+    # nothing more; they land at 139 to 175, so this ceiling still bites.
+    # extract_text joined the list with punchlist #869: it had been paging
+    # all along without a word of it in the description.
     paged_readers = {
         "get_presentation_view", "get_text", "find_text", "get_slide_info",
+        "extract_text",
     }
     for name, tool in packs.tool_objects().items():
         desc = tool.description or ""
