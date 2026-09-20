@@ -2479,9 +2479,10 @@ def create_presentation(
     theme colors, fonts, layouts, masters, and slide size all carry over,
     which is how brand-correct decks start; keep_slides=False (default)
     then strips the template's slides, keeping only the design machinery.
-    Without template: a minimal blank 16:9 deck. Refuses to overwrite an
-    existing path; the template file is never modified. Follow with
-    insert_slide + set_placeholder_text."""
+    Without template: a minimal blank 16:9 deck. The result states the
+    canvas as slide_size, to check coordinates against. Refuses to
+    overwrite an existing path; the template is never modified. Follow
+    with insert_slide + set_placeholder_text."""
     result = _sl.create_presentation(
         check_path(path, "create presentation"),
         template=check_path(template, "read template") if template else None,
