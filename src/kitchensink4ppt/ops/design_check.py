@@ -807,10 +807,21 @@ def _contains(outer, inner, eps: float = 9525.0) -> bool:
     )
 
 
-#: Anything that is not a letter or a digit separates one name token from
-#: the next, so "lane band", "band-2" and "Band" all match "band" while
-#: "Bandwidth" and "Brand" do not.
-_NAME_TOKENS = _re.compile(r"[a-z0-9]+")
+#: Anything that is not a word character separates one name token from the
+#: next, so "lane band", "band-2" and "Band" all match "band" while
+#: "Bandwidth" and "Brand" do not. \w is UNICODE-aware by default in
+#: Python 3: an ASCII-only class dropped every non-Latin character, so a
+#: shape named "밴드 one" tokenized to {"one"} and exclude_names=["밴드"]
+#: tokenized to nothing at all, which put the whole option out of reach
+#: for anyone naming shapes in Korean, Japanese, Chinese, Cyrillic or
+#: accented Latin.
+_NAME_TOKENS = _re.compile(r"\w+")
+
+
+def _name_tokens(text: str) -> set[str]:
+    """Casefolded word tokens of a name. casefold, not lower, because it
+    is the case-insensitive comparison Unicode actually defines."""
+    return {t.casefold() for t in _NAME_TOKENS.findall(text or "")}
 
 
 def _touching_family(s: dict, words) -> bool:
@@ -821,8 +832,7 @@ def _touching_family(s: dict, words) -> bool:
     swallowed anything containing rule, tick, arrow or axis. Names are
     matched a TOKEN at a time now.
     """
-    tokens = set(_NAME_TOKENS.findall((s.get("name") or "").lower()))
-    return bool(tokens & set(words))
+    return bool(_name_tokens(s.get("name") or "") & set(words))
 
 
 def _decoration(s: dict) -> bool:
@@ -925,11 +935,12 @@ def _check_group_overlap(ctx: _SlideCtx, opts: dict) -> list[dict]:
     words = opts["exclude_names"] if "exclude_names" in opts else (
         DEFAULT_TOUCHING_NAMES
     )
-    if words is None:
-        words = DEFAULT_TOUCHING_NAMES
     if isinstance(words, str):
         words = (words,)
-    words = tuple(w.lower() for w in words)
+    # Casefolded the same way the names are, so a non-ASCII exclusion word
+    # compares equal to the token it is meant to match. (_normalize_checks
+    # already refuses a None here, so there is no None branch to write.)
+    words = tuple(w.casefold() for w in words)
     bar = float(opts.get("min_group_overlap_in", 0.05)) * EMU_PER_INCH
 
     groups: dict[int, list[dict]] = {}
@@ -1091,6 +1102,11 @@ def _run_sizes(
     # here meant a 28pt run shrunk to 7pt produced no finding while the
     # check beside it called the same shape crowded: two checks in one
     # battery disagreeing about the size of the same text.
+    # Reported as its own field. Appending it to the SOURCE string made
+    # the source unequal to "run", which is the test the finding uses to
+    # decide whether a size was INHERITED, so a size written on the slide
+    # as sz="2800" came back inherited_size=true and sent the caller
+    # looking in the layout for a fix that belongs on the slide.
     scale = _autofit_scale(elem)
     sizes: list[tuple[float, str]] = []
     unresolved = 0
@@ -1107,9 +1123,8 @@ def _run_sizes(
                 continue
             if scale != 1.0:
                 size = round(size * scale, 2)
-                source = f"{source}, shrunk by autofit"
             sizes.append((size, source))
-    return sizes, unresolved
+    return sizes, unresolved, scale
 
 
 def _autofit_scale(elem: etree._Element) -> float:
@@ -1146,12 +1161,13 @@ def _check_tiny_text(ctx: _SlideCtx, opts: dict) -> list[dict]:
                 )
                 sized.extend((sz, "run") for sz in cell_sizes)
                 unresolved += skipped
+            scale = 1.0
             floor, role = label_min, "table"
         else:
             paras = txbody_paragraphs(s["elem"])
             if not paras:
                 continue
-            sized, unresolved = _run_sizes(ctx, s["elem"], paras)
+            sized, unresolved, scale = _run_sizes(ctx, s["elem"], paras)
             text = shape_text(s["elem"]).strip()
             is_label = len(text) <= label_chars and "\n" not in text
             floor = label_min if is_label else body_min
@@ -1186,6 +1202,11 @@ def _check_tiny_text(ctx: _SlideCtx, opts: dict) -> list[dict]:
             f"; size inherited from the {', '.join(sources)} text style"
             if sources else ""
         )
+        if scale != 1.0:
+            note += (
+                f"; shrunk to {round(scale * 100)}% of the written size by "
+                "the frame's cached autofit"
+            )
         findings.append(
             ctx.finding(
                 "tiny_text",
@@ -1202,6 +1223,7 @@ def _check_tiny_text(ctx: _SlideCtx, opts: dict) -> list[dict]:
                 floor_pt=floor,
                 size_sources=sorted({src for _sz, src in sized}),
                 inherited_size=bool(sources),
+                **({"autofit_scale": round(scale, 4)} if scale != 1.0 else {}),
             )
         )
     return findings
