@@ -2247,3 +2247,74 @@ def test_the_result_field_carries_that_exact_note(drawable):
     _crowd(pkg, slide, sid)
     res = shp.set_shape(pkg, slide, sid, text="Short now.")
     assert res.get("autofit_scale_reset") == _AUTOFIT_RESET_NOTE
+
+
+# --------------------- NOTE: a declined corner said the wrong thing
+
+def _unresolved_infos(pkg, slide):
+    from kitchensink4ppt.ops import design_check as dc
+
+    return [
+        f for f in dc.check_layout(
+            pkg, slide=slide, checks=["contrast"])["findings"]
+        if f.get("unresolved_cells")
+    ]
+
+
+def test_a_declined_corner_reports_the_corner_reason(drawable):
+    """Verifier NOTE: a corner cell the resolver declines and a cell whose
+    style part is not in the file went into the SAME counter, so a
+    declined corner was reported as "fill comes from the table style
+    part, which this check does not resolve". The style part is right
+    there in the file; the reason is that renderers disagree about
+    whether it applies. A reader was sent looking for the wrong thing."""
+    pkg, slide = drawable
+    # nwCell is declared, firstCol is not switched on: whether the corner
+    # part applies is exactly the disagreement.
+    _styled_table(pkg, slide, 3, 3, {"firstRow": 1},
+                  {"wholeTbl": "FFFFFF", "nwCell": "C0C0C0"})
+
+    infos = _unresolved_infos(pkg, slide)
+    assert len(infos) == 1, [f["message"] for f in infos]
+    message = infos[0]["message"]
+    assert "corner cell(s) whose emphasis flags renderers disagree" in message
+    assert "comes from the table style part" not in message
+    assert infos[0]["unresolved_cells"] == 1
+    assert infos[0]["severity"] == "info"
+
+
+def test_the_two_reasons_are_counted_and_reported_separately(drawable):
+    """Verifier NOTE: with nwCell the only part declared, the corner is
+    declined and every other cell has nothing to read, which is the other
+    reason. One finding each, each carrying its own count."""
+    pkg, slide = drawable
+    _styled_table(pkg, slide, 3, 3, {"firstRow": 1}, {"nwCell": "C0C0C0"})
+
+    infos = _unresolved_infos(pkg, slide)
+    assert len(infos) == 2, [f["message"] for f in infos]
+    by_reason = {
+        ("corner" if "renderers disagree" in f["message"] else "part"):
+        f["unresolved_cells"] for f in infos
+    }
+    assert by_reason["corner"] == 1
+    assert by_reason["part"] == 8, "3x3 less the one declined corner"
+
+
+def test_a_built_in_style_still_reports_the_missing_part(drawable):
+    """Verifier NOTE guard: the message that was already right is
+    unchanged. A built-in style is referenced by GUID and its definition
+    is not in the file, so there is genuinely nothing to read."""
+    from kitchensink4ppt.ops import tables as tb
+
+    pkg, slide = drawable
+    res = tb.create_table(pkg, slide, rows=2, cols=2,
+                          x=0.3, y=0.3, w=9.0, h=1.0)
+    tb.set_table_cells(pkg, slide, {"shape_id": res["shape_id"]}, [
+        {"row": r, "col": c, "text": f"r{r}c{c}"}
+        for r in range(2) for c in range(2)
+    ])
+
+    infos = _unresolved_infos(pkg, slide)
+    assert len(infos) == 1
+    assert "cell(s) whose fill comes from the table style part, which "            "this check does not resolve; their contrast was NOT checked"            in infos[0]["message"]
+    assert "renderers disagree" not in infos[0]["message"]
