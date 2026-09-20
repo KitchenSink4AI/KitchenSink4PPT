@@ -2108,3 +2108,53 @@ def test_an_unhashable_slide_size_refuses_like_everything_else(tmp_path, bad):
         sl.create_presentation(out, slide_size=bad)
     assert "4:3" in str(exc.value)
     assert not out.exists()
+
+
+# --------------------------------------------- MINOR-P: decomposed names
+
+@pytest.mark.parametrize("name_spelling,word_spelling", [
+    ("NFD", "NFC"),
+    ("NFC", "NFD"),
+    ("NFD", "NFD"),
+])
+def test_a_decomposed_name_matches_its_precomposed_exclusion_word(
+    drawable, name_spelling, word_spelling
+):
+    r"""MINOR-P: \w+ is Unicode-aware for letters, but a combining mark is
+    not a word character, so the NFD spelling of "band" (a, U+0308, nd),
+    which is what a name authored on macOS routinely carries, tokenized to
+    {"ba", "nd"} and could never match the precomposed word a user types.
+    Both sides are normalized to NFC before tokenizing now, so every
+    combination of spellings agrees."""
+    import unicodedata
+
+    from kitchensink4ppt.ops import design_check as dc
+
+    base = "bänd"                      # precomposed a-umlaut
+    name = unicodedata.normalize(name_spelling, base)
+    word = unicodedata.normalize(word_spelling, base)
+    assert unicodedata.normalize("NFD", base) != base, "fixture is not a test"
+
+    pkg, slide = drawable
+    grp = _grouped_pair(pkg, slide, f"{name} one", f"{name} two")
+    result = dc.check_layout(pkg, slide=slide, checks=[
+        {"check": "overlap", "exclude_names": [word]}])
+    assert not [f for f in result["findings"] if f.get("group_id") == grp], (
+        f"a {name_spelling} name did not match a {word_spelling} word"
+    )
+    overlap = next(c for c in result["checks"] if c["check"] == "overlap")
+    assert overlap["suppressed_by_exclude_names"] == 2
+
+
+def test_normalizing_does_not_widen_what_matches(drawable):
+    """MINOR-P guard: NFC folds spellings of the SAME text together, it
+    does not make different text equal."""
+    from kitchensink4ppt.ops import design_check as dc
+
+    pkg, slide = drawable
+    grp = _grouped_pair(pkg, slide, "bänd one", "bänd two")
+    result = dc.check_layout(pkg, slide=slide, checks=[
+        {"check": "overlap", "exclude_names": ["band"]}])
+    assert [f for f in result["findings"] if f.get("group_id") == grp], (
+        "an unaccented word swallowed an accented name"
+    )
