@@ -371,7 +371,7 @@ def test_text_style_font_writes_ea_and_cs_not_only_latin(drawable):
 
     pkg, slide = drawable
     sid = shp.insert_shape(
-        pkg, slide, "rect", 1, 1, 4, 1, text="Delta",
+        pkg, slide, "rect", 1, 1, 4, 1, text="Sample",
         text_style={"font": "Georgia", "size": 18},
     )["shape_id"]
     rpr, _ppr, _body = _first_rpr(pkg, slide, sid)
@@ -806,10 +806,10 @@ def test_contrast_sees_the_band_a_label_is_floating_on(drawable):
     # old rule needed the band to contain the whole label box.
     shp.insert_shape(pkg, slide, "rect", 0.5, 2.0, 10.0, 1.2,
                      fill="F7EAE7", line={"type": "none"},
-                     name="US lane band")
+                     name="lane A band")
     label = shp.insert_shape(
         pkg, slide, "rect", 0.8, 2.9, 1.2, 0.5,
-        fill={"type": "none"}, line={"type": "none"}, text="US",
+        fill={"type": "none"}, line={"type": "none"}, text="AA",
         text_style={"size": 20, "color": "FFFFFF"},
     )["shape_id"]
 
@@ -832,7 +832,7 @@ def test_dark_on_dark_over_an_overhanging_band_is_not_passed(drawable):
                      fill="1F3864", line={"type": "none"}, name="lane band")
     label = shp.insert_shape(
         pkg, slide, "rect", 0.8, 2.9, 1.6, 0.5,
-        fill={"type": "none"}, line={"type": "none"}, text="ROK",
+        fill={"type": "none"}, line={"type": "none"}, text="BB",
         text_style={"size": 20, "color": "203A60"},
     )["shape_id"]
 
@@ -854,7 +854,7 @@ def test_a_translucent_band_composites_before_it_is_judged(drawable):
     )
     label = shp.insert_shape(
         pkg, slide, "rect", 0.8, 2.3, 1.2, 0.5,
-        fill={"type": "none"}, line={"type": "none"}, text="US",
+        fill={"type": "none"}, line={"type": "none"}, text="AA",
         text_style={"size": 20, "color": "FFFFFF"},
     )["shape_id"]
     hits = [f for f in _contrast(pkg, slide) if label in f["shape_ids"]]
@@ -990,9 +990,9 @@ def test_overlap_recurses_into_groups(drawable):
 
     pkg, slide = drawable
     a = shp.insert_shape(pkg, slide, "rect", 1.0, 1.0, 2.0, 1.0,
-                         text="1953", name="Milestone A")["shape_id"]
+                         text="2001", name="Milestone A")["shape_id"]
     b = shp.insert_shape(pkg, slide, "rect", 2.925, 1.0, 2.0, 1.0,
-                         text="1978", name="Milestone B")["shape_id"]
+                         text="2002", name="Milestone B")["shape_id"]
     grp = shp.group_shapes(pkg, slide, [a, b], name="Timeline")["group_id"]
 
     hits = [
@@ -1013,7 +1013,7 @@ def test_families_meant_to_touch_are_left_out_of_the_group_pass(drawable):
 
     pkg, slide = drawable
     label = shp.insert_shape(pkg, slide, "rect", 1.0, 1.0, 2.0, 1.0,
-                             text="1953", name="Milestone A")["shape_id"]
+                             text="2001", name="Milestone A")["shape_id"]
     tick = shp.insert_shape(pkg, slide, "rect", 1.4, 1.4, 0.2, 0.2,
                             name="tick 1")["shape_id"]
     grp = shp.group_shapes(pkg, slide, [label, tick], name="Timeline")[
@@ -1025,3 +1025,580 @@ def test_families_meant_to_touch_are_left_out_of_the_group_pass(drawable):
         if f.get("group_id") == grp
     ]
     assert hits == [], f"the tick was flagged against its label: {hits}"
+
+
+# ===================================================================
+# ROUND 2: every finding from the adversarial verification of PR #29.
+# MAJOR-A and MAJOR-B are REGRESSIONS round 1 introduced; main did not
+# have them. The rest are defects round 1 left standing or created.
+# ===================================================================
+
+
+def _mk(pkg, slide, **kw):
+    from kitchensink4ppt.ops import shapes as shp
+    return shp.insert_shape(pkg, slide, "rect", 1, 1, 4, 1, **kw)["shape_id"]
+
+
+def _rpr(pkg, slide, sid, para=0):
+    from kitchensink4ppt.core.package import qn as _qn
+    from kitchensink4ppt.ops.read import get_slide_info
+    from kitchensink4ppt.ops import shapes as shp
+    part = get_slide_info(pkg, slide)["part"]
+    elem, _c = shp._find_shape(pkg, part, sid)
+    body = elem.find(_qn("p:txBody"))
+    p0 = body.findall(_qn("a:p"))[para]
+    return p0.find(f"{_qn('a:r')}/{_qn('a:rPr')}"), body
+
+
+# ------------------------------------------------------------ MAJOR-A
+
+
+@pytest.mark.parametrize("key,attr", [("bold", "b"), ("italic", "i")])
+def test_an_explicit_false_toggle_turns_the_attribute_off(drawable, key, attr):
+    """MAJOR-A: _apply_rpr wrote b/i only when the value was TRUTHY, so a
+    False produced no attribute and the carry kept the old run's b="1".
+    The named key lost, which is the exact opposite of the contract round
+    1 claimed. main did not have this: it rebuilt the body from scratch,
+    so False at least meant absent."""
+    from kitchensink4ppt.ops import shapes as shp
+
+    pkg, slide = drawable
+    sid = _mk(pkg, slide, text="X", text_style={"bold": True, "italic": True})
+    before, _b = _rpr(pkg, slide, sid)
+    assert before.get(attr) == "1"
+
+    shp.set_shape(pkg, slide, sid, text="Y", text_style={key: False})
+    after, _b = _rpr(pkg, slide, sid)
+    assert after.get(attr) == "0", (
+        f"text_style {key}=False left {attr}={after.get(attr)!r}"
+    )
+
+
+def test_an_explicit_false_toggle_also_turns_off_an_inherited_one(drawable):
+    """MAJOR-A: writing the explicit off attribute is what defeats a bold
+    inherited from the placeholder, which absence never could."""
+    pkg, slide = drawable
+    sid = _mk(pkg, slide, text="X", text_style={"bold": False})
+    rpr, _b = _rpr(pkg, slide, sid)
+    assert rpr.get("b") == "0"
+
+
+def test_an_absent_toggle_still_writes_nothing(drawable):
+    """MAJOR-A guard: absent must stay absent. "Present and false" and
+    "not mentioned" are different instructions."""
+    pkg, slide = drawable
+    sid = _mk(pkg, slide, text="X", text_style={"size": 20})
+    rpr, _b = _rpr(pkg, slide, sid)
+    assert rpr.get("b") is None and rpr.get("i") is None
+
+
+def test_underline_false_turns_underline_off_across_a_retext(drawable):
+    """MAJOR-A, the same audit one key over."""
+    from kitchensink4ppt.ops import shapes as shp
+
+    pkg, slide = drawable
+    sid = _mk(pkg, slide, text="X", text_style={"underline": True})
+    shp.set_shape(pkg, slide, sid, text="Y", text_style={"underline": False})
+    rpr, _b = _rpr(pkg, slide, sid)
+    assert rpr.get("u") == "none"
+
+
+def test_wrap_true_states_itself_rather_than_relying_on_absence(drawable):
+    """MAJOR-A, same family: wrap=True wrote nothing, so it could only
+    mean "on" by luck of what the old body happened to carry."""
+    from kitchensink4ppt.core.package import qn as _qn
+    from kitchensink4ppt.ops import shapes as shp
+
+    pkg, slide = drawable
+    sid = _mk(pkg, slide, text="X", text_style={"wrap": False})
+    _r, body = _rpr(pkg, slide, sid)
+    assert body.find(_qn("a:bodyPr")).get("wrap") == "none"
+
+    shp.set_shape(pkg, slide, sid, text="Y", text_style={"wrap": True})
+    _r, body = _rpr(pkg, slide, sid)
+    assert body.find(_qn("a:bodyPr")).get("wrap") == "square"
+
+
+# ------------------------------------------------------------ MAJOR-B
+
+
+def _crowd(pkg, slide, sid, scale="40000", red="20000"):
+    """The cached autofit numbers PowerPoint writes on a crowded frame."""
+    from kitchensink4ppt.core.package import qn as _qn
+    _r, body = _rpr(pkg, slide, sid)
+    bp = body.find(_qn("a:bodyPr"))
+    na = etree.SubElement(bp, _qn("a:normAutofit"))
+    na.set("fontScale", scale)
+    na.set("lnSpcReduction", red)
+    return bp
+
+
+def test_a_stale_autofit_scale_does_not_ride_onto_the_new_text(drawable):
+    """MAJOR-B: the old bodyPr was deep-copied wholesale, cached
+    normAutofit numbers and all. That scale belonged to the OLD text, and
+    PowerPoint renders from it until the frame is edited in the app, so a
+    box that once overflowed kept shrinking text that now fits."""
+    from kitchensink4ppt.core.package import qn as _qn
+    from kitchensink4ppt.ops import shapes as shp
+
+    pkg, slide = drawable
+    sid = _mk(pkg, slide, text="long " * 20)
+    _crowd(pkg, slide, sid)
+
+    res = shp.set_shape(pkg, slide, sid, text="Short now.")
+    _r, body = _rpr(pkg, slide, sid)
+    na = body.find(f"{_qn('a:bodyPr')}/{_qn('a:normAutofit')}")
+
+    assert na is not None, "the autofit MODE was dropped; only the numbers go"
+    assert na.get("fontScale") is None, "a stale fontScale rode onto new text"
+    assert na.get("lnSpcReduction") is None
+    assert res.get("autofit_scale_reset") is True
+
+
+def test_the_autofit_mode_itself_survives_a_retext(drawable):
+    """MAJOR-B: dropping the mode would be a different defect. spAutoFit
+    means the frame grows with the text and must stay."""
+    from kitchensink4ppt.core.package import qn as _qn
+    from kitchensink4ppt.ops import shapes as shp
+
+    pkg, slide = drawable
+    sid = _mk(pkg, slide, text="x")
+    _r, body = _rpr(pkg, slide, sid)
+    etree.SubElement(body.find(_qn("a:bodyPr")), _qn("a:spAutoFit"))
+
+    res = shp.set_shape(pkg, slide, sid, text="y")
+    _r, body = _rpr(pkg, slide, sid)
+    assert body.find(f"{_qn('a:bodyPr')}/{_qn('a:spAutoFit')}") is not None
+    assert res.get("autofit_scale_reset") is None
+
+
+def test_a_frame_with_no_cached_scale_reports_no_reset(drawable):
+    """MAJOR-B guard: the flag is a fact, not decoration."""
+    from kitchensink4ppt.ops import shapes as shp
+
+    pkg, slide = drawable
+    sid = _mk(pkg, slide, text="x")
+    res = shp.set_shape(pkg, slide, sid, text="y")
+    assert "autofit_scale_reset" not in res
+
+
+# ------------------------------------------------------------ MINOR-J
+
+
+def test_collapsing_mixed_runs_is_reported_not_claimed_as_preserved(drawable):
+    """MINOR-J.3: a paragraph of differently formatted runs collapses to
+    the FIRST run's formatting. main collapsed them too, so the loss is
+    not new, but reporting preserved over the wreckage is."""
+    from kitchensink4ppt.core.package import qn as _qn
+    from kitchensink4ppt.ops import shapes as shp
+
+    pkg, slide = drawable
+    sid = _mk(pkg, slide, text="A", text_style={"color": "FF0000"})
+    _r, body = _rpr(pkg, slide, sid)
+    para = body.findall(_qn("a:p"))[0]
+    run = etree.SubElement(para, _qn("a:r"))
+    rpr = etree.SubElement(run, _qn("a:rPr"))
+    rpr.set("b", "1")
+    fill = etree.SubElement(rpr, _qn("a:solidFill"))
+    etree.SubElement(fill, _qn("a:srgbClr")).set("val", "0000FF")
+    etree.SubElement(run, _qn("a:t")).text = "B"
+
+    res = shp.set_shape(pkg, slide, sid, text="merged")
+    assert res.get("runs_collapsed_to_first") is True
+
+
+def test_a_single_run_paragraph_reports_no_collapse(drawable):
+    """MINOR-J.3 guard: the flag must not fire on every edit."""
+    from kitchensink4ppt.ops import shapes as shp
+
+    pkg, slide = drawable
+    sid = _mk(pkg, slide, text="A", text_style={"color": "FF0000"})
+    res = shp.set_shape(pkg, slide, sid, text="B")
+    assert "runs_collapsed_to_first" not in res
+
+
+# ------------------------------------------------------------ MAJOR-C
+
+
+def _dark_header_table(pkg, slide):
+    """A table built with this server's own tools: explicit dark fill on
+    row 0, text colour left to the table style part."""
+    from kitchensink4ppt.ops import tables as tb
+
+    res = tb.create_table(pkg, slide, rows=3, cols=3, x=1, y=1, w=8, h=2)
+    sel = {"shape_id": res["shape_id"]}
+    tb.set_table_cells(pkg, slide, sel, [
+        {"row": 0, "col": c, "text": f"Header {c}"} for c in range(3)
+    ])
+    tb.format_table_cells(pkg, slide, sel,
+                          range={"r1": 0, "c1": 0, "r2": 0, "c2": 2},
+                          fill="1F3864")
+    return res["shape_id"]
+
+
+def test_a_dark_header_table_produces_no_fabricated_error(drawable):
+    """MAJOR-C: the fill resolves (it is explicit), the header TEXT colour
+    lives in the table style part, which this check cannot reach, so the
+    colour fell through to the theme default (black) and the check
+    reported an ERROR at gate severity on output this server itself
+    produced. The header text is white."""
+    from kitchensink4ppt.ops import design_check as dc
+
+    pkg, slide = drawable
+    sid = _dark_header_table(pkg, slide)
+    findings = dc.check_layout(pkg, slide=slide, checks=["contrast"])[
+        "findings"]
+    bad = [
+        f for f in findings
+        if sid in f["shape_ids"] and f["severity"] in ("error", "warning")
+    ]
+    assert bad == [], f"fabricated a contrast failure from a guess: {bad}"
+
+
+def test_a_guessed_colour_is_reported_as_unresolved_not_judged(drawable):
+    """MAJOR-C: "cannot know" is a result. It comes back as info with the
+    reason named, never at gate severity."""
+    from kitchensink4ppt.ops import design_check as dc
+
+    pkg, slide = drawable
+    sid = _dark_header_table(pkg, slide)
+    findings = dc.check_layout(pkg, slide=slide, checks=["contrast"])[
+        "findings"]
+    mine = [f for f in findings if sid in f["shape_ids"]]
+    assert mine, "the table was passed in total silence"
+    assert all(f["severity"] == "info" for f in mine)
+    assert any(f.get("reason") == "unresolved_colour_source" for f in mine), mine
+
+
+def test_a_real_low_contrast_run_is_still_an_error(drawable):
+    """MAJOR-C guard: the downgrade must not blunt the check. A colour the
+    slide STATES is still judged."""
+    from kitchensink4ppt.ops import design_check as dc
+    from kitchensink4ppt.ops import shapes as shp
+
+    pkg, slide = drawable
+    sid = shp.insert_shape(
+        pkg, slide, "rect", 1, 4, 4, 1, fill="1F3864", text="hard to read",
+        text_style={"size": 12, "color": "203A60"},
+    )["shape_id"]
+    findings = dc.check_layout(pkg, slide=slide, checks=["contrast"])[
+        "findings"]
+    hit = [f for f in findings if sid in f["shape_ids"]]
+    assert hit and hit[0]["severity"] in ("error", "warning")
+
+
+def test_an_unresolved_placeholder_colour_is_downgraded_too(drawable):
+    """MAJOR-C: the rule is about the SOURCE, not about tables. A shape
+    whose colour only resolves to the theme default is a guess wherever it
+    sits."""
+    from kitchensink4ppt.core.package import qn as _qn
+    from kitchensink4ppt.ops import design_check as dc
+    from kitchensink4ppt.ops import shapes as shp
+
+    pkg, slide = drawable
+    # Fill near-black, and say nothing at all about the text colour.
+    sid = shp.insert_shape(pkg, slide, "rect", 1, 4, 4, 1, fill="111111",
+                           text="unstated colour")["shape_id"]
+    part = __import__("kitchensink4ppt.ops.read",
+                      fromlist=["get_slide_info"]).get_slide_info(
+        pkg, slide)["part"]
+    elem, _c = shp._find_shape(pkg, part, sid)
+    style = elem.find(_qn("p:style"))
+    if style is not None:
+        elem.remove(style)  # strip the fontRef so nothing but tx1 is left
+
+    findings = dc.check_layout(pkg, slide=slide, checks=["contrast"])[
+        "findings"]
+    mine = [f for f in findings if sid in f["shape_ids"]]
+    assert mine
+    assert all(f["severity"] == "info" for f in mine), mine
+
+
+def test_a_deck_local_table_style_resolves_instead_of_guessing(drawable):
+    """MAJOR-C, the real fix where it is reachable: a table style DEFINED
+    in tableStyles.xml is readable, so its cell text colour and fill are
+    resolved rather than guessed. PowerPoint's built-in styles are only
+    REFERENCED by GUID and their definitions are not in the file at all,
+    which is why the downgrade above still has to exist."""
+    from kitchensink4ppt.core.package import qn as _qn
+    from kitchensink4ppt.ops import design_check as dc
+    from kitchensink4ppt.ops import tables as tb
+
+    pkg, slide = drawable
+    res = tb.create_table(pkg, slide, rows=2, cols=2, x=1, y=1, w=6, h=1.5)
+    sid = res["shape_id"]
+    tb.set_table_cells(pkg, slide, {"shape_id": sid}, [
+        {"row": 0, "col": 0, "text": "Header"},
+        {"row": 1, "col": 0, "text": "Body"},
+    ])
+    tbl = tb.resolve_table(pkg, slide, {"shape_id": sid})["tbl"]
+    style_id = tbl.find(f"{_qn('a:tblPr')}/{_qn('a:tableStyleId')}").text
+
+    # Define that style locally: white text on a dark first row.
+    lst = pkg.root("ppt/tableStyles.xml")
+    style = etree.SubElement(lst, _qn("a:tblStyle"))
+    style.set("styleId", style_id)
+    style.set("styleName", "local test style")
+    first = etree.SubElement(style, _qn("a:firstRow"))
+    txs = etree.SubElement(first, _qn("a:tcTxStyle"))
+    etree.SubElement(txs, _qn("a:srgbClr")).set("val", "FFFFFF")
+    tcs = etree.SubElement(first, _qn("a:tcStyle"))
+    fill = etree.SubElement(tcs, _qn("a:fill"))
+    solid = etree.SubElement(fill, _qn("a:solidFill"))
+    etree.SubElement(solid, _qn("a:srgbClr")).set("val", "1F3864")
+    pkg.mark_dirty("ppt/tableStyles.xml")
+
+    findings = dc.check_layout(pkg, slide=slide, checks=["contrast"])[
+        "findings"]
+    mine = [f for f in findings if sid in f["shape_ids"]]
+    # White on dark navy resolves and passes: no gate finding, and no
+    # "cannot resolve" info for the header either.
+    assert not [f for f in mine if f["severity"] != "info"], mine
+
+    from kitchensink4ppt.ops.read import get_slide_info
+    ctx = dc._SlideCtx(pkg, {"part": get_slide_info(pkg, slide)["part"],
+                             "index": slide, "slide_id": 0})
+    resolved = dc._table_style_for(ctx, tbl)
+    assert resolved is not None
+    assert resolved.text_color(0, 0, 2, 2) == "FFFFFF"
+    assert resolved.fill(0, 0, 2, 2) == "1F3864"
+
+
+# ------------------------------------------------------------ MINOR-D
+
+
+def test_an_other_family_placeholder_does_not_inherit_the_date_box(
+    inheriting_placeholder
+):
+    """MINOR-D: layout_twin guards its family fallback with
+    family != "other"; master_twin did not, and family_of() lumps pic,
+    tbl, chart, ftr, dt and sldNum into one "other" bucket. Measured
+    against a REAL master that has a date placeholder: a pic placeholder
+    was resolving to it and inheriting the footer strip at the bottom of
+    the slide."""
+    from kitchensink4ppt.core.package import qn as _qn
+    from kitchensink4ppt.ops import inherit as inh
+    from kitchensink4ppt.ops.read import get_slide_info
+
+    pkg, slide, _sid = inheriting_placeholder
+    part = get_slide_info(pkg, slide)["part"]
+    layout = inh.layout_part_of(pkg, part)
+    master = inh.master_part_of(pkg, layout)
+
+    assert inh.family_of("pic") == "other"
+    assert inh.family_of("dt") == "other"
+    # The master really does carry an "other"-family placeholder to be
+    # wrongly matched, so this is a live trap, not a vacuous assertion.
+    others = [
+        sp for sp, ph in inh._placeholders(pkg, master)
+        if inh.family_of(ph.get("type") or "body") == "other"
+    ]
+    assert others, "fixture master has no other-family placeholder to trip on"
+    assert inh.master_twin(pkg, master, ("pic", None)) is None
+
+
+def test_master_twin_still_matches_a_real_title_or_body(inheriting_placeholder):
+    """MINOR-D guard: the fix must not blind the families that DO have one
+    master placeholder each."""
+    from kitchensink4ppt.ops import inherit as inh
+    from kitchensink4ppt.ops.read import get_slide_info
+
+    pkg, slide, _sid = inheriting_placeholder
+    part = get_slide_info(pkg, slide)["part"]
+    layout = inh.layout_part_of(pkg, part)
+    master = inh.master_part_of(pkg, layout)
+    assert inh.master_twin(pkg, master, ("title", None)) is not None
+    assert inh.master_twin(pkg, master, ("body", "1")) is not None
+
+
+def test_a_pic_placeholder_with_no_twin_gets_no_inherited_box(drawable):
+    """MINOR-D, end to end: no box beats the wrong box, so set_shape
+    refuses rather than seeding the footer strip."""
+    from kitchensink4ppt.core.errors import UnsupportedStructure
+    from kitchensink4ppt.core.package import qn as _qn
+    from kitchensink4ppt.ops import inherit as inh
+    from kitchensink4ppt.ops.read import get_slide_info
+    from kitchensink4ppt.ops import shapes as shp
+
+    pkg, slide = drawable
+    part = get_slide_info(pkg, slide)["part"]
+    tree = pkg.root(part).find(f"{_qn('p:cSld')}/{_qn('p:spTree')}")
+    sp = etree.SubElement(tree, _qn("p:sp"))
+    nv = etree.SubElement(sp, _qn("p:nvSpPr"))
+    cnv = etree.SubElement(nv, _qn("p:cNvPr"))
+    cnv.set("id", "900")
+    cnv.set("name", "Picture Placeholder 900")
+    etree.SubElement(nv, _qn("p:cNvSpPr"))
+    nvpr = etree.SubElement(nv, _qn("p:nvPr"))
+    ph = etree.SubElement(nvpr, _qn("p:ph"))
+    ph.set("type", "pic")
+    ph.set("idx", "77")
+    etree.SubElement(sp, _qn("p:spPr"))
+    body = etree.SubElement(sp, _qn("p:txBody"))
+    etree.SubElement(body, _qn("a:bodyPr"))
+    etree.SubElement(body, _qn("a:lstStyle"))
+    etree.SubElement(body, _qn("a:p"))
+
+    assert inh.inherited_box(pkg, part, sp) is None
+    with pytest.raises(UnsupportedStructure):
+        shp.set_shape(pkg, slide, 900, x=1, y=1, w=2, h=2)
+
+
+# ------------------------------------------------------------ MINOR-H
+
+
+def test_line_type_none_refuses_siblings_exactly_as_fill_does():
+    """MINOR-H: the type=="none" branch returned before reading any other
+    key, so line={"type":"none","width":4} dropped the width in silence.
+    That is the same asymmetry #873 was raised to remove, left in place
+    one branch over."""
+    from kitchensink4ppt.core.errors import PptMcpError
+    from kitchensink4ppt.ops import geometry as geo
+
+    with pytest.raises(PptMcpError) as exc:
+        geo.line_element({"type": "none", "width": 4, "color": "FF0000"})
+    message = str(exc.value).lower()
+    assert "width" in message and "color" in message
+
+    with pytest.raises(PptMcpError):
+        geo.fill_element({"type": "none", "color": "FF0000"})
+    assert geo.line_element({"type": "none"}) is not None
+    assert geo.line_element("none") is not None
+
+
+# ------------------------------------------------------------ MINOR-F/G
+
+
+def _grouped_pair(pkg, slide, name_a, name_b):
+    from kitchensink4ppt.ops import shapes as shp
+    a = shp.insert_shape(pkg, slide, "rect", 1.0, 1.0, 2.0, 1.0,
+                         text="one", name=name_a)["shape_id"]
+    b = shp.insert_shape(pkg, slide, "rect", 2.9, 1.0, 2.0, 1.0,
+                         text="two", name=name_b)["shape_id"]
+    return shp.group_shapes(pkg, slide, [a, b], name="Group")["group_id"]
+
+
+def test_an_empty_exclude_list_means_exclude_nothing(drawable):
+    """MINOR-F: opts.get("exclude_names") or DEFAULT made an empty list
+    falsy, so there was no way to ask for an unfiltered in-group pass."""
+    from kitchensink4ppt.ops import design_check as dc
+
+    pkg, slide = drawable
+    grp = _grouped_pair(pkg, slide, "tick one", "tick two")
+
+    default = dc.check_layout(pkg, slide=slide, checks=["overlap"])["findings"]
+    assert not [f for f in default if f.get("group_id") == grp]
+
+    unfiltered = dc.check_layout(pkg, slide=slide, checks=[
+        {"check": "overlap", "exclude_names": []}])["findings"]
+    assert [f for f in unfiltered if f.get("group_id") == grp], (
+        "exclude_names=[] still fell back to the default list"
+    )
+
+
+def test_the_exclusion_list_matches_whole_words_not_substrings(drawable):
+    """MINOR-G: "band" in name.lower() silently exempted "Bandwidth chart"
+    and "Brand box". Any name containing rule, tick, arrow or axis had the
+    same hole."""
+    from kitchensink4ppt.ops import design_check as dc
+
+    pkg, slide = drawable
+    grp = _grouped_pair(pkg, slide, "Bandwidth chart", "Brand box")
+    hits = [
+        f for f in dc.check_layout(pkg, slide=slide, checks=["overlap"])[
+            "findings"]
+        if f.get("group_id") == grp
+    ]
+    assert hits, "a real collision was dropped because a name contained band"
+
+
+def test_a_genuine_band_is_still_exempt(drawable):
+    """MINOR-G guard: word matching must not break the exclusion itself."""
+    from kitchensink4ppt.ops import design_check as dc
+
+    pkg, slide = drawable
+    grp = _grouped_pair(pkg, slide, "lane band", "tick 3")
+    hits = [
+        f for f in dc.check_layout(pkg, slide=slide, checks=["overlap"])[
+            "findings"]
+        if f.get("group_id") == grp
+    ]
+    assert hits == []
+
+
+def test_the_overlap_check_says_how_many_pairs_it_suppressed(drawable):
+    """MINOR-G: filtering nobody can see is filtering nobody can check."""
+    from kitchensink4ppt.ops import design_check as dc
+
+    pkg, slide = drawable
+    _grouped_pair(pkg, slide, "lane band", "tick 3")
+    result = dc.check_layout(pkg, slide=slide, checks=["overlap"])
+    caveats = result.get("checks") or []
+    overlap = next(c for c in caveats if c.get("check") == "overlap")
+    assert overlap.get("suppressed_by_exclude_names") >= 1
+
+
+# ------------------------------------------------------------ MINOR-I
+
+
+def test_tiny_text_honours_a_cached_font_scale(drawable):
+    """MINOR-I: a shape at an explicit 28pt with normAutofit
+    fontScale="25000" renders at 7pt and produced no finding, while
+    _check_overflow in the same battery DID apply the scale. Two checks in
+    one battery disagreeing about the size of the same text is worse than
+    either being wrong alone."""
+    from kitchensink4ppt.core.package import qn as _qn
+    from kitchensink4ppt.ops import design_check as dc
+
+    pkg, slide = drawable
+    sid = _mk(pkg, slide, text="A body line long enough to count as body.",
+              text_style={"size": 28})
+    _r, body = _rpr(pkg, slide, sid)
+    na = etree.SubElement(body.find(_qn("a:bodyPr")), _qn("a:normAutofit"))
+    na.set("fontScale", "25000")
+
+    findings = dc.check_layout(pkg, slide=slide, checks=["tiny_text"])[
+        "findings"]
+    hit = [f for f in findings if sid in f["shape_ids"]]
+    assert hit, "28pt shrunk to 7pt by a cached scale was not flagged"
+    assert hit[0]["sizes_pt"] == [7.0]
+
+
+def test_an_unscaled_shape_is_unaffected(drawable):
+    """MINOR-I guard."""
+    from kitchensink4ppt.ops import design_check as dc
+
+    pkg, slide = drawable
+    sid = _mk(pkg, slide, text="A body line long enough to count as body.",
+              text_style={"size": 28})
+    findings = dc.check_layout(pkg, slide=slide, checks=["tiny_text"])[
+        "findings"]
+    assert not [f for f in findings if sid in f["shape_ids"]]
+
+
+# ------------------------------------------------------------ MINOR-E
+
+
+def test_a_format_text_edit_using_anchor_is_told_the_key_it_wants(drawable):
+    """MINOR-E: an agent reads format_text(anchor=...) and writes
+    {"op": "format_text", "anchor": "middle"}. It refused, correctly and
+    atomically, with a message about slide-id anchor grammar that named no
+    way forward."""
+    from kitchensink4ppt.core.errors import PptMcpError
+    from kitchensink4ppt.ops import batch
+
+    pkg, slide = drawable
+    sid = _mk(pkg, slide, text="hi")
+    with pytest.raises(PptMcpError) as exc:
+        batch.apply_edits(pkg, [{
+            "op": "format_text", "slide": slide, "shape": sid,
+            "anchor": "middle",
+        }])
+    assert "text_anchor" in str(exc.value)
+
+
+def test_apply_edits_documents_text_anchor():
+    """MINOR-E: the word appeared only in a source comment and in _OPS."""
+    from kitchensink4ppt import server
+
+    assert "text_anchor" in (server.apply_edits.__doc__ or "")

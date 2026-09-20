@@ -137,8 +137,18 @@ def master_twin(
     pkg: PptxPackage, master_part: str | None, key: tuple[str, str | None]
 ) -> etree._Element | None:
     """The master placeholder backing a family. The master carries at most
-    one of each, so this matches by family, not by idx."""
+    one title and one body, so those match by family.
+
+    "other" does NOT, and matching on it was a real bug: family_of() lumps
+    pic, tbl, chart, ftr, dt and sldNum into one bucket, so a slide's
+    picture placeholder resolved to the master's DATE placeholder and
+    inherited the footer strip at the bottom of the slide as its geometry.
+    layout_twin already guarded this; the guard belongs on both sides. No
+    box beats the wrong box.
+    """
     family = family_of(key[0])
+    if family == "other":
+        return None
     for sp, ph in _placeholders(pkg, master_part):
         if family_of(ph.get("type") or "body") == family:
             return sp

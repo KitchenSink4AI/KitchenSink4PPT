@@ -521,7 +521,9 @@ def apply_edits(
     (graphics pack), delete_shape (graphics pack). Every location is
     resolved BEFORE anything mutates; any stale anchor refuses the whole
     batch listing every failed index, and result.changed maps op index to
-    outcome. These ops EDIT existing content; nothing here inserts shapes,
+    outcome. format_text's vertical anchor rides here as "text_anchor",
+    since "anchor" already addresses the shape.
+    These ops EDIT existing content; nothing here inserts shapes,
     tables, or slides. Creation tools live in the packs (enable_tools).
     atomic must stay True: v1 has no partial-apply mode. Saves atomically
     with two-slot backup; backup=False skips rotation. Use this when a
