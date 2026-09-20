@@ -3199,14 +3199,21 @@ def validate(file_path: str) -> dict:
 
 
 @_tool("assembly-export")
-def extract_text(file_path: str) -> dict:
+def extract_text(
+    file_path: str, limit: int | None = None, offset: int = 0
+) -> dict:
     """Everything textual in one call: all slides in reading order PLUS
     every slide's speaker notes (equivalent to get_text with
     include_notes=True over the whole deck). The full-content dump for
     indexing, review, or migrating deck content into a document. For
     slide-scoped or notes-free reads, get_text with a scope is cheaper;
-    for editing addresses use get_presentation_view instead."""
-    return _rd.get_text(_load(file_path), None, include_notes=True)
+    for editing addresses use get_presentation_view instead. A deck past
+    the output budget pages rather than cutting: `page` leads the answer
+    with the total, what came back, and the next_offset to continue.
+    limit and offset count SLIDES."""
+    return _rd.get_text(
+        _load(file_path), None, include_notes=True, limit=limit, offset=offset
+    )
 
 
 @_tool("assembly-export")
