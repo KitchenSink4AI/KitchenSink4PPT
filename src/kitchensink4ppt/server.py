@@ -2476,20 +2476,24 @@ def get_chart_data(file_path: str, slide: Any, chart: Any = None) -> dict:
 
 @_tool("design")
 def create_presentation(
-    path: str, template: str | None = None, keep_slides: bool = False
+    path: str,
+    template: str | None = None,
+    keep_slides: bool = False,
+    slide_size: str = "16:9",
 ) -> dict:
     """Create a NEW .pptx. With template: a byte-copy of that deck so its
     theme colors, fonts, layouts, masters, and slide size all carry over,
     which is how brand-correct decks start; keep_slides=False (default)
     then strips the template's slides, keeping only the design machinery.
-    Without template: a minimal blank 16:9 deck. The result states the
-    canvas as slide_size, to check coordinates against. Refuses to
-    overwrite an existing path; the template is never modified. Follow
-    with insert_slide + set_placeholder_text."""
+    Without template: a blank 16:9 deck, or slide_size (4:3, 16:10, a4,
+    letter) with the layouts fitted to it. The result states the canvas.
+    Refuses to overwrite an existing path. Follow with insert_slide +
+    set_placeholder_text."""
     result = _sl.create_presentation(
         check_path(path, "create presentation"),
         template=check_path(template, "read template") if template else None,
         keep_slides=keep_slides,
+        slide_size=slide_size,
     )
     return {"ok": True, **result}
 
