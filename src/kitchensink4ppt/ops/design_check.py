@@ -85,6 +85,7 @@ The checks and their heuristics:
 from __future__ import annotations
 
 import colorsys
+import re as _re
 
 from lxml import etree
 
@@ -201,10 +202,15 @@ CHECKS: dict[str, tuple[dict, str]] = {
         "fill when it has one (a:noFill in spPr beats the p:style "
         "fillRef), otherwise every shape beneath the text's centre "
         "composited by z down to the slide background, alpha included. "
-        "Table cells are judged against their own tcPr fill. A backdrop "
-        "that cannot be resolved to a colour (picture, pattern, a table "
-        "style's fill) is reported as its own info finding instead of "
-        "passing silently. Gradients are averaged and "
+        "Table cells are judged against their own tcPr fill, falling back "
+        "to a table style DEFINED in tableStyles.xml; PowerPoint's "
+        "built-in styles are referenced by GUID and their definitions are "
+        "not in the file, so those stay unresolved. A backdrop that cannot "
+        "be resolved to a colour, and a run whose colour is not stated "
+        "anywhere this read can reach, are reported as info findings "
+        "(reason unresolved_colour_source) and NEVER as a failure: a gate "
+        "severity built on a guessed colour is worse than no check. "
+        "Gradients are averaged and "
         "lumMod/lumOff/tint/shade are approximated, so treat borderline "
         "ratios as render-and-look",
     ),
@@ -367,6 +373,9 @@ class _SlideCtx:
             # Resolve grouped shapes' slide-space boxes via _iter with chains.
             self._resolve_group_boxes()
         self._resolver: _ColorResolver | None = None
+        # Per-check counters a check wants VISIBLE in the result.
+        # Filtering nobody can see is filtering nobody can check.
+        self.stats: dict[str, dict[str, int]] = {}
 
     def _resolve_group_boxes(self) -> None:
         chains: dict[int, list] = {}
@@ -794,9 +803,22 @@ def _contains(outer, inner, eps: float = 9525.0) -> bool:
     )
 
 
+#: Anything that is not a letter or a digit separates one name token from
+#: the next, so "lane band", "band-2" and "Band" all match "band" while
+#: "Bandwidth" and "Brand" do not.
+_NAME_TOKENS = _re.compile(r"[a-z0-9]+")
+
+
 def _touching_family(s: dict, words) -> bool:
-    name = (s.get("name") or "").lower()
-    return any(word in name for word in words)
+    """Whether a shape's name puts it in a family meant to touch.
+
+    Substring matching silently exempted "Bandwidth chart" and "Brand box"
+    from the in-group pass, because both contain "band"; the same hole
+    swallowed anything containing rule, tick, arrow or axis. Names are
+    matched a TOKEN at a time now.
+    """
+    tokens = set(_NAME_TOKENS.findall((s.get("name") or "").lower()))
+    return bool(tokens & set(words))
 
 
 def _decoration(s: dict) -> bool:
@@ -893,13 +915,21 @@ def _check_group_overlap(ctx: _SlideCtx, opts: dict) -> list[dict]:
     hundredths of an inch between two timeline boxes is a real defect that
     no percentage-of-area rule would ever reach.
     """
-    words = opts.get("exclude_names") or DEFAULT_TOUCHING_NAMES
+    # `or DEFAULT` made an EMPTY list fall back to the default, so there
+    # was no way to ask for an unfiltered in-group pass. Absent and empty
+    # are different requests.
+    words = opts["exclude_names"] if "exclude_names" in opts else (
+        DEFAULT_TOUCHING_NAMES
+    )
+    if words is None:
+        words = DEFAULT_TOUCHING_NAMES
     if isinstance(words, str):
         words = (words,)
     words = tuple(w.lower() for w in words)
     bar = float(opts.get("min_group_overlap_in", 0.05)) * EMU_PER_INCH
 
     groups: dict[int, list[dict]] = {}
+    suppressed = 0
     for s in ctx.all:
         root = s.get("group_root")
         if root is None or s["hidden"] or s["kind"] == "connector":
@@ -907,8 +937,13 @@ def _check_group_overlap(ctx: _SlideCtx, opts: dict) -> list[dict]:
         if s["box"] is None or s["box"][2] <= 0 or s["box"][3] <= 0:
             continue
         if _touching_family(s, words):
+            suppressed += 1
             continue
         groups.setdefault(root, []).append(s)
+    ctx.stats.setdefault("overlap", {})["suppressed_by_exclude_names"] = (
+        ctx.stats.get("overlap", {}).get("suppressed_by_exclude_names", 0)
+        + suppressed
+    )
 
     findings = []
     for root, members in groups.items():
@@ -1047,6 +1082,12 @@ def _run_sizes(
     is resolved through ops/inherit.py now, and a run whose size still
     cannot be found is counted rather than quietly passed.
     """
+    # A cached normAutofit scale is what the text ACTUALLY renders at, and
+    # _check_overflow in this same battery already applies it. Ignoring it
+    # here meant a 28pt run shrunk to 7pt produced no finding while the
+    # check beside it called the same shape crowded: two checks in one
+    # battery disagreeing about the size of the same text.
+    scale = _autofit_scale(elem)
     sizes: list[tuple[float, str]] = []
     unresolved = 0
     for p in paragraphs:
@@ -1060,8 +1101,24 @@ def _run_sizes(
             if size is None:
                 unresolved += 1
                 continue
+            if scale != 1.0:
+                size = round(size * scale, 2)
+                source = f"{source}, shrunk by autofit"
             sizes.append((size, source))
     return sizes, unresolved
+
+
+def _autofit_scale(elem: etree._Element) -> float:
+    """The cached normAutofit fontScale as a multiplier, or 1.0."""
+    body = elem.find(qn("p:txBody"))
+    bodypr = body.find(qn("a:bodyPr")) if body is not None else None
+    norm = bodypr.find(qn("a:normAutofit")) if bodypr is not None else None
+    if norm is None or norm.get("fontScale") is None:
+        return 1.0
+    try:
+        return _pct_value(norm.get("fontScale"), 100.0) / 100.0
+    except (ValueError, TypeError):
+        return 1.0
 
 
 def _check_tiny_text(ctx: _SlideCtx, opts: dict) -> list[dict]:
@@ -1345,6 +1402,7 @@ def _run_text_color(
     resolver: _ColorResolver,
     ctx: "_SlideCtx | None" = None,
     elem: etree._Element | None = None,
+    fallback: tuple[str, str] | None = None,
 ) -> tuple[str | None, float | None, bool, str]:
     """(hex or None, explicit size pt or None, bold, source) for one run.
 
@@ -1400,11 +1458,128 @@ def _run_text_color(
             hexval = resolver.resolve(_first_color_child(fontref))
             if hexval:
                 source = "style/fontRef"
+    if hexval is None and fallback is not None:
+        # A caller that CAN reach the governing part (the table style)
+        # hands its answer in, so the theme default is not reached and the
+        # finding is a reading rather than a guess.
+        hexval, source = fallback
     if hexval is None:
         hexval = resolver.scheme_hex("tx1")
         if hexval:
             source = "theme default"
     return hexval, size, bool(bold), source
+
+
+#: tblStyle parts, lowest precedence first. PowerPoint layers wholeTbl,
+#: then banding, then the first/last COLUMN, then the first/last ROW, so a
+#: header row beats a banded column where they meet.
+_TBL_STYLE_ORDER = (
+    "wholeTbl", "band2H", "band1H", "band2V", "band1V",
+    "lastCol", "firstCol", "lastRow", "firstRow",
+)
+
+
+class _TableStyle:
+    """One deck-local a:tblStyle, resolved per cell.
+
+    Only styles DEFINED in tableStyles.xml can be read. PowerPoint's
+    built-in styles are referenced by GUID and their definitions live
+    inside the application, not in the file, so a deck using one has a
+    tableStyles.xml carrying nothing but a `def` attribute. That is why
+    the unresolved path still has to exist: there is genuinely nothing to
+    read, and anything this check said about those colours would be a
+    guess.
+    """
+
+    def __init__(self, style: etree._Element, flags: dict,
+                 resolver: _ColorResolver):
+        self._style = style
+        self._flags = flags
+        self._resolver = resolver
+
+    def _parts(self, row: int, col: int, rows: int, cols: int) -> list[str]:
+        """Which style parts apply to one cell, lowest precedence first."""
+        active = ["wholeTbl"]
+        if self._flags.get("bandRow") and not (
+            self._flags.get("firstRow") and row == 0
+        ) and not (self._flags.get("lastRow") and row == rows - 1):
+            body = row - (1 if self._flags.get("firstRow") else 0)
+            active.append("band1H" if body % 2 == 0 else "band2H")
+        if self._flags.get("bandCol"):
+            body = col - (1 if self._flags.get("firstCol") else 0)
+            active.append("band1V" if body % 2 == 0 else "band2V")
+        if self._flags.get("firstCol") and col == 0:
+            active.append("firstCol")
+        if self._flags.get("lastCol") and col == cols - 1:
+            active.append("lastCol")
+        if self._flags.get("firstRow") and row == 0:
+            active.append("firstRow")
+        if self._flags.get("lastRow") and row == rows - 1:
+            active.append("lastRow")
+        return [p for p in _TBL_STYLE_ORDER if p in active]
+
+    def text_color(self, row, col, rows, cols) -> str | None:
+        for part in self._parts(row, col, rows, cols):
+            node = self._style.find(qn(f"a:{part}"))
+            if node is None:
+                continue
+            txs = node.find(qn("a:tcTxStyle"))
+            if txs is None:
+                continue
+            hexval = self._resolver.resolve(_first_color_child(txs))
+            if hexval:
+                return hexval
+        return None
+
+    def fill(self, row, col, rows, cols) -> str | None:
+        for part in self._parts(row, col, rows, cols):
+            node = self._style.find(qn(f"a:{part}"))
+            if node is None:
+                continue
+            fill = node.find(f"{qn('a:tcStyle')}/{qn('a:fill')}")
+            if fill is None:
+                continue
+            solid = fill.find(qn("a:solidFill"))
+            if solid is not None:
+                hexval = self._resolver.resolve(_first_color_child(solid))
+                if hexval:
+                    return hexval
+            if fill.find(qn("a:noFill")) is not None:
+                return _TRANSPARENT
+        return None
+
+
+def _table_style_for(ctx: "_SlideCtx", tbl: etree._Element):
+    """The deck-local style backing one table, or None when the style is a
+    built-in referenced only by GUID (the common case)."""
+    part = "ppt/tableStyles.xml"
+    if not ctx.pkg.has_part(part):
+        return None
+    try:
+        lst = ctx.pkg.root(part)
+    except (KeyError, PptMcpError):
+        return None
+    tblpr = tbl.find(qn("a:tblPr"))
+    style_id = None
+    if tblpr is not None:
+        node = tblpr.find(qn("a:tableStyleId"))
+        if node is not None and node.text:
+            style_id = node.text.strip()
+    if style_id is None:
+        style_id = lst.get("def")
+    if style_id is None:
+        return None
+    for style in lst.findall(qn("a:tblStyle")):
+        if (style.get("styleId") or "").strip() == style_id:
+            flags = {
+                flag: (tblpr.get(flag) == "1") if tblpr is not None else False
+                for flag in (
+                    "firstRow", "lastRow", "firstCol", "lastCol",
+                    "bandRow", "bandCol",
+                )
+            }
+            return _TableStyle(style, flags, ctx.resolver())
+    return None
 
 
 def _cell_fill_hex(
@@ -1436,6 +1611,7 @@ def _worst_run(
     resolver: _ColorResolver,
     min_ratio: float,
     large_min: float,
+    fallback: tuple[str, str] | None = None,
 ) -> dict | None:
     worst: dict | None = None
     for p in paragraphs:
@@ -1444,7 +1620,7 @@ def _worst_run(
             if t is None or not (t.text or "").strip():
                 continue
             fg_hex, size, bold, source = _run_text_color(
-                r, p, body, resolver, ctx, elem
+                r, p, body, resolver, ctx, elem, fallback
             )
             if fg_hex is None:
                 continue
@@ -1466,6 +1642,12 @@ def _worst_run(
     return worst
 
 
+#: Colour sources that are a FALLBACK, not a reading. The governing part
+#: is out of reach (a built-in table style, a placeholder chain that runs
+#: dry), so the colour is the theme's default rather than the slide's.
+_GUESSED_SOURCES = {"theme default", "unresolved"}
+
+
 def _contrast_finding(ctx, s, worst, bg_hex) -> dict:
     suggested = "000000" if _rel_luminance(bg_hex) > 0.35 else "FFFFFF"
     severity = "error" if worst["ratio"] < 2.0 else "warning"
@@ -1473,6 +1655,29 @@ def _contrast_finding(ctx, s, worst, bg_hex) -> dict:
         "" if worst["source"] == "run"
         else f", colour from the {worst['source']}"
     )
+    if worst["source"] in _GUESSED_SOURCES:
+        # A check must never fabricate a gate-severity failure out of a
+        # colour it had to guess. An ordinary dark-header table built with
+        # this server's own tools used to come back as an ERROR reading
+        # "text #000000 on #1F3864" when the header text is white: the
+        # fill was explicit, the text colour lived in the built-in table
+        # style, and the fallback to tx1 invented the black. "Cannot know"
+        # is a result, and it is an info.
+        return ctx.finding(
+            "contrast",
+            "info",
+            f"{_label(s)}: text on #{bg_hex} could NOT be checked, because "
+            f"its colour is not stated anywhere this read can reach "
+            f"({worst['sample']!r}); the theme default would give "
+            f"{round(worst['ratio'], 2)}:1, which is a guess, not a finding",
+            f"export_slide_image(slide={ctx.rec['index']}) and look, or "
+            f"format_text(slide={ctx.rec['index']}, shape={s['id']}, "
+            f'color="{suggested}") to state it',
+            shape_ids=[s["id"]],
+            reason="unresolved_colour_source",
+            fill_color=bg_hex,
+            color_source=worst["source"],
+        )
     return ctx.finding(
         "contrast",
         severity,
@@ -1570,31 +1775,54 @@ def _check_table_contrast(
     tbl = table_element(s["elem"])
     if tbl is None:
         return []
+    # A style DEFINED in tableStyles.xml is readable, so its cell colours
+    # are resolved rather than guessed. A built-in style is referenced by
+    # GUID only and its definition is not in the file, which is what the
+    # unresolved path below is for.
+    style = _table_style_for(ctx, tbl)
+    rows = tbl.findall(qn("a:tr"))
+    row_count = len(rows)
+    col_count = len(tbl.findall(f"{qn('a:tblGrid')}/{qn('a:gridCol')}"))
+
     worst: dict | None = None
     worst_bg = None
     unresolved = 0
-    for tc in tbl.iter(qn("a:tc")):
-        body = tc.find(qn("a:txBody"))
-        if body is None:
-            continue
-        paragraphs = body.findall(qn("a:p"))
-        if not any(
-            (t.text or "").strip()
-            for p in paragraphs for t in p.iter(qn("a:t"))
-        ):
-            continue
-        bg_hex, reason = _cell_fill_hex(tc, resolver)
-        if bg_hex == _TRANSPARENT:
-            bg_hex, reason = _backdrop_hex(s, ctx, resolver)
-        if reason or bg_hex is None:
-            unresolved += 1
-            continue
-        cell_worst = _worst_run(
-            ctx, s["elem"], body, paragraphs, bg_hex, resolver,
-            min_ratio, large_min,
-        )
-        if cell_worst and (worst is None or cell_worst["ratio"] < worst["ratio"]):
-            worst, worst_bg = cell_worst, bg_hex
+    for row_i, tr in enumerate(rows):
+        for col_i, tc in enumerate(tr.findall(qn("a:tc"))):
+            body = tc.find(qn("a:txBody"))
+            if body is None:
+                continue
+            paragraphs = body.findall(qn("a:p"))
+            if not any(
+                (t.text or "").strip()
+                for p in paragraphs for t in p.iter(qn("a:t"))
+            ):
+                continue
+            bg_hex, reason = _cell_fill_hex(tc, resolver)
+            if reason and style is not None:
+                styled = style.fill(row_i, col_i, row_count, col_count)
+                if styled is not None:
+                    bg_hex, reason = styled, None
+            if bg_hex == _TRANSPARENT:
+                bg_hex, reason = _backdrop_hex(s, ctx, resolver)
+            if reason or bg_hex is None:
+                unresolved += 1
+                continue
+            fallback = None
+            if style is not None:
+                styled_text = style.text_color(
+                    row_i, col_i, row_count, col_count
+                )
+                if styled_text:
+                    fallback = (styled_text, "table style")
+            cell_worst = _worst_run(
+                ctx, s["elem"], body, paragraphs, bg_hex, resolver,
+                min_ratio, large_min, fallback,
+            )
+            if cell_worst and (
+                worst is None or cell_worst["ratio"] < worst["ratio"]
+            ):
+                worst, worst_bg = cell_worst, bg_hex
     out = []
     if worst is not None:
         out.append(_contrast_finding(ctx, s, worst, worst_bg))
@@ -1725,10 +1953,15 @@ def check_layout(pkg: PptxPackage, slide=None, checks=None, *,
     plan = _normalize_checks(checks)
     recs = slides_in_scope(pkg, slide)
     findings: list[dict] = []
+    stats: dict[str, dict[str, int]] = {}
     for rec in recs:
         ctx = _SlideCtx(pkg, rec)
         for name, opts in plan:
             findings.extend(_CHECK_FNS[name](ctx, opts))
+        for check, counters in ctx.stats.items():
+            bucket = stats.setdefault(check, {})
+            for key, value in counters.items():
+                bucket[key] = bucket.get(key, 0) + value
     findings.sort(
         key=lambda f: (_SEV_RANK.get(f["severity"], 3), f["slide_index"])
     )
@@ -1749,6 +1982,10 @@ def check_layout(pkg: PptxPackage, slide=None, checks=None, *,
         "by_check": summary,
     }
     tail = {
+        "checks": [
+            {"check": name, "caveat": CHECKS[name][1], **stats.get(name, {})}
+            for name, _o in plan
+        ],
         "caveats": {name: CHECKS[name][1] for name, _o in plan},
         "note": (
             "static-XML heuristics, not a renderer; for final visual "
