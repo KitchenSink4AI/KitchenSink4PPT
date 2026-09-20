@@ -61,6 +61,9 @@ _OPS: dict[str, tuple[set[str], set[str]]] = {
     ),
 }
 _LOCATION_KEYS = {"anchor", "slide", "shape", "table"}
+#: format_text's vertical-anchor vocabulary. Seeing one of these under the
+#: `anchor` key means the caller wanted text_anchor, not a view address.
+_TEXT_ANCHOR_WORDS = {"top", "middle", "center", "bottom"}
 # ops that address one shape (anchor or slide+shape)
 _SHAPE_OPS = {"set_text", "set_shape", "format_text", "delete_shape"}
 
@@ -109,6 +112,20 @@ def _resolve_one(pkg: PptxPackage, edit: dict) -> dict:
 
     # Shape- and table-addressed ops: anchor or explicit keys.
     if "anchor" in edit:
+        # An agent reads format_text(anchor="middle") and writes it here,
+        # where `anchor` already means the view anchor that ADDRESSES the
+        # shape. It refused correctly, with a message about anchor grammar
+        # that named no way forward.
+        if op == "format_text" and isinstance(edit["anchor"], str) and (
+            edit["anchor"].strip().lower() in _TEXT_ANCHOR_WORDS
+        ):
+            raise PptMcpError(
+                f'op \'format_text\' got anchor={edit["anchor"]!r}, which '
+                'reads as the VIEW anchor that addresses a shape. The '
+                'vertical text anchor rides as "text_anchor" here: '
+                f'{{"op": "format_text", ..., "text_anchor": '
+                f'{edit["anchor"]!r}}}'
+            )
         info = _view.resolve_anchor(pkg, edit["anchor"])
         if info["kind"] == "slide":
             raise PptMcpError(
