@@ -754,8 +754,13 @@ def _apply_rpr(rpr: etree._Element, style: dict) -> None:
     if "color" in style:
         rpr.append(solid_fill(style["color"]))
     if "font" in style:
-        latin = etree.SubElement(rpr, qn("a:latin"))
-        latin.set("typeface", str(style["font"]))
+        # CJK glyphs render through a:ea and complex scripts through a:cs,
+        # so a latin-only write hands those runs to the theme's minor font
+        # while claiming the typeface was set. ops/text.py's rPr writer
+        # already mirrors all three; this one did not.
+        for tag in ("a:latin", "a:ea", "a:cs"):
+            el = etree.SubElement(rpr, qn(tag))
+            el.set("typeface", str(style["font"]))
 
 
 # ------------------------------------------------------------ style + order

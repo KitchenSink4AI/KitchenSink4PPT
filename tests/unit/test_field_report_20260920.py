@@ -234,3 +234,148 @@ def test_unknown_fill_keys_refuse_instead_of_dropping():
     # the spelled-right keys still work
     assert geo.fill_element({"type": "solid", "color": "FF0000",
                              "alpha": 0.5}) is not None
+
+
+# --------------------------------------------------------------- #875
+
+
+def _styled_body(pkg, slide, shape_id):
+    """Give a shape a body worth preserving: left-aligned, bullets off,
+    dark-navy runs in Arial across three paragraphs."""
+    from kitchensink4ppt.ops import text as txt
+
+    txt.set_placeholder_text  # noqa: B018  (import guard, see set_text below)
+    from kitchensink4ppt.core.package import qn as _qn
+    from kitchensink4ppt.ops.read import get_slide_info
+    from kitchensink4ppt.ops import shapes as shp
+
+    part = get_slide_info(pkg, slide)["part"]
+    elem, _chain = shp._find_shape(pkg, part, shape_id)
+    body = elem.find(_qn("p:txBody"))
+    for child in list(body.findall(_qn("a:p"))):
+        body.remove(child)
+    bodypr = body.find(_qn("a:bodyPr"))
+    bodypr.set("anchor", "t")
+    for line in ("First", "Second", "Third"):
+        p = etree.SubElement(body, _qn("a:p"))
+        ppr = etree.SubElement(p, _qn("a:pPr"))
+        ppr.set("algn", "l")
+        ppr.set("lvl", "1")
+        etree.SubElement(ppr, _qn("a:buNone"))
+        r = etree.SubElement(p, _qn("a:r"))
+        rpr = etree.SubElement(r, _qn("a:rPr"))
+        rpr.set("lang", "en-US")
+        rpr.set("sz", "1800")
+        fill = etree.SubElement(rpr, _qn("a:solidFill"))
+        clr = etree.SubElement(fill, _qn("a:srgbClr"))
+        clr.set("val", "1F3864")
+        for tag in ("a:latin", "a:ea", "a:cs"):
+            el = etree.SubElement(rpr, _qn(tag))
+            el.set("typeface", "Arial")
+        t = etree.SubElement(r, _qn("a:t"))
+        t.text = line
+    return body
+
+
+def _first_rpr(pkg, slide, shape_id, para: int = 0):
+    from kitchensink4ppt.core.package import qn as _qn
+    from kitchensink4ppt.ops.read import get_slide_info
+    from kitchensink4ppt.ops import shapes as shp
+
+    part = get_slide_info(pkg, slide)["part"]
+    elem, _chain = shp._find_shape(pkg, part, shape_id)
+    body = elem.find(_qn("p:txBody"))
+    p = body.findall(_qn("a:p"))[para]
+    return p.find(f"{_qn('a:r')}/{_qn('a:rPr')}"), p.find(_qn("a:pPr")), body
+
+
+def test_retext_keeps_run_colour_alignment_bullets_and_anchor(drawable):
+    """#875 items 1 and 2: a plain text replacement re-centred paragraphs,
+    put bullets back where set_bullets(style="none") had removed them,
+    reset the vertical anchor, and dropped explicit run colour, all with
+    nothing but changed: ["text"] to show for it."""
+    from kitchensink4ppt.core.package import qn as _qn
+    from kitchensink4ppt.ops import shapes as shp
+
+    pkg, slide = drawable
+    sid = shp.insert_shape(pkg, slide, "rect", 1, 1, 6, 3, text="x")["shape_id"]
+    _styled_body(pkg, slide, sid)
+
+    res = shp.set_shape(pkg, slide, sid, text="One\nTwo\nThree")
+    rpr, ppr, body = _first_rpr(pkg, slide, sid)
+
+    assert ppr.get("algn") == "l", "paragraph was re-aligned"
+    assert ppr.get("lvl") == "1", "outline level was dropped"
+    assert ppr.find(_qn("a:buNone")) is not None, "bullets came back"
+    assert body.find(_qn("a:bodyPr")).get("anchor") == "t"
+    clr = rpr.find(f"{_qn('a:solidFill')}/{_qn('a:srgbClr')}")
+    assert clr is not None and clr.get("val") == "1F3864"
+    assert rpr.get("sz") == "1800"
+    assert rpr.find(_qn("a:latin")).get("typeface") == "Arial"
+    # and the result says what it carried rather than staying silent
+    assert set(res["preserved"]) >= {"alignment", "bullets", "run_color"}
+
+
+def test_retext_still_applies_what_the_caller_did_name(drawable):
+    """#875 guard: preservation is not stickiness. A named key wins."""
+    from kitchensink4ppt.core.package import qn as _qn
+    from kitchensink4ppt.ops import shapes as shp
+
+    pkg, slide = drawable
+    sid = shp.insert_shape(pkg, slide, "rect", 1, 1, 6, 3, text="x")["shape_id"]
+    _styled_body(pkg, slide, sid)
+
+    shp.set_shape(
+        pkg, slide, sid, text="One",
+        text_style={"align": "center", "color": "C00000", "size": 32,
+                    "anchor": "middle"},
+    )
+    rpr, ppr, body = _first_rpr(pkg, slide, sid)
+    assert ppr.get("algn") == "ctr"
+    assert body.find(_qn("a:bodyPr")).get("anchor") == "ctr"
+    assert rpr.get("sz") == "3200"
+    clr = rpr.find(f"{_qn('a:solidFill')}/{_qn('a:srgbClr')}")
+    assert clr.get("val") == "C00000"
+    # untouched properties still ride through
+    assert ppr.find(_qn("a:buNone")) is not None
+    assert rpr.find(_qn("a:latin")).get("typeface") == "Arial"
+
+
+def test_apply_edits_set_text_preserves_the_same_properties(drawable, tmp_path):
+    """#875 item 2 reached the deck through apply_edits' set_text op, which
+    is the route that put bullet glyphs back on a defense deck's closing
+    slide after they had been explicitly removed."""
+    from kitchensink4ppt.core.package import qn as _qn
+    from kitchensink4ppt.ops import batch, shapes as shp
+
+    pkg, slide = drawable
+    sid = shp.insert_shape(pkg, slide, "rect", 1, 1, 6, 3, text="x")["shape_id"]
+    _styled_body(pkg, slide, sid)
+
+    batch.apply_edits(pkg, [{
+        "op": "set_text", "slide": slide, "shape": sid,
+        "text": "Thank you",
+    }])
+    rpr, ppr, _body = _first_rpr(pkg, slide, sid)
+    assert ppr.get("algn") == "l"
+    assert ppr.find(_qn("a:buNone")) is not None
+    assert rpr.find(f"{_qn('a:solidFill')}/{_qn('a:srgbClr')}").get(
+        "val") == "1F3864"
+
+
+def test_text_style_font_writes_ea_and_cs_not_only_latin(drawable):
+    """#875 item 3: a latin-only write hands CJK and complex-script runs to
+    the theme's minor font while reporting the typeface as set."""
+    from kitchensink4ppt.core.package import qn as _qn
+    from kitchensink4ppt.ops import shapes as shp
+
+    pkg, slide = drawable
+    sid = shp.insert_shape(
+        pkg, slide, "rect", 1, 1, 4, 1, text="Delta",
+        text_style={"font": "Georgia", "size": 18},
+    )["shape_id"]
+    rpr, _ppr, _body = _first_rpr(pkg, slide, sid)
+    for tag in ("a:latin", "a:ea", "a:cs"):
+        el = rpr.find(_qn(tag))
+        assert el is not None, f"{tag} was not written"
+        assert el.get("typeface") == "Georgia"
