@@ -2158,3 +2158,56 @@ def test_normalizing_does_not_widen_what_matches(drawable):
     assert [f for f in result["findings"] if f.get("group_id") == grp], (
         "an unaccented word swallowed an accented name"
     )
+
+
+# ------------------------------------ MINOR-Q: bad exclude_names entries
+
+@pytest.mark.parametrize("bad", [123, None, 4.5, ["band"], {"w": "band"}])
+def test_a_non_string_in_exclude_names_refuses_instead_of_crashing(
+    drawable, bad
+):
+    """MINOR-Q: the container was validated and the ELEMENTS were not, so
+    exclude_names=[123] reached w.casefold() and raised a raw
+    AttributeError: 'int' object has no attribute 'casefold' -- precisely
+    the raw-exception-instead-of-a-refusal that slide_size was just tidied
+    for, one module over."""
+    from kitchensink4ppt.core.errors import PptMcpError
+    from kitchensink4ppt.ops import design_check as dc
+
+    pkg, slide = drawable
+    _grouped_pair(pkg, slide, "band one", "band two")
+    with pytest.raises(PptMcpError) as exc:
+        dc.check_layout(pkg, slide=slide, checks=[
+            {"check": "overlap", "exclude_names": [bad]}])
+    message = str(exc.value)
+    assert "exclude_names" in message
+    assert repr(bad) in message
+    assert type(bad).__name__ in message
+
+
+def test_a_bare_string_exclude_names_is_one_word_not_four_letters(drawable):
+    """MINOR-Q, same two lines: list("band") spelled the request out into
+    the four one-letter words b, a, n and d, so a shape named "a" would
+    have been excluded and a shape named "band" would not."""
+    from kitchensink4ppt.ops import design_check as dc
+
+    pkg, slide = drawable
+    grp = _grouped_pair(pkg, slide, "band one", "band two")
+    result = dc.check_layout(pkg, slide=slide, checks=[
+        {"check": "overlap", "exclude_names": "band"}])
+    assert not [f for f in result["findings"] if f.get("group_id") == grp]
+    overlap = next(c for c in result["checks"] if c["check"] == "overlap")
+    assert overlap["suppressed_by_exclude_names"] == 2
+
+
+def test_a_good_exclude_names_list_is_untouched_by_the_element_check(
+    drawable
+):
+    """MINOR-Q guard: the refusal is for the bad entry only."""
+    from kitchensink4ppt.ops import design_check as dc
+
+    pkg, slide = drawable
+    grp = _grouped_pair(pkg, slide, "tick one", "tick two")
+    result = dc.check_layout(pkg, slide=slide, checks=[
+        {"check": "overlap", "exclude_names": ["tick", "rule"]}])
+    assert not [f for f in result["findings"] if f.get("group_id") == grp]
