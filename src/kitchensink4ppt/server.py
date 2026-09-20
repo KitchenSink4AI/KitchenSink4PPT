@@ -2479,7 +2479,7 @@ def create_presentation(
     path: str,
     template: str | None = None,
     keep_slides: bool = False,
-    slide_size: str = "16:9",
+    slide_size: str | None = None,
 ) -> dict:
     """Create a NEW .pptx. With template: a byte-copy of that deck so its
     theme colors, fonts, layouts, masters, and slide size all carry over,

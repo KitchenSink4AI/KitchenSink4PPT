@@ -1152,7 +1152,12 @@ def test_a_stale_autofit_scale_does_not_ride_onto_the_new_text(drawable):
     assert na is not None, "the autofit MODE was dropped; only the numbers go"
     assert na.get("fontScale") is None, "a stale fontScale rode onto new text"
     assert na.get("lnSpcReduction") is None
-    assert res.get("autofit_scale_reset") is True
+    # MINOR-L: the flag carries the COST, because PowerPoint does not
+    # recompute on open and the frame's fit is now genuinely unknown.
+    note = res.get("autofit_scale_reset")
+    assert isinstance(note, str) and note
+    assert "does not recompute" in note
+    assert "fit_text" in note
 
 
 def test_the_autofit_mode_itself_survives_a_retext(drawable):
@@ -1921,3 +1926,185 @@ def test_a_dark_header_from_a_deck_local_style_is_not_a_false_error(drawable):
     bad = [f for f in findings
            if sid in f["shape_ids"] and f["severity"] in ("error", "warning")]
     assert bad == [], f"fabricated a failure from an inverted style: {bad}"
+
+
+def test_an_autofit_scaled_explicit_size_is_not_called_inherited(drawable):
+    """MINOR-M: appending ", shrunk by autofit" to the SOURCE string made
+    it unequal to "run", which is the test the finding uses to decide
+    whether a size was inherited. A size written on the slide as sz="2800"
+    came back inherited_size=true, sending the caller to the layout for a
+    fix that belongs on the slide, under an ungrammatical sentence
+    ("inherited from the run, shrunk by autofit text style")."""
+    from kitchensink4ppt.core.package import qn as _qn
+    from kitchensink4ppt.ops import design_check as dc
+
+    pkg, slide = drawable
+    sid = _mk(pkg, slide, text="A body line long enough to count as body.",
+              text_style={"size": 28})
+    _r, body = _rpr(pkg, slide, sid)
+    na = etree.SubElement(body.find(_qn("a:bodyPr")), _qn("a:normAutofit"))
+    na.set("fontScale", "25000")
+
+    hit = [f for f in dc.check_layout(pkg, slide=slide,
+                                      checks=["tiny_text"])["findings"]
+           if sid in f["shape_ids"]]
+    assert hit
+    f = hit[0]
+    assert f["sizes_pt"] == [7.0]
+    assert f["size_sources"] == ["run"], f["size_sources"]
+    assert f["inherited_size"] is False
+    assert f["autofit_scale"] == 0.25
+    assert "inherited from" not in f["message"]
+    assert "shrunk to 25% of the written size" in f["message"]
+
+
+def test_an_unscaled_finding_carries_no_autofit_field(drawable):
+    """MINOR-M guard: the field is a fact, present only when it applies."""
+    from kitchensink4ppt.ops import design_check as dc
+
+    pkg, slide = drawable
+    sid = _mk(pkg, slide, text="A body line long enough to count as body.",
+              text_style={"size": 6})
+    hit = [f for f in dc.check_layout(pkg, slide=slide,
+                                      checks=["tiny_text"])["findings"]
+           if sid in f["shape_ids"]]
+    assert hit
+    assert "autofit_scale" not in hit[0]
+    assert hit[0]["inherited_size"] is False
+
+
+def test_an_inherited_size_that_is_also_scaled_says_both(drawable,
+                                                         inheriting_placeholder):
+    """MINOR-M: the two facts are independent and both get stated."""
+    from kitchensink4ppt.core.package import qn as _qn
+    from kitchensink4ppt.ops import design_check as dc
+    from kitchensink4ppt.ops.read import get_slide_info
+    from kitchensink4ppt.ops import shapes as shp
+
+    pkg, slide, _sid = inheriting_placeholder
+    part = get_slide_info(pkg, slide)["part"]
+    _master_body_size(pkg, part, 20.0)
+    tree = pkg.root(part).find(f"{_qn('p:cSld')}/{_qn('p:spTree')}")
+    target = None
+    for sp in tree.iter(_qn("p:sp")):
+        ph = sp.find(f"{_qn('p:nvSpPr')}/{_qn('p:nvPr')}/{_qn('p:ph')}")
+        if ph is None or (ph.get("type") or "body") in ("title", "ctrTitle"):
+            continue
+        body = sp.find(_qn("p:txBody"))
+        for p in list(body.findall(_qn("a:p"))):
+            body.remove(p)
+        p = etree.SubElement(body, _qn("a:p"))
+        r = etree.SubElement(p, _qn("a:r"))
+        etree.SubElement(r, _qn("a:rPr")).set("lang", "en-US")
+        etree.SubElement(r, _qn("a:t")).text = (
+            "A body line long enough not to read as a short label."
+        )
+        na = etree.SubElement(body.find(_qn("a:bodyPr")), _qn("a:normAutofit"))
+        na.set("fontScale", "50000")
+        target = shp._shape_id(sp)
+        break
+    if target is None:
+        pytest.skip("the generated layout has no body placeholder")
+
+    hit = [f for f in dc.check_layout(pkg, slide=slide,
+                                      checks=["tiny_text"])["findings"]
+           if target in f["shape_ids"]]
+    assert hit
+    assert hit[0]["inherited_size"] is True
+    assert hit[0]["autofit_scale"] == 0.5
+    assert "inherited from" in hit[0]["message"]
+    assert "shrunk to 50%" in hit[0]["message"]
+
+
+# ------------------------------------------------------- MINOR-N, MINOR-O
+
+
+@pytest.mark.parametrize("name_a,name_b,word", [
+    ("밴드 하나", "밴드 둘", "밴드"),          # Korean
+    ("バンド one", "バンド two", "バンド"),     # Japanese
+    ("полоса one", "полоса two", "полоса"),  # Cyrillic
+    ("bänd eins", "bänd zwei", "bänd"),      # accented Latin
+])
+def test_exclude_names_works_for_non_ascii_shape_names(drawable, name_a,
+                                                       name_b, word):
+    """MINOR-N: the tokenizer was [a-z0-9]+, so it dropped every character
+    outside ASCII. A shape named "밴드 one" tokenized to {"one"} and an
+    exclusion word of "밴드" tokenized to nothing, which put the whole
+    option out of reach for anyone naming shapes in Korean, Japanese,
+    Chinese, Cyrillic or accented Latin."""
+    from kitchensink4ppt.ops import design_check as dc
+
+    pkg, slide = drawable
+    grp = _grouped_pair(pkg, slide, name_a, name_b)
+    result = dc.check_layout(pkg, slide=slide, checks=[
+        {"check": "overlap", "exclude_names": [word]}])
+    assert not [f for f in result["findings"] if f.get("group_id") == grp]
+    overlap = next(c for c in result["checks"] if c["check"] == "overlap")
+    assert overlap["suppressed_by_exclude_names"] == 2
+
+
+def test_non_ascii_exclusion_is_case_insensitive_where_case_exists(drawable):
+    """MINOR-N: casefold, not lower, because casefold is the
+    case-insensitive comparison Unicode actually defines."""
+    from kitchensink4ppt.ops import design_check as dc
+
+    pkg, slide = drawable
+    grp = _grouped_pair(pkg, slide, "STRASSE one", "Straße two")
+    result = dc.check_layout(pkg, slide=slide, checks=[
+        {"check": "overlap", "exclude_names": ["strasse"]}])
+    assert not [f for f in result["findings"] if f.get("group_id") == grp]
+
+
+def test_a_non_ascii_name_outside_the_list_is_still_checked(drawable):
+    """MINOR-N guard: the fix widens what CAN match, not what does."""
+    from kitchensink4ppt.ops import design_check as dc
+
+    pkg, slide = drawable
+    grp = _grouped_pair(pkg, slide, "상자 하나", "상자 둘")
+    result = dc.check_layout(pkg, slide=slide, checks=[
+        {"check": "overlap", "exclude_names": ["밴드"]}])
+    assert [f for f in result["findings"] if f.get("group_id") == grp]
+
+
+def test_an_explicit_16_9_beside_a_template_refuses(tmp_path):
+    """MINOR-O: the guard was `slide_size != "16:9"` and "16:9" was also
+    the default, so the function could not tell "not passed" from
+    "explicitly asked for 16:9". A 4:3 template plus slide_size="16:9"
+    returned a 4:3 deck with no refusal and no warning: the one
+    combination in the whole argument that lost without a word."""
+    from pptx import Presentation as _Prs
+    from kitchensink4ppt.core.errors import PptMcpError
+    from kitchensink4ppt.ops import slides as sl
+
+    template = tmp_path / "t43.pptx"
+    _Prs().save(str(template))
+    out = tmp_path / "from_t.pptx"
+    with pytest.raises(PptMcpError) as exc:
+        sl.create_presentation(out, template=template, slide_size="16:9")
+    assert "set_slide_size" in str(exc.value)
+    assert not out.exists(), "a refusal left a file behind"
+
+
+def test_a_template_with_no_slide_size_still_works(tmp_path):
+    """MINOR-O guard: not passing it keeps the template's canvas."""
+    from pptx import Presentation as _Prs
+    from kitchensink4ppt.ops import slides as sl
+
+    template = tmp_path / "t43b.pptx"
+    _Prs().save(str(template))
+    res = sl.create_presentation(tmp_path / "ok.pptx", template=template)
+    assert res["slide_size"]["cx"] == 9144000
+
+
+@pytest.mark.parametrize("bad", [["4:3"], {"preset": "4:3"}, {"4:3"}])
+def test_an_unhashable_slide_size_refuses_like_everything_else(tmp_path, bad):
+    """Tidy: a list or a dict raised a raw TypeError: unhashable from the
+    membership test instead of the refusal every other bad value gets."""
+    from kitchensink4ppt.core.errors import PptMcpError
+    from kitchensink4ppt.ops import slides as sl
+
+    out = tmp_path / f"u{abs(hash(str(bad)))}.pptx"
+    with pytest.raises(PptMcpError) as exc:
+        sl.create_presentation(out, slide_size=bad)
+    assert "4:3" in str(exc.value)
+    assert not out.exists()

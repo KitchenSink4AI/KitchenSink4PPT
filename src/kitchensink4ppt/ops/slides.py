@@ -1017,7 +1017,7 @@ def create_presentation(
     template: str | Path | None = None,
     *,
     keep_slides: bool = False,
-    slide_size: str = "16:9",
+    slide_size: str | None = None,
 ) -> dict:
     """Create a NEW .pptx at `path` from a template (.pptx or .potx). The
     template's bytes are copied, a .potx/.ppsx main content type is restamped
@@ -1041,16 +1041,24 @@ def create_presentation(
     PptxPackage edit and an atomic validated save on the NEW file only."""
     from .furniture import _SIZE_PRESETS
 
-    if slide_size not in _SIZE_PRESETS:
-        raise PptMcpError(
-            f"unknown slide_size {slide_size!r}; one of: "
-            f"{', '.join(_SIZE_PRESETS)}"
-        )
-    if template is not None and slide_size != "16:9":
+    # None is "not given", which is what lets an EXPLICIT slide_size="16:9"
+    # beside a template refuse like every other explicit value. While the
+    # default was the string "16:9" the function could not tell the two
+    # apart, so that one combination lost without a word.
+    if template is not None and slide_size is not None:
         raise PptMcpError(
             "slide_size applies to a from-scratch deck; a deck built from "
             "a template keeps the template's own canvas. Create it, then "
             "set_slide_size(preset=...) if it really has to change."
+        )
+    if slide_size is None:
+        slide_size = "16:9"
+    # An unhashable value would blow up the membership test with a raw
+    # TypeError instead of the refusal every other bad value gets.
+    if not isinstance(slide_size, str) or slide_size not in _SIZE_PRESETS:
+        raise PptMcpError(
+            f"unknown slide_size {slide_size!r}; one of: "
+            f"{', '.join(_SIZE_PRESETS)}"
         )
     dest = Path(path)
     check_path(dest, "create presentation")
