@@ -1914,7 +1914,11 @@ def _check_table_contrast(
     large_min: float,
 ) -> list[dict]:
     """Cell text against the cell's own fill. One finding for the worst
-    cell, plus at most one info when the table style holds the colours."""
+    cell, plus an info per reason a cell was declined: a built-in style
+    whose definition is not in the file, and a corner cell whose emphasis
+    flags renderers disagree about. The two were counted together and
+    both reported as the first, which told a reader to go looking for a
+    missing style part that was not the problem."""
     tbl = table_element(s["elem"])
     if tbl is None:
         return []
@@ -1930,6 +1934,7 @@ def _check_table_contrast(
     worst: dict | None = None
     worst_bg = None
     unresolved = 0
+    renderer_dependent = 0
     for row_i, tr in enumerate(rows):
         for col_i, tc in enumerate(tr.findall(qn("a:tc"))):
             body = tc.find(qn("a:txBody"))
@@ -1941,17 +1946,25 @@ def _check_table_contrast(
                 for p in paragraphs for t in p.iter(qn("a:t"))
             ):
                 continue
+            corner = False
             bg_hex, reason = _cell_fill_hex(tc, resolver)
             if reason and style is not None:
                 styled = style.fill(row_i, col_i, row_count, col_count)
                 if styled is _RENDERER_DEPENDENT:
                     reason = "corner cell renderers disagree about"
+                    corner = True
                 elif styled is not None:
                     bg_hex, reason = styled, None
             if bg_hex == _TRANSPARENT:
+                # Whatever the backdrop pass decides, it decides for its
+                # own reasons; the corner one no longer applies.
                 bg_hex, reason = _backdrop_hex(s, ctx, resolver)
+                corner = False
             if reason or bg_hex is None:
-                unresolved += 1
+                if corner:
+                    renderer_dependent += 1
+                else:
+                    unresolved += 1
                 continue
             fallback = None
             if style is not None:
@@ -1959,7 +1972,7 @@ def _check_table_contrast(
                     row_i, col_i, row_count, col_count
                 )
                 if styled_text is _RENDERER_DEPENDENT:
-                    unresolved += 1
+                    renderer_dependent += 1
                     continue
                 if styled_text:
                     fallback = (styled_text, "table style")
@@ -1974,20 +1987,30 @@ def _check_table_contrast(
     out = []
     if worst is not None:
         out.append(_contrast_finding(ctx, s, worst, worst_bg))
-    if unresolved:
+    remedy = (
+        f"export_slide_image(slide={ctx.rec['index']}) and look, or "
+        f"format_table_cells(slide={ctx.rec['index']}, "
+        f"table={s['id']}, ..., fill=...) to set explicit cell fills"
+    )
+    # One finding per REASON. A declined corner used to be counted with
+    # the built-in-style cells and reported as one of them, so the
+    # message named a missing style part that was not the problem.
+    for count, what in (
+        (unresolved, "cell(s) whose fill comes from the table style part"),
+        (renderer_dependent,
+         "corner cell(s) whose emphasis flags renderers disagree about"),
+    ):
+        if not count:
+            continue
         out.append(
             ctx.finding(
                 "contrast",
                 "info",
-                f"{_label(s)} has {unresolved} cell(s) whose fill comes "
-                "from the table style part, which this check does not "
-                "resolve; their contrast was NOT checked",
-                f"export_slide_image(slide={ctx.rec['index']}) and look, or "
-                f"format_table_cells(slide={ctx.rec['index']}, "
-                f"table={s['id']}, ..., fill=...) to set explicit cell "
-                "fills",
+                f"{_label(s)} has {count} {what}, which this check does "
+                "not resolve; their contrast was NOT checked",
+                remedy,
                 shape_ids=[s["id"]],
-                unresolved_cells=unresolved,
+                unresolved_cells=count,
             )
         )
     return out
