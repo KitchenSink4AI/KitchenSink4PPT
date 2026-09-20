@@ -203,9 +203,13 @@ CHECKS: dict[str, tuple[dict, str]] = {
         "fillRef), otherwise every shape beneath the text's centre "
         "composited by z down to the slide background, alpha included. "
         "Table cells are judged against their own tcPr fill, falling back "
-        "to a table style DEFINED in tableStyles.xml; PowerPoint's "
-        "built-in styles are referenced by GUID and their definitions are "
-        "not in the file, so those stay unresolved. A backdrop that cannot "
+        "to a table style DEFINED in tableStyles.xml, whose parts layer in "
+        "the ECMA-376 CT_TableStyle order (wholeTbl, row bands, column "
+        "bands, last/first column, last row, first row, corner cells, each "
+        "beating the one before). PowerPoint's built-in styles are "
+        "referenced by GUID and their definitions are not in the file, so "
+        "those stay unresolved, as does a corner cell whose emphasis flags "
+        "renderers disagree about. A backdrop that cannot "
         "be resolved to a colour, and a run whose colour is not stated "
         "anywhere this read can reach, are reported as info findings "
         "(reason unresolved_colour_source) and NEVER as a failure: a gate "
@@ -1470,13 +1474,41 @@ def _run_text_color(
     return hexval, size, bool(bold), source
 
 
-#: tblStyle parts, lowest precedence first. PowerPoint layers wholeTbl,
-#: then banding, then the first/last COLUMN, then the first/last ROW, so a
-#: header row beats a banded column where they meet.
+#: tblStyle parts in ASCENDING precedence, which is exactly the child
+#: sequence ECMA-376 Part 1 gives CT_TableStyle (20.1.4.2.26): later in
+#: the sequence wins. Confirmed by rendering a deck-local style whose
+#: every part declares a different fill and sampling the pixels: a header
+#: row beats a column band, a column band beats a row band, first/last
+#: column beats both bands, and a corner cell beats everything.
+#:
+#: The round-2 version of this list was walked FIRST-match, so wholeTbl
+#: beat every emphasis part and the resolver reported white-on-white where
+#: the renderer paints a navy header. Read it highest-first (see _parts).
 _TBL_STYLE_ORDER = (
-    "wholeTbl", "band2H", "band1H", "band2V", "band1V",
-    "lastCol", "firstCol", "lastRow", "firstRow",
+    "wholeTbl",
+    "band1H", "band2H", "band1V", "band2V",
+    "lastCol", "firstCol", "lastRow",
+    "seCell", "swCell",
+    "firstRow",
+    "neCell", "nwCell",
 )
+
+#: A corner part and the two emphases that switch it on. ECMA and
+#: PowerPoint treat a corner as the INTERSECTION of a row emphasis and a
+#: column emphasis; LibreOffice paints corners whatever the flags say
+#: (measured). _TableStyle refuses to pick a side where they disagree.
+_TBL_CORNERS = {
+    "nwCell": ("firstRow", "firstCol"),
+    "neCell": ("firstRow", "lastCol"),
+    "swCell": ("lastRow", "firstCol"),
+    "seCell": ("lastRow", "lastCol"),
+}
+
+#: Sentinel: the cell's colour depends on which renderer opens the deck,
+#: so this resolver declines to state one. It flows to the same
+#: unresolved path a missing style does, which downgrades the finding to
+#: info rather than asserting a colour nobody can verify statically.
+_RENDERER_DEPENDENT = object()
 
 
 class _TableStyle:
@@ -1497,28 +1529,68 @@ class _TableStyle:
         self._flags = flags
         self._resolver = resolver
 
+    def _row_emphasis(self, row: int, rows: int) -> str | None:
+        if self._flags.get("firstRow") and row == 0:
+            return "firstRow"
+        if self._flags.get("lastRow") and row == rows - 1:
+            return "lastRow"
+        return None
+
+    def _col_emphasis(self, col: int, cols: int) -> str | None:
+        if self._flags.get("firstCol") and col == 0:
+            return "firstCol"
+        if self._flags.get("lastCol") and col == cols - 1:
+            return "lastCol"
+        return None
+
     def _parts(self, row: int, col: int, rows: int, cols: int) -> list[str]:
-        """Which style parts apply to one cell, lowest precedence first."""
+        """Which style parts apply to one cell, HIGHEST precedence first.
+
+        Banding skips an emphasised first or last row (and column), which
+        is what PowerPoint does and what the render confirms: with a
+        header on, the first BODY row is band1, not band2.
+        """
         active = ["wholeTbl"]
-        if self._flags.get("bandRow") and not (
-            self._flags.get("firstRow") and row == 0
-        ) and not (self._flags.get("lastRow") and row == rows - 1):
+        row_emph = self._row_emphasis(row, rows)
+        col_emph = self._col_emphasis(col, cols)
+
+        if self._flags.get("bandRow") and row_emph is None:
             body = row - (1 if self._flags.get("firstRow") else 0)
             active.append("band1H" if body % 2 == 0 else "band2H")
-        if self._flags.get("bandCol"):
+        if self._flags.get("bandCol") and col_emph is None:
             body = col - (1 if self._flags.get("firstCol") else 0)
             active.append("band1V" if body % 2 == 0 else "band2V")
-        if self._flags.get("firstCol") and col == 0:
-            active.append("firstCol")
-        if self._flags.get("lastCol") and col == cols - 1:
-            active.append("lastCol")
-        if self._flags.get("firstRow") and row == 0:
-            active.append("firstRow")
-        if self._flags.get("lastRow") and row == rows - 1:
-            active.append("lastRow")
-        return [p for p in _TBL_STYLE_ORDER if p in active]
+        if col_emph:
+            active.append(col_emph)
+        if row_emph:
+            active.append(row_emph)
+        if row_emph and col_emph:
+            for corner, (need_row, need_col) in _TBL_CORNERS.items():
+                if need_row == row_emph and need_col == col_emph:
+                    active.append(corner)
+        # Highest precedence first, so the first part that carries a value
+        # is the one that wins. Walking this list the other way is what
+        # made wholeTbl beat everything.
+        return [p for p in reversed(_TBL_STYLE_ORDER) if p in active]
 
-    def text_color(self, row, col, rows, cols) -> str | None:
+    def _ambiguous_corner(self, row, col, rows, cols) -> bool:
+        """True when this cell sits in a geometric corner whose corner
+        part the style DEFINES, but the emphasis flags do not switch on.
+        ECMA and PowerPoint leave it alone; LibreOffice paints it. Rather
+        than pick a winner, the resolver declines to state a colour."""
+        if self._row_emphasis(row, rows) and self._col_emphasis(col, cols):
+            return False
+        for corner, (need_row, need_col) in _TBL_CORNERS.items():
+            at_row = (row == 0) if need_row == "firstRow" else (row == rows - 1)
+            at_col = (col == 0) if need_col == "firstCol" else (col == cols - 1)
+            if at_row and at_col and self._style.find(qn(f"a:{corner}")) is not None:
+                return True
+        return False
+
+    def text_color(self, row, col, rows, cols):
+        """Hex, None when the style says nothing, or _RENDERER_DEPENDENT."""
+        if self._ambiguous_corner(row, col, rows, cols):
+            return _RENDERER_DEPENDENT
         for part in self._parts(row, col, rows, cols):
             node = self._style.find(qn(f"a:{part}"))
             if node is None:
@@ -1531,7 +1603,10 @@ class _TableStyle:
                 return hexval
         return None
 
-    def fill(self, row, col, rows, cols) -> str | None:
+    def fill(self, row, col, rows, cols):
+        """Hex, _TRANSPARENT, None, or _RENDERER_DEPENDENT."""
+        if self._ambiguous_corner(row, col, rows, cols):
+            return _RENDERER_DEPENDENT
         for part in self._parts(row, col, rows, cols):
             node = self._style.find(qn(f"a:{part}"))
             if node is None:
@@ -1801,7 +1876,9 @@ def _check_table_contrast(
             bg_hex, reason = _cell_fill_hex(tc, resolver)
             if reason and style is not None:
                 styled = style.fill(row_i, col_i, row_count, col_count)
-                if styled is not None:
+                if styled is _RENDERER_DEPENDENT:
+                    reason = "corner cell renderers disagree about"
+                elif styled is not None:
                     bg_hex, reason = styled, None
             if bg_hex == _TRANSPARENT:
                 bg_hex, reason = _backdrop_hex(s, ctx, resolver)
@@ -1813,6 +1890,9 @@ def _check_table_contrast(
                 styled_text = style.text_color(
                     row_i, col_i, row_count, col_count
                 )
+                if styled_text is _RENDERER_DEPENDENT:
+                    unresolved += 1
+                    continue
                 if styled_text:
                     fallback = (styled_text, "table style")
             cell_worst = _worst_run(
