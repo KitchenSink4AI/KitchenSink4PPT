@@ -1692,3 +1692,232 @@ def test_an_unknown_slide_size_refuses_and_names_the_presets(tmp_path):
         sl.create_presentation(tmp_path / "bad.pptx", slide_size="widescreen")
     assert "4:3" in str(exc.value)
     assert not (tmp_path / "bad.pptx").exists(), "a refusal left a file behind"
+
+
+# ===================================================================
+# ROUND 3: the round-2 verification. MAJOR-L is a defect I introduced
+# in round 2, in the very resolver written to fix MAJOR-C.
+# ===================================================================
+
+
+def _styled_table(pkg, slide, rows, cols, flags, parts):
+    """A table wearing a deck-local a:tblStyle. `parts` maps a style part
+    to the colour it declares, either one hex used for BOTH text and fill
+    or a (text, fill) pair."""
+    from kitchensink4ppt.core.package import qn as _qn
+    from kitchensink4ppt.ops import tables as tb
+
+    res = tb.create_table(pkg, slide, rows=rows, cols=cols,
+                          x=0.3, y=0.3, w=9.0, h=0.4 * rows)
+    sid = res["shape_id"]
+    tb.set_table_cells(pkg, slide, {"shape_id": sid}, [
+        {"row": r, "col": c, "text": f"r{r}c{c}"}
+        for r in range(rows) for c in range(cols)
+    ])
+    tbl = tb.resolve_table(pkg, slide, {"shape_id": sid})["tbl"]
+    tblpr = tbl.find(_qn("a:tblPr"))
+    for flag in ("firstRow", "lastRow", "firstCol", "lastCol",
+                 "bandRow", "bandCol"):
+        if flags.get(flag):
+            tblpr.set(flag, "1")
+        else:
+            tblpr.attrib.pop(flag, None)
+    style_id = tblpr.find(_qn("a:tableStyleId")).text
+
+    lst = pkg.root("ppt/tableStyles.xml")
+    for old in lst.findall(_qn("a:tblStyle")):
+        lst.remove(old)
+    style = etree.SubElement(lst, _qn("a:tblStyle"))
+    style.set("styleId", style_id)
+    style.set("styleName", "probe")
+    # ECMA-376 CT_TableStyle sequence order.
+    for part in ("wholeTbl", "band1H", "band2H", "band1V", "band2V",
+                 "lastCol", "firstCol", "lastRow", "seCell", "swCell",
+                 "firstRow", "neCell", "nwCell"):
+        if part not in parts:
+            continue
+        value = parts[part]
+        text_hex, fill_hex = value if isinstance(value, tuple) else (
+            value, value)
+        node = etree.SubElement(style, _qn(f"a:{part}"))
+        txs = etree.SubElement(node, _qn("a:tcTxStyle"))
+        etree.SubElement(txs, _qn("a:srgbClr")).set("val", text_hex)
+        tcs = etree.SubElement(node, _qn("a:tcStyle"))
+        fill = etree.SubElement(tcs, _qn("a:fill"))
+        solid = etree.SubElement(fill, _qn("a:solidFill"))
+        etree.SubElement(solid, _qn("a:srgbClr")).set("val", fill_hex)
+    pkg.mark_dirty("ppt/tableStyles.xml")
+    return sid, tbl
+
+
+def _style_of(pkg, slide, tbl):
+    from kitchensink4ppt.ops import design_check as dc
+    from kitchensink4ppt.ops.read import get_slide_info
+
+    ctx = dc._SlideCtx(pkg, {"part": get_slide_info(pkg, slide)["part"],
+                             "index": slide, "slide_id": 0})
+    return dc._table_style_for(ctx, tbl)
+
+
+def test_an_emphasis_part_beats_wholeTbl(drawable):
+    """MAJOR-L: _TBL_STYLE_ORDER is documented lowest-precedence-first and
+    both accessors returned the FIRST hit, so wholeTbl beat every emphasis
+    part. Ground truth is a LibreOffice render of exactly this style: the
+    header paints #1F3864 from firstRow while the resolver returned
+    #FFFFFF from wholeTbl, which then fabricated a white-on-white contrast
+    ERROR, the same class of defect MAJOR-C was raised for."""
+    pkg, slide = drawable
+    sid, tbl = _styled_table(
+        pkg, slide, 3, 3, {"firstRow": 1},
+        {"wholeTbl": "FFFFFF", "firstRow": "1F3864"},
+    )
+    style = _style_of(pkg, slide, tbl)
+    assert style is not None
+    assert style.fill(0, 0, 3, 3) == "1F3864", "wholeTbl beat firstRow"
+    assert style.text_color(0, 0, 3, 3) == "1F3864"
+    # and the body still takes wholeTbl
+    assert style.fill(1, 0, 3, 3) == "FFFFFF"
+
+
+def test_the_full_precedence_ladder_matches_the_renderer(drawable):
+    """MAJOR-L: every rung, in the order ECMA-376 gives CT_TableStyle and
+    a LibreOffice render confirms cell by cell (57/57 agreement across
+    five flag configurations)."""
+    pkg, slide = drawable
+    parts = {
+        "wholeTbl": "FFFFFF", "band1H": "FFD700", "band2H": "00CED1",
+        "band1V": "FF8C00", "band2V": "9ACD32", "lastCol": "8B008B",
+        "firstCol": "228B22", "lastRow": "B22222", "firstRow": "1F3864",
+        "nwCell": "C0C0C0", "neCell": "808080",
+        "swCell": "404040", "seCell": "000000",
+    }
+    sid, tbl = _styled_table(
+        pkg, slide, 4, 4,
+        dict(firstRow=1, lastRow=1, firstCol=1, lastCol=1,
+             bandRow=1, bandCol=1),
+        parts,
+    )
+    style = _style_of(pkg, slide, tbl)
+    expected = {
+        (0, 0): "nwCell", (0, 1): "firstRow", (0, 2): "firstRow",
+        (0, 3): "neCell",
+        (1, 0): "firstCol", (1, 1): "band1V", (1, 2): "band2V",
+        (1, 3): "lastCol",
+        (2, 0): "firstCol", (2, 1): "band1V", (2, 2): "band2V",
+        (2, 3): "lastCol",
+        (3, 0): "swCell", (3, 1): "lastRow", (3, 2): "lastRow",
+        (3, 3): "seCell",
+    }
+    for (r, c), part in expected.items():
+        assert style.fill(r, c, 4, 4) == parts[part], (
+            f"r{r}c{c} should resolve to {part}"
+        )
+
+
+def test_a_column_band_beats_a_row_band(drawable):
+    """MAJOR-L: the one ordering inside the ladder that is easy to get
+    backwards, and the render settles it."""
+    pkg, slide = drawable
+    sid, tbl = _styled_table(
+        pkg, slide, 3, 3, dict(bandRow=1, bandCol=1),
+        {"wholeTbl": "FFFFFF", "band1H": "FFD700", "band1V": "FF8C00"},
+    )
+    style = _style_of(pkg, slide, tbl)
+    assert style.fill(0, 0, 3, 3) == "FF8C00"
+
+
+@pytest.mark.parametrize("first_row,expected", [
+    (True, {1: "band1H", 2: "band2H", 3: "band1H"}),
+    (False, {0: "band1H", 1: "band2H", 2: "band1H"}),
+])
+def test_band_parity_counts_from_the_first_BODY_row(drawable, first_row,
+                                                    expected):
+    """MAJOR-L follow-up: the verifier could not test parity while
+    everything resolved to wholeTbl. Rendered both ways: with a header on,
+    the first BODY row is band1, not band2."""
+    pkg, slide = drawable
+    parts = {"wholeTbl": "FFFFFF", "band1H": "FFD700", "band2H": "00CED1",
+             "firstRow": "1F3864"}
+    flags = dict(bandRow=1)
+    if first_row:
+        flags["firstRow"] = 1
+    sid, tbl = _styled_table(pkg, slide, 5, 3, flags, parts)
+    style = _style_of(pkg, slide, tbl)
+    for row, part in expected.items():
+        assert style.fill(row, 0, 5, 3) == parts[part], f"row {row}"
+
+
+def test_column_band_parity_counts_from_the_first_BODY_column(drawable):
+    """MAJOR-L follow-up, the column half."""
+    pkg, slide = drawable
+    parts = {"wholeTbl": "FFFFFF", "band1V": "FF8C00", "band2V": "9ACD32",
+             "firstCol": "228B22"}
+    sid, tbl = _styled_table(pkg, slide, 3, 5,
+                             dict(bandCol=1, firstCol=1), parts)
+    style = _style_of(pkg, slide, tbl)
+    assert style.fill(0, 0, 3, 5) == parts["firstCol"]
+    assert style.fill(0, 1, 3, 5) == parts["band1V"]
+    assert style.fill(0, 2, 3, 5) == parts["band2V"]
+    assert style.fill(0, 3, 3, 5) == parts["band1V"]
+
+
+def test_an_emphasised_row_is_not_banded(drawable):
+    """MAJOR-L follow-up: banding skips the header and the last row."""
+    pkg, slide = drawable
+    parts = {"wholeTbl": "FFFFFF", "band1H": "FFD700", "band2H": "00CED1",
+             "firstRow": "1F3864", "lastRow": "B22222"}
+    sid, tbl = _styled_table(pkg, slide, 4, 3,
+                             dict(bandRow=1, firstRow=1, lastRow=1), parts)
+    style = _style_of(pkg, slide, tbl)
+    assert style.fill(0, 0, 4, 3) == parts["firstRow"]
+    assert style.fill(3, 0, 4, 3) == parts["lastRow"]
+
+
+def test_a_corner_the_flags_do_not_activate_is_declined_not_guessed(drawable):
+    """MAJOR-L: ECMA and PowerPoint treat a corner as the intersection of
+    a row and a column emphasis; LibreOffice paints corners whatever the
+    flags say (measured, both ways). Rather than pick a winner, the
+    resolver declines, which routes the finding to the same info path a
+    missing style takes."""
+    from kitchensink4ppt.ops import design_check as dc
+
+    pkg, slide = drawable
+    parts = {"wholeTbl": "FFFFFF", "band1H": "FFD700", "band2H": "00CED1",
+             "nwCell": "C0C0C0"}
+    sid, tbl = _styled_table(pkg, slide, 4, 3, dict(bandRow=1), parts)
+    style = _style_of(pkg, slide, tbl)
+    assert style.fill(0, 0, 4, 3) is dc._RENDERER_DEPENDENT
+    assert style.text_color(0, 0, 4, 3) is dc._RENDERER_DEPENDENT
+    # a non-corner cell in the same table still resolves normally
+    assert style.fill(1, 1, 4, 3) == parts["band2H"]
+
+
+def test_a_corner_both_flags_activate_resolves(drawable):
+    """MAJOR-L guard: the decline is for the ambiguous case only."""
+    pkg, slide = drawable
+    parts = {"wholeTbl": "FFFFFF", "firstRow": "1F3864",
+             "firstCol": "228B22", "nwCell": "C0C0C0"}
+    sid, tbl = _styled_table(pkg, slide, 3, 3,
+                             dict(firstRow=1, firstCol=1), parts)
+    style = _style_of(pkg, slide, tbl)
+    assert style.fill(0, 0, 3, 3) == parts["nwCell"]
+
+
+def test_a_dark_header_from_a_deck_local_style_is_not_a_false_error(drawable):
+    """MAJOR-L end to end: this is the fabricated gate-severity failure
+    the inversion produced, on the exact population the resolver exists to
+    serve (decks carrying deck-local style definitions)."""
+    from kitchensink4ppt.ops import design_check as dc
+
+    pkg, slide = drawable
+    # White text on a navy header, black on white below: legible both ways,
+    # so ANY gate finding here is fabricated.
+    sid, tbl = _styled_table(
+        pkg, slide, 3, 3, {"firstRow": 1},
+        {"wholeTbl": ("000000", "FFFFFF"), "firstRow": ("FFFFFF", "1F3864")},
+    )
+    findings = dc.check_layout(pkg, slide=slide, checks=["contrast"])[
+        "findings"]
+    bad = [f for f in findings
+           if sid in f["shape_ids"] and f["severity"] in ("error", "warning")]
+    assert bad == [], f"fabricated a failure from an inverted style: {bad}"
