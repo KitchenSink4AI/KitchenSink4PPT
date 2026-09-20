@@ -392,14 +392,17 @@ def test_slide_size_mismatch_warns_with_both_dimensions(tmp_path):
     from pptx import Presentation
     from pptx.util import Emu
 
-    src = tmp_path / "wide.pptx"
-    prs = Presentation()  # default template is 4:3 (9144000 x 6858000)
-    prs.slide_width = Emu(12192000)
+    # The destination is 16:9 since punchlist #872, so the SOURCE is the
+    # 4:3 deck here; the warning is about the two disagreeing, in either
+    # direction.
+    src = tmp_path / "narrow.pptx"
+    prs = Presentation()  # python-pptx's bundled default is 4:3
+    prs.slide_width = Emu(9144000)
     prs.slide_height = Emu(6858000)
     prs.slides.add_slide(prs.slide_layouts[1])
     prs.save(str(src))
 
-    dest = _fresh_dest(tmp_path)  # 4:3
+    dest = _fresh_dest(tmp_path)  # 16:9
     res = _copy_between(dest, src, 0)
     hits = [w for w in res["warnings"] if "slide size mismatch" in w]
     assert len(hits) == 1

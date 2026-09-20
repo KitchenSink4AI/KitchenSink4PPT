@@ -928,6 +928,81 @@ def set_slide_hidden(pkg: PptxPackage, slide, hidden: bool) -> dict:
 # --------------------------------------------------- create_presentation
 
 
+#: The 16:9 canvas, and the 4:3 canvas python-pptx's bundled default uses.
+_WIDESCREEN = (12192000, 6858000)
+_PPTX_DEFAULT = (9144000, 6858000)
+
+
+def _widen_to_16_9(pkg: PptxPackage) -> None:
+    """Turn the bundled 4:3 default into a real 16:9 deck.
+
+    The two canvases share a height, so the whole conversion is a
+    horizontal scale of 4/3 applied to every master and layout geometry:
+    x offsets, widths, and the child-space offsets and extents groups use.
+    Vertical values are left exactly as authored. Slides are not touched
+    because the caller either keeps a template's own size or starts from a
+    deck with no slides.
+    """
+    scale = _WIDESCREEN[0] / _PPTX_DEFAULT[0]
+
+    def _scale_x(el: etree._Element, x_attr: str, cx_attr: str) -> None:
+        for attr in (x_attr, cx_attr):
+            raw = el.get(attr)
+            if raw is None:
+                continue
+            try:
+                el.set(attr, str(round(int(raw) * scale)))
+            except ValueError:
+                pass
+
+    parts = _masters(pkg) + [p for p, _name in _layouts(pkg)]
+    for part in parts:
+        root = pkg.root(part)
+        for xfrm in root.iter(qn("a:xfrm")):
+            off = xfrm.find(qn("a:off"))
+            ext = xfrm.find(qn("a:ext"))
+            if off is not None:
+                _scale_x(off, "x", "__none__")
+            if ext is not None:
+                _scale_x(ext, "__none__", "cx")
+            ch_off = xfrm.find(qn("a:chOff"))
+            ch_ext = xfrm.find(qn("a:chExt"))
+            if ch_off is not None:
+                _scale_x(ch_off, "x", "__none__")
+            if ch_ext is not None:
+                _scale_x(ch_ext, "__none__", "cx")
+        pkg.mark_dirty(part)
+
+    pres = pkg.presentation()
+    sldsz = pres.find(qn("p:sldSz"))
+    if sldsz is None:
+        sldsz = etree.Element(qn("p:sldSz"))
+        pkg._insert_presentation_child(sldsz)
+    sldsz.set("cx", str(_WIDESCREEN[0]))
+    sldsz.set("cy", str(_WIDESCREEN[1]))
+    sldsz.attrib.pop("type", None)  # 16:9 has no ST_SlideSizeType token
+    pkg.mark_dirty(PRESENTATION_PART)
+
+
+def slide_size_of(pkg: PptxPackage) -> dict:
+    """{"cx","cy","w_in","h_in","type"} for the deck's canvas."""
+    sldsz = pkg.presentation().find(qn("p:sldSz"))
+    if sldsz is None:
+        cx, cy = _PPTX_DEFAULT
+        sz_type = None
+    else:
+        cx = int(sldsz.get("cx", _PPTX_DEFAULT[0]))
+        cy = int(sldsz.get("cy", _PPTX_DEFAULT[1]))
+        sz_type = sldsz.get("type")
+    return {
+        "cx": cx,
+        "cy": cy,
+        "w_in": round(cx / 914400, 3),
+        "h_in": round(cy / 914400, 3),
+        "type": sz_type,
+    }
+
+
 def create_presentation(
     path: str | Path,
     template: str | Path | None = None,
@@ -938,9 +1013,15 @@ def create_presentation(
     template's bytes are copied, a .potx/.ppsx main content type is restamped
     to the presentation type, and with keep_slides=False (the default) every
     slide is removed through the delete machinery, leaving masters, layouts,
-    and themes intact. The template source file is never modified. With
-    template=None a blank 4:3 deck is built from python-pptx's bundled
-    default template bytes (16:9 blank creation is a Phase 7 item).
+    and themes intact. The template source file is never modified.
+
+    With template=None the deck is 16:9, which is what the tool has always
+    promised and what a from-scratch build needs, since this is the first
+    call in one and every coordinate after it is computed against the
+    canvas. The bundled python-pptx default is 4:3 at the same HEIGHT, so
+    the widening is an exact horizontal scale of its masters and layouts
+    (see _widen_to_16_9), not a canvas stretch that leaves the design
+    sitting in the left ten inches.
 
     This is the one ops function that writes to disk: byte copy, then a
     PptxPackage edit and an atomic validated save on the NEW file only."""
@@ -995,6 +1076,9 @@ def create_presentation(
                 res = _delete_slide_impl(pkg, i, allow_last=True)
                 removed.append(res["deleted_part"])
                 gc_total.extend(res["gc_parts"])
+        if template is None:
+            _widen_to_16_9(pkg)
+        size = slide_size_of(pkg)
         pkg.save(do_backup=False)
     except BaseException:
         dest.unlink(missing_ok=True)  # never leave a half-built file behind
@@ -1006,6 +1090,10 @@ def create_presentation(
         "slides_removed": len(removed),
         "gc_parts": gc_total,
         "slides_kept": len(pkg.slide_parts()),
+        # The canvas every later coordinate is computed against. Stating it
+        # here is what lets a caller catch a mismatch without a follow-up
+        # get_presentation_info.
+        "slide_size": size,
     }
 
 

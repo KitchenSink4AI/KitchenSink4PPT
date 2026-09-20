@@ -636,3 +636,66 @@ def test_overflow_can_estimate_a_placeholder_that_inherits_its_box(
     findings = dc.check_layout(pkg, slide=slide, checks=["overflow"])[
         "findings"]
     assert [f for f in findings if target in f["shape_ids"]], findings
+
+
+# --------------------------------------------------------------- #872
+
+
+def test_a_deck_created_with_no_template_is_actually_16_9(tmp_path):
+    """#872: the docstring promised 16:9 and the file that landed was the
+    stock python-pptx 4:3 default. This is the first call in any
+    from-scratch build, so every coordinate after it was computed against
+    the wrong canvas."""
+    from kitchensink4ppt.ops import slides as sl
+
+    out = tmp_path / "fresh.pptx"
+    res = sl.create_presentation(out)
+
+    assert res["slide_size"]["cx"] == 12192000
+    assert res["slide_size"]["cy"] == 6858000
+    assert res["slide_size"]["w_in"] == 13.333
+    assert res["slide_size"]["type"] is None
+
+    pkg = PptxPackage(out)
+    from kitchensink4ppt.core.package import qn as _qn
+
+    sldsz = pkg.presentation().find(_qn("p:sldSz"))
+    assert sldsz.get("cx") == "12192000"
+    assert sldsz.get("type") is None
+
+
+def test_widening_moves_the_layouts_with_the_canvas(tmp_path):
+    """#872: a canvas stretch alone would leave the whole design sitting
+    in the left ten inches. The two canvases share a height, so the
+    conversion is an exact horizontal scale."""
+    from kitchensink4ppt.core.package import qn as _qn
+    from kitchensink4ppt.ops import slides as sl
+
+    out = tmp_path / "fresh2.pptx"
+    sl.create_presentation(out)
+    pkg = PptxPackage(out)
+
+    widest = 0
+    tallest = 0
+    for part, _name in sl._layouts(pkg):
+        for ext in pkg.root(part).iter(_qn("a:ext")):
+            widest = max(widest, int(ext.get("cx")))
+            tallest = max(tallest, int(ext.get("cy")))
+    assert widest > 9144000, "layout geometry never left the 4:3 canvas"
+    assert widest <= 12192000, "layout geometry overshot the canvas"
+    assert tallest <= 6858000, "vertical geometry was scaled; it must not be"
+
+
+def test_a_templated_deck_keeps_its_own_canvas(tmp_path):
+    """#872 guard: only the no-template path changes size."""
+    from pptx import Presentation as _Prs
+    from kitchensink4ppt.ops import slides as sl
+
+    template = tmp_path / "t.pptx"
+    prs = _Prs()
+    prs.slide_width = 9144000
+    prs.slide_height = 6858000
+    prs.save(str(template))
+
+    res = sl.create_presentation(tmp_path / "from_t.pptx", template=template)
+    assert res["slide_size"]["cx"] == 9144000
