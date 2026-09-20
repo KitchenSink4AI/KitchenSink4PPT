@@ -699,3 +699,85 @@ def test_a_templated_deck_keeps_its_own_canvas(tmp_path):
 
     res = sl.create_presentation(tmp_path / "from_t.pptx", template=template)
     assert res["slide_size"]["cx"] == 9144000
+
+
+# --------------------------------------------------------------- #876
+
+
+@pytest.fixture()
+def table_deck(make_deck):
+    """(pkg, slide, table selector) for a five-column table."""
+    from kitchensink4ppt.ops import slides as sl
+    from kitchensink4ppt.ops import tables as tb
+
+    pkg = PptxPackage(make_deck("tables.pptx", extra_slides=0))
+    slide = sl.insert_slide(pkg, 0)["index"]
+    res = tb.create_table(pkg, slide, rows=3, cols=5, x=1, y=1, w=8, h=2)
+    return pkg, slide, {"shape_id": res["shape_id"]}
+
+
+def test_delete_table_cols_accepts_the_widths_value_it_documents(table_deck):
+    """#876: the docstring said widths='fit' and the code refused it, so a
+    caller following the documentation got BAD_PARAMS."""
+    from kitchensink4ppt.ops import tables as tb
+
+    pkg, slide, sel = table_deck
+    before = tb.get_table(pkg, slide, sel)
+    total = sum(before["column_widths_in"])
+
+    res = tb.delete_table_cols(pkg, slide, sel, 1, 1, widths="fit")
+    assert res["widths"] == "fit"
+    after = tb.get_table(pkg, slide, sel)
+    assert len(after["column_widths_in"]) == 4
+    assert sum(after["column_widths_in"]) == pytest.approx(total, abs=0.02)
+
+
+def test_rescale_still_works_as_an_alias(table_deck):
+    """#876: 'rescale' is the value that shipped; renaming it away would
+    break the callers who read the code instead of the docstring."""
+    from kitchensink4ppt.ops import tables as tb
+
+    pkg, slide, sel = table_deck
+    res = tb.delete_table_cols(pkg, slide, sel, 1, 1, widths="rescale")
+    assert res["widths"] == "fit"
+
+
+def test_both_column_tools_take_the_same_vocabulary(table_deck):
+    """#876: the two structural column tools used different words for the
+    same concept, and one documented the other's."""
+    from kitchensink4ppt.core.errors import PptMcpError
+    from kitchensink4ppt.ops import tables as tb
+
+    pkg, slide, sel = table_deck
+    assert tb.insert_table_cols(
+        pkg, slide, sel, 1, 1, widths="fit")["widths"] == "fit"
+    assert tb.delete_table_cols(
+        pkg, slide, sel, 1, 1, widths="fit")["widths"] == "fit"
+    for call in (tb.insert_table_cols, tb.delete_table_cols):
+        with pytest.raises(PptMcpError) as exc:
+            call(pkg, slide, sel, 1, 1, widths="stretch")
+        assert "fit" in str(exc.value) and "shift" in str(exc.value)
+
+
+def test_there_is_a_recipe_for_inheriting_a_deck_and_fixing_it():
+    """#876: every recipe assumed building new, and the most common real
+    job is repairing a deck that already exists."""
+    from kitchensink4ppt.ops import workflows as wf
+
+    recipe = wf.get_workflows(task="refresh-an-existing-deck")
+    tools = [s["tool"] for s in recipe["steps"]]
+    for expected in (
+        "copy_presentation", "get_presentation_view", "check_layout",
+        "export_slide_image", "apply_edits", "validate",
+    ):
+        assert expected in tools, f"{expected} missing from {tools}"
+
+
+def test_render_and_review_names_the_packs_its_fixes_need():
+    """#876: the loop was listed as needing assembly-export and design, and
+    fixing what you saw needs the graphics and table tools."""
+    from kitchensink4ppt.ops import workflows as wf
+
+    packs = wf.get_workflows(task="render-and-review")["packs"]
+    assert "graphics" in packs
+    assert "tables-charts" in packs
