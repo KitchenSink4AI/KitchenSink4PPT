@@ -388,6 +388,14 @@ _LINE_KEYS = frozenset(
     {"type", "width", "color", "alpha", "dash", "cap", "join"}
 ) | frozenset(_LINE_ARROW_ALIASES)
 
+#: Keys each line type accepts. "none" paints nothing, so a width or a
+#: colour alongside it is a contradiction the caller should hear about,
+#: exactly as _FILL_KEYS treats a colour on a none fill.
+_LINE_TYPE_KEYS = {
+    "none": frozenset({"type"}),
+    "solid": _LINE_KEYS,
+}
+
 
 def _line_arrows(spec: dict) -> dict:
     """Collect the head and tail arrow specs under whichever alias the
@@ -430,13 +438,18 @@ def line_element(spec) -> etree._Element | None:
         return ln
     if not isinstance(spec, dict):
         raise PptMcpError(f'invalid line spec {spec!r}; use a dict or "none"')
-    check_spec_keys(spec, _LINE_KEYS, "line")
     kind = spec.get("type", "solid")
+    if kind not in _LINE_TYPE_KEYS:
+        raise PptMcpError(f"unknown line type {kind!r}; one of: none, solid")
+    # Per-type key sets, the way fill_element already did it. The none
+    # branch used to return before reading any other key, so
+    # line={"type":"none","width":4} dropped the width in silence: the
+    # same asymmetry the unknown-key refusal was added to remove, one
+    # branch over.
+    check_spec_keys(spec, _LINE_TYPE_KEYS[kind], f"{kind} line")
     if kind == "none":
         ln.append(no_fill())
         return ln
-    if kind != "solid":
-        raise PptMcpError(f"unknown line type {kind!r}; one of: none, solid")
     if "width" in spec:
         width = float(spec["width"])
         if not 0 < width <= 120:
@@ -711,8 +724,10 @@ def txbody(text: str, style: dict | None = None) -> etree._Element:
             f"unknown text anchor {style.get('anchor')!r}; one of: top, middle, bottom"
         )
     bodypr.set("anchor", anchor)
-    if style.get("wrap") is False:
-        bodypr.set("wrap", "none")
+    # Same rule as the run toggles: a named wrap states itself rather than
+    # relying on the absence of an attribute to mean the default.
+    if "wrap" in style:
+        bodypr.set("wrap", "square" if style["wrap"] else "none")
     etree.SubElement(body, qn("a:lstStyle"))
     align = _ALIGN.get(style.get("align", "center"))
     if align is None:
@@ -745,10 +760,14 @@ def _apply_rpr(rpr: etree._Element, style: dict) -> None:
         if not 1 <= size <= 400:
             raise PptMcpError(f"font size must be 1..400 pt, got {size}")
         rpr.set("sz", str(round(size * 100)))
-    if style.get("bold"):
-        rpr.set("b", "1")
-    if style.get("italic"):
-        rpr.set("i", "1")
+    # A toggle that is PRESENT AND FALSE writes the explicit off attribute.
+    # Testing truthiness instead made `bold: False` a silent no-op: no
+    # attribute was written, so nothing overrode a bold carried from the
+    # previous run or inherited from the placeholder, and the named key
+    # lost. "Absent" and "present and false" are different instructions.
+    for key, attr in (("bold", "b"), ("italic", "i")):
+        if key in style:
+            rpr.set(attr, "1" if style[key] else "0")
     rpr.set("dirty", "0")
     # rPr child order: fills first, then latin/ea/cs.
     if "color" in style:
