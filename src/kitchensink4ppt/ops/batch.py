@@ -40,9 +40,14 @@ _OPS: dict[str, tuple[set[str], set[str]]] = {
          "fill", "line", "effect", "text", "text_style", "name"},
         set(),
     ),
+    # format_text's `anchor` (vertical text anchor) rides here as
+    # `text_anchor`: a bare "anchor" key in an edit is already the view
+    # anchor that ADDRESSES the shape, and one word cannot mean both the
+    # location and a property being written.
     "format_text": (
         {"paragraph", "start", "end", "font", "size_pt", "bold", "italic",
-         "underline", "color", "align", "line_spacing"},
+         "underline", "color", "align", "line_spacing", "text_anchor",
+         "wrap"},
         set(),
     ),
     "delete_shape": (set(), set()),
@@ -196,6 +201,8 @@ def _apply_one(pkg: PptxPackage, edit: dict, target: dict) -> dict:
     if op == "set_shape":
         return _shapes.set_shape(pkg, slide, target["shape_id"], **params)
     if op == "format_text":
+        if "text_anchor" in params:
+            params["anchor"] = params.pop("text_anchor")
         return _text.format_text(pkg, slide, target["shape_id"], **params)
     if op == "delete_shape":
         return _shapes.delete_shape(pkg, slide, target["shape_id"])

@@ -1564,21 +1564,24 @@ def format_text(
     color: str | None = None,
     align: str | None = None,
     line_spacing: float | None = None,
+    anchor: str | None = None,
+    wrap: bool | None = None,
     backup: bool = True,
     live: str = "auto",
 ) -> dict:
-    """Format existing text in one shape: whole shape, one paragraph
-    (paragraph index), or a character range (start/end offsets, file-mode
-    only, as find_text reports them). Handles fragmented runs without
-    bleed. Table cell text goes through set_table_cells. shape: id or
-    unique name. Saves atomically with two-slot backup; backup=False
-    skips rotation. live='auto' edits the open PowerPoint copy of a locked
-    file; 'force' targets the open session; 'off' refuses locked files.
-    Batches: apply_edits."""
+    """Format existing text in one shape: whole shape, one paragraph, or a
+    character range (start/end from find_text, file-mode only).
+    Handles fragmented runs without bleed. anchor (top|middle|bottom) and
+    wrap set the whole text frame in place. Table cells go through
+    set_table_cells. shape: id or unique name. Saves atomically with
+    two-slot backup; backup=False skips rotation. live='auto' edits the
+    open PowerPoint copy of a locked file; 'force' targets the open
+    session; 'off' refuses locked files. Batches: apply_edits."""
 
     def _live() -> dict:
         _live_refuse(
             start=start, end=end, line_spacing=line_spacing,
+            anchor=anchor, wrap=wrap,
             underline_style=underline if isinstance(underline, str) else None,
         )
         return _live_envelope(
@@ -1598,7 +1601,7 @@ def format_text(
                 pkg, slide, shape, paragraph=paragraph, start=start, end=end,
                 font=font, size_pt=size_pt, bold=bold, italic=italic,
                 underline=underline, color=color, align=align,
-                line_spacing=line_spacing,
+                line_spacing=line_spacing, anchor=anchor, wrap=wrap,
             ),
             backup=backup,
         ),

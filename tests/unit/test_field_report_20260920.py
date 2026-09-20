@@ -379,3 +379,133 @@ def test_text_style_font_writes_ea_and_cs_not_only_latin(drawable):
         el = rpr.find(_qn(tag))
         assert el is not None, f"{tag} was not written"
         assert el.get("typeface") == "Georgia"
+
+
+# --------------------------------------------------------------- #874
+
+
+@pytest.fixture()
+def inheriting_placeholder(make_deck):
+    """(pkg, slide, shape_id) for a title placeholder that carries an empty
+    p:spPr and takes its whole box from the layout."""
+    from kitchensink4ppt.core.package import qn as _qn
+    from kitchensink4ppt.ops import slides as sl
+    from kitchensink4ppt.ops.read import get_slide_info
+    from kitchensink4ppt.ops import shapes as shp
+
+    pkg = PptxPackage(make_deck("inherit.pptx", extra_slides=0))
+    slide = sl.insert_slide(pkg, 0)["index"]
+    part = get_slide_info(pkg, slide)["part"]
+    tree = pkg.root(part).find(f"{_qn('p:cSld')}/{_qn('p:spTree')}")
+    for sp in tree.iter(_qn("p:sp")):
+        nvpr = sp.find(f"{_qn('p:nvSpPr')}/{_qn('p:nvPr')}")
+        if nvpr is None or nvpr.find(_qn("p:ph")) is None:
+            continue
+        sppr = sp.find(_qn("p:spPr"))
+        for child in list(sppr):
+            sppr.remove(child)  # back to a pure inheriting placeholder
+        elem, _chain = shp._find_shape(pkg, part, shp._shape_id(sp))
+        return pkg, slide, shp._shape_id(sp)
+    pytest.skip("layout 0 carries no placeholder to test with")
+
+
+def test_set_shape_seeds_geometry_on_an_inheriting_placeholder(
+    inheriting_placeholder
+):
+    """#874A: the refusal was circular. It said to set an absolute position
+    and size first, and set_shape is the tool that does that, so a full
+    x/y/w/h call could never get past it."""
+    from kitchensink4ppt.ops import shapes as shp
+
+    pkg, slide, sid = inheriting_placeholder
+    res = shp.set_shape(pkg, slide, sid, x=1.167, y=0.95, w=11.0, h=2.10)
+
+    assert "geometry" in res["changed"]
+    from kitchensink4ppt.ops.read import get_slide_info
+
+    rec = next(
+        s for s in get_slide_info(pkg, slide)["shapes"] if s["id"] == sid
+    )
+    geo = rec["geometry"]
+    assert geo is not None, "the placeholder still has no explicit box"
+    assert round(geo["x"] / 914400, 3) == 1.167
+    assert round(geo["cx"] / 914400, 2) == 11.0
+    assert round(geo["cy"] / 914400, 2) == 2.10
+    assert any("seeded" in w for w in res.get("warnings", []))
+
+
+def test_seeding_a_partial_move_keeps_the_inherited_dimensions(
+    inheriting_placeholder
+):
+    """#874A: a partial call seeds the rest from the layout box rather than
+    inventing zeros."""
+    from kitchensink4ppt.core.package import qn as _qn
+    from kitchensink4ppt.ops import inherit as inh
+    from kitchensink4ppt.ops.read import get_slide_info
+    from kitchensink4ppt.ops import shapes as shp
+
+    pkg, slide, sid = inheriting_placeholder
+    part = get_slide_info(pkg, slide)["part"]
+    elem, _chain = shp._find_shape(pkg, part, sid)
+    inherited = inh.inherited_box(pkg, part, elem)
+    assert inherited is not None, "no layout box to inherit (bad fixture)"
+
+    shp.set_shape(pkg, slide, sid, y=4.0)
+    rec = next(
+        s for s in get_slide_info(pkg, slide)["shapes"] if s["id"] == sid
+    )
+    assert rec["geometry"]["x"] == inherited[0]
+    assert rec["geometry"]["cx"] == inherited[2]
+    assert rec["geometry"]["cy"] == inherited[3]
+    assert round(rec["geometry"]["y"] / 914400, 2) == 4.0
+
+
+def test_vertical_anchor_changes_without_replacing_the_text(drawable):
+    """#874B: the only route to bodyPr anchor was set_shape's text_style,
+    which replaces the whole body with one flat string and so flattens
+    bullet levels, per-paragraph alignment and per-run formatting."""
+    from kitchensink4ppt.core.package import qn as _qn
+    from kitchensink4ppt.ops import shapes as shp
+    from kitchensink4ppt.ops import text as txt
+
+    pkg, slide = drawable
+    sid = shp.insert_shape(pkg, slide, "rect", 1, 1, 6, 3, text="x")["shape_id"]
+    _styled_body(pkg, slide, sid)
+
+    res = txt.format_text(pkg, slide, sid, anchor="top")
+    rpr, ppr, body = _first_rpr(pkg, slide, sid)
+    assert body.find(_qn("a:bodyPr")).get("anchor") == "t"
+    assert res["frame_changed"] == ["anchor"]
+    # the rich text is untouched: three paragraphs, bullets off, navy runs
+    assert len(body.findall(_qn("a:p"))) == 3
+    assert ppr.find(_qn("a:buNone")) is not None
+    assert rpr.find(f"{_qn('a:solidFill')}/{_qn('a:srgbClr')}").get(
+        "val") == "1F3864"
+
+
+def test_format_text_refuses_an_unknown_anchor(drawable):
+    """#874B: a typo must refuse, not write a broken attribute."""
+    from kitchensink4ppt.core.errors import PptMcpError
+    from kitchensink4ppt.ops import shapes as shp
+    from kitchensink4ppt.ops import text as txt
+
+    pkg, slide = drawable
+    sid = shp.insert_shape(pkg, slide, "rect", 1, 1, 6, 3, text="hi")["shape_id"]
+    with pytest.raises(PptMcpError):
+        txt.format_text(pkg, slide, sid, anchor="up")
+
+
+def test_apply_edits_reaches_the_anchor_as_text_anchor(drawable):
+    """#874B: a bare "anchor" key in an edit already names the view anchor
+    that ADDRESSES the shape, so the property rides as text_anchor."""
+    from kitchensink4ppt.core.package import qn as _qn
+    from kitchensink4ppt.ops import batch, shapes as shp
+
+    pkg, slide = drawable
+    sid = shp.insert_shape(pkg, slide, "rect", 1, 1, 6, 3, text="a\nb")["shape_id"]
+    batch.apply_edits(pkg, [{
+        "op": "format_text", "slide": slide, "shape": sid,
+        "text_anchor": "bottom",
+    }])
+    _rpr, _ppr, body = _first_rpr(pkg, slide, sid)
+    assert body.find(_qn("a:bodyPr")).get("anchor") == "b"

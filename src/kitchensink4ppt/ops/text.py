@@ -157,6 +157,10 @@ _ALIGN_VALUES = {
     "thaiDist": "thaiDist",
 }
 
+#: a:bodyPr @anchor, in the words the rest of the surface uses (the same
+#: vocabulary geometry.txbody's text_style takes).
+_ANCHOR_VALUES = {"top": "t", "middle": "ctr", "center": "ctr", "bottom": "b"}
+
 _UNDERLINE_VALUES = {
     "none",
     "sng",
@@ -723,6 +727,8 @@ def format_text(
     color: str | None = None,
     align: str | None = None,
     line_spacing: float | None = None,
+    anchor: str | None = None,
+    wrap: bool | None = None,
 ) -> dict:
     """Run-level formatting over a whole shape, one paragraph, or a
     character range within one paragraph (start/end require `paragraph`;
@@ -731,7 +737,14 @@ def format_text(
     bleeds outside the range. `color` accepts hex ('1F4E79') or a theme
     token ('accent1', which stays theme-linked as schemeClr). align and
     line_spacing are paragraph properties and apply to the touched
-    paragraphs. rPr children are written in schema order."""
+    paragraphs. rPr children are written in schema order.
+
+    anchor (top|middle|bottom) and wrap are a:bodyPr properties of the
+    SHAPE, so they apply to the whole text frame whatever paragraph or
+    range is selected. They live here because the only other route to them
+    was set_shape's text_style, which replaces the whole body with one flat
+    string and so flattens bullet levels, per-paragraph alignment and
+    per-run formatting to change one attribute."""
     run_props = {
         k: v
         for k, v in (
@@ -744,10 +757,21 @@ def format_text(
         )
         if v is not None
     }
-    if not run_props and align is None and line_spacing is None:
+    if (
+        not run_props
+        and align is None
+        and line_spacing is None
+        and anchor is None
+        and wrap is None
+    ):
         raise PptMcpError(
             "nothing to do: pass at least one of font, size_pt, bold, "
-            "italic, underline, color, align, line_spacing"
+            "italic, underline, color, align, line_spacing, anchor, wrap"
+        )
+    if anchor is not None and anchor not in _ANCHOR_VALUES:
+        raise PptMcpError(
+            f"anchor must be one of {', '.join(sorted(_ANCHOR_VALUES))}; "
+            f"got {anchor!r}"
         )
     if (start is None) != (end is None):
         raise PptMcpError("start and end must be given together")
@@ -805,14 +829,30 @@ def format_text(
                     runs_formatted += 1
         _apply_paragraph_props(p, align=align, line_spacing=line_spacing)
 
+    frame_changed: list[str] = []
+    if anchor is not None or wrap is not None:
+        bodypr = body.find(qn("a:bodyPr"))
+        if bodypr is None:
+            bodypr = etree.Element(qn("a:bodyPr"))
+            body.insert(0, bodypr)
+        if anchor is not None:
+            bodypr.set("anchor", _ANCHOR_VALUES[anchor])
+            frame_changed.append("anchor")
+        if wrap is not None:
+            bodypr.set("wrap", "square" if wrap else "none")
+            frame_changed.append("wrap")
+
     pkg.mark_dirty(rec["part"])
-    return {
+    out = {
         "slide_index": rec["index"],
         "slide_id": rec["slide_id"],
         "shape_id": _shape_id(elem),
         "paragraphs": len(targets),
         "runs_formatted": runs_formatted,
     }
+    if frame_changed:
+        out["frame_changed"] = frame_changed
+    return out
 
 
 def set_bullets(
