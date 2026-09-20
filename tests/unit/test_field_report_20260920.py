@@ -2211,3 +2211,39 @@ def test_a_good_exclude_names_list_is_untouched_by_the_element_check(
     result = dc.check_layout(pkg, slide=slide, checks=[
         {"check": "overlap", "exclude_names": ["tick", "rule"]}])
     assert not [f for f in result["findings"] if f.get("group_id") == grp]
+
+
+# ------------------------------- MINOR-L: the autofit note, pinned direct
+
+def test_the_autofit_note_never_claims_powerpoint_recomputes_on_open():
+    """MINOR-L was a wrong factual claim in a user-visible result field:
+    the note said the scale would be recomputed when PowerPoint opened the
+    file, and it is not. The behaviour test above reads the note off a
+    result; this one pins the string where it lives, so the claim cannot
+    come back through an edit to shapes.py alone.
+
+    Every occurrence of "recompute" has to be negated. A note that says
+    PowerPoint recomputes is the defect."""
+    from kitchensink4ppt.ops.shapes import _AUTOFIT_RESET_NOTE as note
+
+    assert "fit_text" in note, "the note has to name the remedy"
+    assert "check_layout" in note
+    assert "does not recompute" in note
+    for i in range(len(note)):
+        if note.startswith("recompute", i):
+            assert note[:i].rstrip().endswith("does not"), (
+                f"an un-negated recompute claim at offset {i}: {note!r}"
+            )
+
+
+def test_the_result_field_carries_that_exact_note(drawable):
+    """MINOR-L: the join between the pinned string and what a caller
+    actually receives."""
+    from kitchensink4ppt.ops import shapes as shp
+    from kitchensink4ppt.ops.shapes import _AUTOFIT_RESET_NOTE
+
+    pkg, slide = drawable
+    sid = _mk(pkg, slide, text="long " * 20)
+    _crowd(pkg, slide, sid)
+    res = shp.set_shape(pkg, slide, sid, text="Short now.")
+    assert res.get("autofit_scale_reset") == _AUTOFIT_RESET_NOTE
