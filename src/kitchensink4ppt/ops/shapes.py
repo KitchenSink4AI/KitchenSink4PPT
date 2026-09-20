@@ -145,6 +145,20 @@ _AUTOFIT_TAGS = ("a:normAutofit", "a:spAutoFit", "a:noAutofit")
 _AUTOFIT_CACHE_ATTRS = ("fontScale", "lnSpcReduction")
 
 
+#: What clearing the cache actually costs the caller, stated in the
+#: result. PowerPoint does NOT recompute on open (measured: a cleared
+#: normAutofit stays cleared through an open-and-save round trip), which
+#: is what ops/text.py's _AUTOFIT_CAVEAT has said all along. So the frame
+#: renders at 100% and its fit is genuinely unknown until something
+#: re-fits it.
+_AUTOFIT_RESET_NOTE = (
+    "the cached shrink belonged to the old text and was cleared; "
+    "PowerPoint does not recompute it on open, so this frame now renders "
+    "at full size and its fit is unknown. Re-fit with fit_text, or check "
+    'with check_layout(checks=["overflow"]).'
+)
+
+
 def _reset_autofit_cache(bodypr: etree._Element) -> bool:
     """Drop the cached autofit numbers, keep the mode. Returns whether
     anything was actually dropped.
@@ -152,9 +166,18 @@ def _reset_autofit_cache(bodypr: etree._Element) -> bool:
     PowerPoint renders from `normAutofit@fontScale` until the frame is
     next edited in the app, so a box that once overflowed kept shrinking
     text that now fits: a placeholder retexted from a paragraph to three
-    words still rendered at 40%. Clearing the numbers makes PowerPoint
-    recompute on open; clearing the element would change the shape's
-    autofit BEHAVIOUR, which nobody asked for.
+    words still rendered at 40%. Clearing the element instead of the
+    numbers would change the shape's autofit BEHAVIOUR, which nobody
+    asked for.
+
+    Clearing does NOT re-fit anything. PowerPoint recomputes the cache
+    only when the frame is edited in the application, so a replacement
+    LONGER than the original will now overflow visibly rather than shrink
+    to a scale computed for text that is no longer there. Both are wrong
+    renderings of the new text; an overflow is at least the honest one,
+    and check_layout's overflow check sees it. The caller is told, and
+    fit_text is the remedy: doing it here would silently rewrite every
+    run's size on an edit that only asked to change the words.
     """
     dropped = False
     for tag in _AUTOFIT_TAGS:
@@ -196,7 +219,7 @@ def _carry_text_properties(
         kept_wrap = new_bodypr.get("wrap")
         replacement = _copy.deepcopy(old_bodypr)
         if _reset_autofit_cache(replacement):
-            facts["autofit_scale_reset"] = True
+            facts["autofit_scale_reset"] = _AUTOFIT_RESET_NOTE
         if replacement.find(qn("a:normAutofit")) is not None or (
             replacement.find(qn("a:spAutoFit")) is not None
         ):
