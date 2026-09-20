@@ -1602,3 +1602,93 @@ def test_apply_edits_documents_text_anchor():
     from kitchensink4ppt import server
 
     assert "text_anchor" in (server.apply_edits.__doc__ or "")
+
+
+# ------------------------------- MINOR-K, the explicit 4:3 route
+
+
+@pytest.mark.parametrize("preset,cx,cy,sz_type", [
+    ("16:9", 12192000, 6858000, None),
+    ("4:3", 9144000, 6858000, "screen4x3"),
+    ("16:10", 9144000, 5715000, "screen16x10"),
+])
+def test_slide_size_names_the_canvas_a_new_deck_gets(
+    tmp_path, preset, cx, cy, sz_type
+):
+    """MINOR-K: the 16:9 default is a breaking change, so there has to be
+    a documented way to ask for the old canvas. set_slide_size afterwards
+    is not it: it moves p:sldSz and explicitly refuses to rescale content,
+    so it would strand the layouts in a corner, the mirror of the defect
+    #872 fixed."""
+    from kitchensink4ppt.ops import slides as sl
+
+    res = sl.create_presentation(tmp_path / f"{preset[0]}.pptx",
+                                 slide_size=preset)
+    assert (res["slide_size"]["cx"], res["slide_size"]["cy"]) == (cx, cy)
+    assert res["slide_size"]["type"] == sz_type
+
+
+@pytest.mark.parametrize("preset", ["16:9", "4:3", "16:10", "letter", "a4"])
+def test_every_preset_fits_its_layouts_inside_its_canvas(tmp_path, preset):
+    """MINOR-K: a canvas the layouts do not fit is the bug, not the fix."""
+    from kitchensink4ppt.core.package import qn as _qn
+    from kitchensink4ppt.ops import slides as sl
+
+    res = sl.create_presentation(tmp_path / f"{preset[0]}{len(preset)}.pptx",
+                                 slide_size=preset)
+    pkg = PptxPackage(res["path"])
+    for part, _name in sl._layouts(pkg):
+        for ext in pkg.root(part).iter(_qn("a:ext")):
+            assert int(ext.get("cx")) <= res["slide_size"]["cx"]
+            assert int(ext.get("cy")) <= res["slide_size"]["cy"]
+
+
+def test_asking_4_3_hands_the_bundled_template_through_unscaled(tmp_path):
+    """MINOR-K: the bundled default IS 4:3, so asking for it must scale by
+    1 rather than round-tripping every coordinate through a float."""
+    from kitchensink4ppt.core.package import qn as _qn
+    from kitchensink4ppt.ops import slides as sl
+
+    import pptx as _pptx
+    from pathlib import Path as _Path
+    src = _Path(_pptx.__file__).parent / "templates" / "default.pptx"
+
+    res = sl.create_presentation(tmp_path / "43.pptx", slide_size="4:3")
+    made = PptxPackage(res["path"])
+    original = PptxPackage(src)
+    for part, _name in sl._layouts(made):
+        mine = [
+            (e.get("cx"), e.get("cy"))
+            for e in made.root(part).iter(_qn("a:ext"))
+        ]
+        theirs = [
+            (e.get("cx"), e.get("cy"))
+            for e in original.root(part).iter(_qn("a:ext"))
+        ]
+        assert mine == theirs, part
+
+
+def test_slide_size_refuses_rather_than_losing_to_a_template(tmp_path):
+    """MINOR-K: a template carries its own canvas, so silently ignoring
+    slide_size there would be the same silent-drop class as #873."""
+    from pptx import Presentation as _Prs
+    from kitchensink4ppt.core.errors import PptMcpError
+    from kitchensink4ppt.ops import slides as sl
+
+    template = tmp_path / "tpl.pptx"
+    _Prs().save(str(template))
+    with pytest.raises(PptMcpError) as exc:
+        sl.create_presentation(tmp_path / "out.pptx", template=template,
+                               slide_size="4:3")
+    assert "set_slide_size" in str(exc.value)
+
+
+def test_an_unknown_slide_size_refuses_and_names_the_presets(tmp_path):
+    """MINOR-K guard."""
+    from kitchensink4ppt.core.errors import PptMcpError
+    from kitchensink4ppt.ops import slides as sl
+
+    with pytest.raises(PptMcpError) as exc:
+        sl.create_presentation(tmp_path / "bad.pptx", slide_size="widescreen")
+    assert "4:3" in str(exc.value)
+    assert not (tmp_path / "bad.pptx").exists(), "a refusal left a file behind"
