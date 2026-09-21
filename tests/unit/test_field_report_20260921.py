@@ -1008,3 +1008,158 @@ def test_a_carried_level_survives_a_later_explicit_one(field_deck):
     assert "level" in out.get("preserved", []), (
         "paragraph 1 carried a level and the report lost it"
     )
+
+
+# --------------------------------------------------- B2 and M6 (validator)
+
+_MC = "http://schemas.openxmlformats.org/markup-compatibility/2006"
+_P14 = "http://schemas.microsoft.com/office/powerpoint/2010/main"
+_C = "http://schemas.openxmlformats.org/drawingml/2006/chart"
+
+
+def _alternate_content(choice_para, fallback_para):
+    """An mc:AlternateContent wrapper with the given paragraphs (None for
+    a branch that supplies none)."""
+    ac = etree.Element(
+        f"{{{_MC}}}AlternateContent", nsmap={"mc": _MC, "p14": _P14}
+    )
+    choice = etree.SubElement(ac, f"{{{_MC}}}Choice")
+    choice.set("Requires", "p14")
+    if choice_para is not None:
+        choice.append(choice_para)
+    fallback = etree.SubElement(ac, f"{{{_MC}}}Fallback")
+    if fallback_para is not None:
+        fallback.append(fallback_para)
+    return ac
+
+
+def _first_body(pkg):
+    part = pkg.slide_parts()[0]
+    body = pkg.root(part).find(f".//{qn('p:txBody')}")
+    assert body is not None, "no text body on the first slide"
+    return part, body
+
+
+def test_txbody_accepts_mce_wrapped_paragraph(make_deck, tmp_path):
+    """B2: Markup Compatibility lets a body's paragraphs arrive through an
+    mc:AlternateContent branch. Requiring a DIRECT a:p refused a legal
+    deck at save, which is the worst thing this gate can do."""
+    import copy
+
+    pkg = PptxPackage(make_deck("mce.pptx"))
+    part, body = _first_body(pkg)
+    para = body.find(qn("a:p"))
+    body.replace(
+        para,
+        _alternate_content(copy.deepcopy(para), copy.deepcopy(para)),
+    )
+    pkg.mark_dirty(part)
+    out = tmp_path / "out.pptx"
+    pkg.save(str(out))  # used to raise ValidationFailed
+    assert out.is_file()
+
+
+def test_an_empty_selectable_branch_is_still_refused(make_deck, tmp_path):
+    """B2: a valid Fallback must not hide an empty Choice. PowerPoint
+    picks ONE branch, so every branch has to supply a paragraph."""
+    import copy
+
+    from kitchensink4ppt.core.errors import ValidationFailed
+
+    pkg = PptxPackage(make_deck("mce_bad.pptx"))
+    part, body = _first_body(pkg)
+    para = body.find(qn("a:p"))
+    body.replace(para, _alternate_content(None, copy.deepcopy(para)))
+    pkg.mark_dirty(part)
+    with pytest.raises(ValidationFailed) as excinfo:
+        pkg.save(str(tmp_path / "out.pptx"))
+    assert "AlternateContent" in str(excinfo.value)
+
+
+def test_a_direct_paragraph_beside_alternate_content_is_enough(
+    make_deck, tmp_path
+):
+    """B2: a body that keeps a real paragraph AND carries an
+    AlternateContent for something else is never empty."""
+    import copy
+
+    pkg = PptxPackage(make_deck("mce_mixed.pptx"))
+    part, body = _first_body(pkg)
+    para = body.find(qn("a:p"))
+    body.append(_alternate_content(None, copy.deepcopy(para)))
+    pkg.mark_dirty(part)
+    out = tmp_path / "out.pptx"
+    pkg.save(str(out))
+    assert out.is_file()
+
+
+def test_nested_alternate_content_branches_resolve(make_deck, tmp_path):
+    """B2: a branch may itself hold an AlternateContent."""
+    import copy
+
+    pkg = PptxPackage(make_deck("mce_nested.pptx"))
+    part, body = _first_body(pkg)
+    para = body.find(qn("a:p"))
+    inner = _alternate_content(copy.deepcopy(para), copy.deepcopy(para))
+    outer = etree.Element(
+        f"{{{_MC}}}AlternateContent", nsmap={"mc": _MC, "p14": _P14}
+    )
+    choice = etree.SubElement(outer, f"{{{_MC}}}Choice")
+    choice.set("Requires", "p14")
+    choice.append(inner)
+    fallback = etree.SubElement(outer, f"{{{_MC}}}Fallback")
+    fallback.append(copy.deepcopy(para))
+    body.replace(para, outer)
+    pkg.mark_dirty(part)
+    out = tmp_path / "out.pptx"
+    pkg.save(str(out))
+    assert out.is_file()
+
+
+def test_chart_text_bodies_are_covered(tmp_path):
+    """M6: c:rich and c:txPr use the same paragraph-bearing model. Leaving
+    them out made the 'every text body' claim false."""
+    from kitchensink4ppt.core.errors import ValidationFailed
+    from kitchensink4ppt.ops import charts as ch
+
+    prs = Presentation()
+    prs.slides.add_slide(prs.slide_layouts[6])
+    path = tmp_path / "chart.pptx"
+    prs.save(str(path))
+    pkg = PptxPackage(str(path))
+    ch.create_chart(
+        pkg, 0, "bar", ["a", "b"], [{"name": "s", "values": [1, 2]}],
+        1, 1, 6, 4, title="Numbers",
+    )
+    pkg.save(str(tmp_path / "chart_ok.pptx"))  # a real chart still saves
+
+    chart_part = next(
+        p for p in pkg.part_names() if p.startswith("ppt/charts/chart")
+    )
+    rich = pkg.root(chart_part).find(f".//{{{_C}}}rich")
+    assert rich is not None, "the chart title has no c:rich to empty"
+    for p in list(rich.findall(qn("a:p"))):
+        rich.remove(p)
+    pkg.mark_dirty(chart_part)
+    with pytest.raises(ValidationFailed) as excinfo:
+        pkg.save(str(tmp_path / "chart_bad.pptx"))
+    assert "charts" in str(excinfo.value)
+
+
+def test_a_real_chart_round_trips(tmp_path):
+    """M6 guard: covering charts must not refuse a chart the server built."""
+    from kitchensink4ppt.ops import charts as ch
+
+    prs = Presentation()
+    prs.slides.add_slide(prs.slide_layouts[6])
+    path = tmp_path / "chart2.pptx"
+    prs.save(str(path))
+    pkg = PptxPackage(str(path))
+    for kind in ("bar", "line", "pie"):
+        ch.create_chart(
+            pkg, 0, kind, ["a", "b"], [{"name": kind, "values": [1, 2]}],
+            1, 1, 4, 3, title=f"{kind} title",
+        )
+    out = tmp_path / "charts_ok.pptx"
+    pkg.save(str(out))
+    assert out.is_file()
