@@ -149,8 +149,8 @@ FIGURE_SURFACES = (
 #: with a re-run of the named script.
 PUBLISHED_FIGURES = (
     ('142', 'tools', 'scripts/measure_surface.py'),
-    ('1,251', 'tests', 'scripts/stamp_figures.py'),
-    ('7.1k', 'tokens in the lite core', 'scripts/measure_surface.py'),
+    ('1,562', 'tests', 'scripts/stamp_figures.py'),
+    ('7.2k', 'tokens in the lite core', 'scripts/measure_surface.py'),
 )
 
 #: (string, what it used to mean). Absent from every FIGURE_SURFACES file at
@@ -173,6 +173,8 @@ SUPERSEDED_FIGURES = (
     ('№ 141', 'the same count as a catalog number'),
     ('4.7k', 'the pre-1.2.0 lite core cost'),
     ('5.3k', 'the pre-1.2.2 lite core cost'),
+    ('7.1k', 'the pre-1.3.1 lite core cost'),
+    ('1,251 tests', 'the pre-1.3.1 test count'),
 )
 
 
