@@ -46,6 +46,7 @@ dev = [
     "pytest",
     "pytest-timeout",
     "python-pptx",  # test oracle and synthetic corpus generation only, never a runtime dependency
+    "fonttools>=4.0",  # also in the metrics extra; here so CI actually EXERCISES the measured text-fit path instead of skipping every test of it
 ]
 optimize = [
     "Pillow",  # compress_deck image downsampling only; without it the purge half still works and recompression is refused honestly

@@ -23,10 +23,14 @@ from kitchensink4ppt.ops import slides as sl
 from kitchensink4ppt.ops import text as tx
 from kitchensink4ppt.ops.read import iter_shapes
 
-_HAVE_CALIBRI = fm.available() and fm.find_font_file("Calibri") is not None
+_HAVE_METRICS = fm.available()
+_HAVE_CALIBRI = _HAVE_METRICS and fm.find_font_file("Calibri") is not None
 needs_calibri = pytest.mark.skipif(
     not _HAVE_CALIBRI,
     reason="needs the metrics extra and an installed Calibri",
+)
+needs_metrics = pytest.mark.skipif(
+    not _HAVE_METRICS, reason="needs the metrics extra (fonttools)"
 )
 
 
@@ -175,7 +179,11 @@ def test_estimate_path_when_the_extra_is_absent(deck, monkeypatch):
     assert rec["fill_ratio"] == round(lines * line_h / inner_h, 2)
 
 
+@needs_metrics
 def test_missing_font_falls_back_and_says_which_font(deck, monkeypatch):
+    """The typeface resolved but no file for it exists here. Needs the extra
+    installed, because without it the earlier reason fires first and is the
+    correct one to report."""
     sid = _add(deck, 1, 1, 2.0, 0.6, "some words here", 12)
     monkeypatch.setattr(fm, "font_file_name", lambda *a, **k: None)
     rec = _overflow(deck, sid)
