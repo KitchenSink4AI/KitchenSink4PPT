@@ -1347,6 +1347,12 @@ def _latin_typeface(
     return face
 
 
+#: DrawingML caps marL/indent at 51206400 EMU (56 inches). A value outside
+#: that is malformed, and a malformed indent silently read as zero is a
+#: measurement of a frame nobody has (final check, R4-2, 2026-09-22).
+_MAR_LIMIT_EMU = 51206400
+
+
 class _Unmeasurable(Exception):
     """A run the measured path cannot resolve WITH CERTAINTY.
 
@@ -1394,9 +1400,18 @@ def _para_margins(p: etree._Element, chain=()) -> tuple[int, int]:
             if raw is None:
                 continue
             try:
-                return int(raw)
+                value = int(raw)
             except (TypeError, ValueError):
-                return 0
+                raise _Unmeasurable(
+                    f"a paragraph states a {name} of {raw!r}, which is not a "
+                    "number of EMU"
+                ) from None
+            if not -_MAR_LIMIT_EMU <= value <= _MAR_LIMIT_EMU:
+                raise _Unmeasurable(
+                    f"a paragraph states a {name} of {value} EMU, outside "
+                    "the range DrawingML allows"
+                )
+            return value
         return 0
     return _int("marL"), _int("indent")
 
@@ -1404,18 +1419,16 @@ def _para_margins(p: etree._Element, chain=()) -> tuple[int, int]:
 def _body_typeface(
     body: etree._Element, pkg=None, part: str | None = None
 ) -> str | None:
-    """The typeface a run inherits when it names none of its own: the
-    shape's lstStyle, then the theme's minor font. Deliberately does NOT
-    look at other runs, which is how a mixed-format body used to get
-    measured entirely in its first run's face."""
-    lst = body.find(qn("a:lstStyle"))
-    if lst is not None:
-        for el in lst.iter(qn("a:defRPr")):
-            latin = el.find(qn("a:latin"))
-            if latin is not None and latin.get("typeface"):
-                face = latin.get("typeface")
-                return _theme_font(pkg, part, face) if face.startswith("+") \
-                    else face
+    """The typeface a run inherits when NOTHING in its own chain names one:
+    the theme's minor font, which is what DrawingML falls back to.
+
+    It used to take the first a:defRPr anywhere in the shape's a:lstStyle,
+    regardless of outline level, so a level-two run could be measured in
+    level one's face while the result still said font-metrics (final check,
+    R4-2, 2026-09-22). The list styles are read at the run's ACTUAL level
+    now, by _rpr_chain over inherit.level_ppr_chain, the same effective
+    chain the size resolver walks; this is only what is left when that
+    chain names nothing. Deliberately does NOT look at other runs."""
     return _theme_font(pkg, part, "+mn-lt")
 
 
