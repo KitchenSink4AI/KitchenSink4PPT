@@ -1163,3 +1163,265 @@ def test_a_real_chart_round_trips(tmp_path):
     out = tmp_path / "charts_ok.pptx"
     pkg.save(str(out))
     assert out.is_file()
+
+
+# ------------------------------------------------- M3, M4, N3 (the COM walk)
+
+
+class _FakeFrame:
+    def __init__(self, text="words", raises=False):
+        self._text = text
+        self._raises = raises
+        self.HasText = -1
+
+    @property
+    def TextRange(self):
+        if self._raises:
+            raise OSError("the text refused to load")
+        return self
+
+    @property
+    def Text(self):
+        return self._text
+
+
+class _FakeShape:
+    """A PowerPoint shape proxy with only the members a real one would
+    answer; anything else raises AttributeError the way getattr sees a
+    missing COM member."""
+
+    def __init__(self, name, *, text=None, raises=False, group=None,
+                 table=None, fault=None, has_text_frame=-1):
+        self.Name = name
+        self._fault = fault
+        self._has_text_frame = has_text_frame
+        self._frame = (
+            _FakeFrame(text, raises) if text is not None or raises else None
+        )
+        self._group = group
+        self._table = table
+
+    @property
+    def HasTextFrame(self):
+        if self._fault is not None:
+            raise self._fault
+        return self._has_text_frame if self._frame is not None else 0
+
+    @property
+    def TextFrame(self):
+        return self._frame
+
+    @property
+    def HasTable(self):
+        return -1 if self._table is not None else 0
+
+    @property
+    def Table(self):
+        return self._table
+
+    @property
+    def Type(self):
+        return 6 if self._group is not None else 1
+
+    @property
+    def GroupItems(self):
+        return _FakeShapes(self._group)
+
+
+class _FakeShapes:
+    def __init__(self, shapes):
+        self._shapes = shapes
+        self.Count = len(shapes)
+
+    def Item(self, i):
+        return self._shapes[i - 1]
+
+
+class _FakeCell:
+    def __init__(self, shape):
+        self.Shape = shape
+
+
+class _FakeTable:
+    def __init__(self, grid):
+        self._grid = grid
+        self.Rows = _FakeShapes([None] * len(grid))
+        self.Columns = _FakeShapes([None] * len(grid[0]))
+
+    def Cell(self, r, c):
+        return _FakeCell(self._grid[r - 1][c - 1])
+
+
+class _FakeSlide:
+    def __init__(self, sid, shapes):
+        self.SlideID = sid
+        self.Shapes = _FakeShapes(shapes)
+
+
+class _FakePres:
+    def __init__(self, slides):
+        self.Slides = _FakeShapes(slides)
+
+
+def test_every_text_shape_is_read_not_just_the_first():
+    """M3: after the first successful text read the walk stopped reading,
+    so a second shape that raises on access was never touched and the deck
+    came back clean."""
+    from kitchensink4ppt.com import bridge
+
+    pres = _FakePres([
+        _FakeSlide(256, [
+            _FakeShape("Good 1", text="fine"),
+            _FakeShape("Broken 2", raises=True),
+        ]),
+    ])
+    with pytest.raises(bridge.FullLoadFailed) as excinfo:
+        bridge._full_load(pres)
+    exc = excinfo.value
+    assert exc.slide_index == 1 and exc.shape_index == 2
+    assert exc.shape_name == "Broken 2"
+
+
+def test_a_failure_inside_a_group_is_found_and_named():
+    """M3: group children were never enumerated at all."""
+    from kitchensink4ppt.com import bridge
+
+    inner = _FakeShape("Deep Label", raises=True)
+    group = _FakeShape("Diagram", group=[_FakeShape("Ok", text="a"), inner])
+    pres = _FakePres([_FakeSlide(300, [_FakeShape("Title", text="t"), group])])
+    with pytest.raises(bridge.FullLoadFailed) as excinfo:
+        bridge._full_load(pres)
+    message = str(excinfo.value)
+    assert "Deep Label" in message and "Diagram" in message
+    assert excinfo.value.shape_index == 2
+
+
+def test_a_failure_inside_a_table_cell_is_found_and_named():
+    """M3: table cells were never read."""
+    from kitchensink4ppt.com import bridge
+
+    grid = [
+        [_FakeShape("c00", text="a"), _FakeShape("c01", text="b")],
+        [_FakeShape("c10", text="c"), _FakeShape("c11", raises=True)],
+    ]
+    table = _FakeShape("Grid", table=_FakeTable(grid))
+    pres = _FakePres([_FakeSlide(301, [table])])
+    with pytest.raises(bridge.FullLoadFailed) as excinfo:
+        bridge._full_load(pres)
+    message = str(excinfo.value)
+    assert "row 2" in message and "column 2" in message
+
+
+def test_a_clean_walk_reports_what_it_touched():
+    from kitchensink4ppt.com import bridge
+
+    group = _FakeShape("G", group=[_FakeShape("g1", text="x")])
+    pres = _FakePres([
+        _FakeSlide(256, [_FakeShape("A", text="a"), group]),
+        _FakeSlide(257, [_FakeShape("B", text="b")]),
+    ])
+    out = bridge._full_load(pres)
+    assert out["slides"] == 2
+    assert out["shapes"] == 3          # top level only, as before
+    assert out["shapes_walked"] == 4   # including the group member
+    assert out["text_reads"] == 3      # the group frame itself has none
+    assert "walk_truncated" not in out
+
+
+def test_an_enormous_deck_says_the_walk_was_truncated(monkeypatch):
+    """M3: a cap, and an honest flag when it bites, beats sitting inside
+    the bounded operation until it times out and reports nothing."""
+    from kitchensink4ppt.com import bridge
+
+    monkeypatch.setattr(bridge, "FULL_LOAD_MAX_SHAPES", 3)
+    pres = _FakePres([
+        _FakeSlide(256, [_FakeShape(f"S{i}", text="t") for i in range(10)]),
+    ])
+    out = bridge._full_load(pres)
+    assert "walk_truncated" in out
+    assert out["shapes_walked"] == 3
+    assert "cap 3" in out["walk_truncated"]
+
+
+def _com_error(hresult):
+    """A stand-in for a pywin32 com_error carrying one HRESULT."""
+
+    class _ComError(Exception):
+        pass
+
+    exc = _ComError("com fault")
+    exc.hresult = hresult
+    return exc
+
+
+def test_a_busy_powerpoint_mid_walk_is_not_a_corrupt_file():
+    """M4: a dialog opening halfway through the walk came back as an
+    authoritative corruption verdict naming an innocent shape."""
+    from kitchensink4ppt.com import bridge
+    from kitchensink4ppt.core.errors import PowerPointBusy
+
+    pres = _FakePres([
+        _FakeSlide(256, [
+            _FakeShape("Fine", text="a"),
+            _FakeShape("Innocent", fault=_com_error(
+                bridge.RPC_E_CALL_REJECTED)),
+        ]),
+    ])
+    with pytest.raises(PowerPointBusy):
+        bridge._full_load(pres)
+
+
+def test_a_disconnected_powerpoint_mid_walk_is_not_a_corrupt_file():
+    """M4: the same for a PowerPoint that went away under the proxy."""
+    from kitchensink4ppt.com import bridge
+    from kitchensink4ppt.core.errors import PowerPointDisconnected
+
+    pres = _FakePres([
+        _FakeSlide(256, [
+            _FakeShape("Innocent", fault=_com_error(
+                bridge.RPC_E_DISCONNECTED)),
+        ]),
+    ])
+    with pytest.raises(PowerPointDisconnected):
+        bridge._full_load(pres)
+
+
+def test_a_busy_fault_inside_a_group_still_blames_the_application():
+    """M4: the classifier has to be consulted at every depth."""
+    from kitchensink4ppt.com import bridge
+    from kitchensink4ppt.core.errors import PowerPointBusy
+
+    inner = _FakeShape("Deep", fault=_com_error(
+        bridge.RPC_E_SERVERCALL_RETRYLATER))
+    group = _FakeShape("G", group=[inner])
+    pres = _FakePres([_FakeSlide(256, [group])])
+    with pytest.raises(PowerPointBusy):
+        bridge._full_load(pres)
+
+
+def test_an_unclassified_fault_is_still_a_file_verdict():
+    """M4 guard: classification must not swallow real content failures."""
+    from kitchensink4ppt.com import bridge
+
+    pres = _FakePres([
+        _FakeSlide(256, [_FakeShape("Broken", fault=OSError("bad record"))]),
+    ])
+    with pytest.raises(bridge.FullLoadFailed):
+        bridge._full_load(pres)
+
+
+def test_mixed_tristate_is_not_treated_as_yes():
+    """N3: `if shp.HasTextFrame` counted msoTriStateMixed (-2) as true, so
+    an unusual shape was probed for a TextFrame it does not support and
+    became a false failure."""
+    from kitchensink4ppt.com import bridge
+
+    assert bridge._mso_true(-1) is True
+    assert bridge._mso_true(-2) is False
+    assert bridge._mso_true(0) is False
+    assert bridge._mso_true(None) is False
+
+    shape = _FakeShape("Odd", text="never read", has_text_frame=-2)
+    pres = _FakePres([_FakeSlide(256, [shape])])
+    out = bridge._full_load(pres)
+    assert out["text_reads"] == 0, "a mixed tri-state was probed as a yes"

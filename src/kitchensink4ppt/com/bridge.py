@@ -714,9 +714,11 @@ def com_export_slide_images(
 @_bounded_op("com_validate_opens_clean", default=600.0)
 def com_validate_opens_clean(path: str) -> dict:
     """Open in invisible PowerPoint (alerts disabled) and force a FULL content
-    load: Slides.Count, per-slide Shapes.Count, and one text read. Corruption
-    surfaces on access, not on open; with DisplayAlerts off it raises instead
-    of hanging on a modal repair dialog."""
+    load: every slide, every top-level shape, every group member, every table
+    cell, and a text read of every text frame among them. Corruption surfaces
+    on access, not on open; with DisplayAlerts off it raises instead of
+    hanging on a modal repair dialog. A busy or disconnected PowerPoint is
+    reported as itself, never as a verdict on the file."""
     p = _require_file(path, "validate opens clean")
     with _powerpoint() as session:
         try:
@@ -729,14 +731,19 @@ def com_validate_opens_clean(path: str) -> dict:
             try:
                 # _full_load in its own frame so slide/shape proxies are
                 # released on return (outstanding proxies block app exit).
-                slide_count, shapes_total = _full_load(pres)
+                stats = _full_load(pres)
+            except (DocumentLocked, PowerPointBusy, PowerPointDisconnected):
+                # The APPLICATION went sideways mid-walk. Reporting that as
+                # a corrupt file would be an authoritative-looking lie about
+                # a deck that is fine (review finding M4).
+                raise
             except FullLoadFailed as exc:
                 return _opens_clean_failure(exc)
             except Exception as exc:  # full-load failure = not clean
                 return {"opens_clean": False, "error": str(exc)}
         finally:
             del pres  # release the proxy so the launched instance can exit
-    return {"opens_clean": True, "slides": slide_count, "shapes": shapes_total}
+    return {"opens_clean": True, **stats}
 
 
 class FullLoadFailed(Exception):
@@ -788,20 +795,77 @@ def _slide_id_of(slide) -> int | None:
         return None
 
 
-def _full_load(pres) -> tuple[int, int]:
-    """Force a full content load: Slides.Count, per-slide Shapes.Count, one
-    text read. Corruption surfaces on access, not on open.
+#: MsoTriState. msoTrue is -1; msoTriStateMixed is -2 and is NOT a yes.
+#: Truthiness treated mixed as true, which probed an unsupported TextFrame
+#: on an unusual shape and turned it into a false failure (review N3).
+MSO_TRUE = -1
 
-    Every slide and every shape is touched inside its own try/except, so a
-    refusal names WHERE it happened (1-based slide index, SlideID, 1-based
-    shape index, shape name) instead of handing back one anonymous string.
-    Naming the shape costs two extra property reads per shape; on the deck
-    that motivated this it is a second or so against the 40 minutes of
-    bisection it replaces.
+#: MsoShapeType msoGroup.
+MSO_GROUP = 6
+
+#: Ceiling on how many shapes one walk visits. A deck past this is walked
+#: as far as the cap and the result says so, rather than sitting inside
+#: the bounded operation until it times out and reports nothing at all.
+FULL_LOAD_MAX_SHAPES = 20000
+
+
+def _mso_true(value) -> bool:
+    """An MsoTriState that really is msoTrue."""
+    try:
+        return int(value) == MSO_TRUE
+    except (TypeError, ValueError):
+        return False
+
+
+def _optional(obj, name):
+    """A property that may not exist on this object at all. A COM fault
+    (busy, disconnected) still propagates; only a missing member is
+    swallowed, because that is the object saying 'not applicable'."""
+    try:
+        return getattr(obj, name)
+    except AttributeError:
+        return None
+
+
+class _WalkState:
+    """Running totals for one full-load walk."""
+
+    def __init__(self) -> None:
+        self.shapes_walked = 0
+        self.text_reads = 0
+        self.truncated = False
+
+    @property
+    def room(self) -> bool:
+        if self.shapes_walked >= FULL_LOAD_MAX_SHAPES:
+            self.truncated = True
+            return False
+        return True
+
+
+def _full_load(pres) -> dict:
+    """Force a full content load. Corruption surfaces on access, not on
+    open, so every slide and every shape is TOUCHED and every text frame
+    is READ.
+
+    Boundary, stated exactly because the old docstring promised more than
+    it did (review finding M3): top-level shapes on every slide, the
+    members of every group recursively, and the cells of every table.
+    Notes pages, layouts, masters, chart internals and SmartArt data
+    models are NOT walked; the layer 1 package check covers their text
+    bodies. The old walk read ONE text frame for the whole deck, so a
+    shape that raised on access after the first successful read was never
+    touched and the deck came back clean.
+
+    Every read sits inside its own try/except, so a refusal names WHERE it
+    happened: 1-based slide index, SlideID, 1-based top-level shape index,
+    shape name (and the nested path when the failure is inside a group or
+    a table). A COM fault that means the APPLICATION is busy or gone is
+    re-raised as itself rather than blamed on the file.
     """
+    state = _WalkState()
     slide_count = int(pres.Slides.Count)
     shapes_total = 0
-    text_read = False
     for i in range(1, slide_count + 1):
         slide_id = None
         try:
@@ -809,33 +873,121 @@ def _full_load(pres) -> tuple[int, int]:
             slide_id = _slide_id_of(slide)
             shape_count = int(slide.Shapes.Count)
         except Exception as exc:
+            _reraise_environment(exc)
             raise FullLoadFailed(
                 f"slide {i} (id {slide_id}) failed to load: {exc}",
                 slide_index=i, slide_id=slide_id,
             ) from exc
         shapes_total += shape_count
         for j in range(1, shape_count + 1):
-            shape_name = None
+            if not state.room:
+                break
+            _walk_shape(slide.Shapes, j, i, slide_id, j, "", state)
+        if state.truncated:
+            break
+    out = {
+        "slides": slide_count,
+        "shapes": shapes_total,
+        "shapes_walked": state.shapes_walked,
+        "text_reads": state.text_reads,
+    }
+    if state.truncated:
+        out["walk_truncated"] = (
+            f"the walk stopped after {state.shapes_walked} shapes "
+            f"(cap {FULL_LOAD_MAX_SHAPES}); shapes past that point were "
+            "not checked"
+        )
+    return out
+
+
+def _reraise_environment(exc: BaseException) -> None:
+    """Re-raise a COM fault that means the APPLICATION is busy or gone.
+
+    Without this, PowerPoint showing a dialog halfway through the walk
+    came back as an authoritative corruption verdict naming an innocent
+    shape (review finding M4). The classifier and its HRESULT tables
+    already existed; the walk simply never consulted them.
+    """
+    if isinstance(
+        exc, (DocumentLocked, PowerPointBusy, PowerPointDisconnected)
+    ):
+        raise exc
+    typed = _classify(exc)
+    if typed is not None:
+        raise typed from exc
+
+
+def _walk_shape(
+    collection, index: int, slide_index: int, slide_id, top_index: int,
+    path: str, state: _WalkState,
+) -> None:
+    """Touch one shape, read its text, and descend into groups and tables."""
+    shape_name = None
+    where = f"slide {slide_index} (id {slide_id}) shape {top_index}"
+    try:
+        shp = collection.Item(index)
+        state.shapes_walked += 1
+        shape_name = _optional(shp, "Name")
+        shape_name = str(shape_name) if shape_name is not None else None
+        here = f"{path}/{shape_name}" if path else (shape_name or "")
+        if _mso_true(_optional(shp, "HasTextFrame")):
+            frame = shp.TextFrame
+            if _mso_true(_optional(frame, "HasText")):
+                _ = frame.TextRange.Text
+                state.text_reads += 1
+        if _mso_true(_optional(shp, "HasTable")):
+            _walk_table(shp.Table, slide_index, slide_id, top_index, here,
+                        state)
+        if _optional(shp, "Type") == MSO_GROUP:
+            members = shp.GroupItems
+            count = int(members.Count)
+            for k in range(1, count + 1):
+                if not state.room:
+                    return
+                _walk_shape(members, k, slide_index, slide_id, top_index,
+                            here, state)
+    except FullLoadFailed:
+        raise
+    except Exception as exc:
+        _reraise_environment(exc)
+        named = f" {shape_name!r}" if shape_name else ""
+        inside = f" inside {path!r}" if path else ""
+        raise FullLoadFailed(
+            f"{where}{named}{inside} failed to load: {exc}",
+            slide_index=slide_index, slide_id=slide_id,
+            shape_index=top_index, shape_name=shape_name,
+        ) from exc
+
+
+def _walk_table(
+    table, slide_index: int, slide_id, top_index: int, path: str,
+    state: _WalkState,
+) -> None:
+    """Read every cell of a table. A corrupt cell body is exactly the
+    shape of the failure this check exists to find."""
+    rows = int(table.Rows.Count)
+    cols = int(table.Columns.Count)
+    for r in range(1, rows + 1):
+        for c in range(1, cols + 1):
+            if not state.room:
+                return
             try:
-                shp = slide.Shapes.Item(j)
-                try:
-                    shape_name = str(shp.Name)
-                except Exception:
-                    shape_name = None
-                if not text_read and shp.HasTextFrame and (
-                    shp.TextFrame.HasText
-                ):
-                    _ = shp.TextFrame.TextRange.Text
-                    text_read = True
+                cell_shape = table.Cell(r, c).Shape
+                state.shapes_walked += 1
+                if _mso_true(_optional(cell_shape, "HasTextFrame")):
+                    frame = cell_shape.TextFrame
+                    if _mso_true(_optional(frame, "HasText")):
+                        _ = frame.TextRange.Text
+                        state.text_reads += 1
             except Exception as exc:
-                named = f" {shape_name!r}" if shape_name else ""
+                _reraise_environment(exc)
                 raise FullLoadFailed(
-                    f"slide {i} (id {slide_id}) shape {j}{named} failed to "
+                    f"slide {slide_index} (id {slide_id}) shape {top_index} "
+                    f"{path!r} table cell (row {r}, column {c}) failed to "
                     f"load: {exc}",
-                    slide_index=i, slide_id=slide_id,
-                    shape_index=j, shape_name=shape_name,
+                    slide_index=slide_index, slide_id=slide_id,
+                    shape_index=top_index, shape_name=path or None,
                 ) from exc
-    return slide_count, shapes_total
 
 
 def _installed_version() -> str | None:
