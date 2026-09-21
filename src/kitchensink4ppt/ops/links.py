@@ -48,6 +48,7 @@ from ..core.package import (
     resolve_target,
 )
 from . import shapes as _shapes
+from ._runmap import HLINK_HOVER_QNAMES, HLINK_QNAMES
 from .read import iter_shapes, resolve_slide, slide_table, slides_in_scope
 
 RT_HYPERLINK = (
@@ -307,11 +308,10 @@ def _gc_link_rels(pkg: PptxPackage, part: str, rids: set[str]) -> list[str]:
 
 
 def _existing_hlinks(container: etree._Element) -> list[etree._Element]:
-    return [
-        el
-        for el in container
-        if el.tag in (qn("a:hlinkClick"), qn("a:hlinkHover"))
-    ]
+    """Every hyperlink element directly inside one container, shape-level
+    or run-level. Naming only the shape-level pair made a run's
+    a:hlinkMouseOver invisible to set, remove and list alike."""
+    return [el for el in container if el.tag in HLINK_QNAMES]
 
 
 def _make_hlink(rid: str, action: str | None, tooltip: str | None):
@@ -562,7 +562,7 @@ def _classify(
     if action == _ACTION_MEDIA:
         return None
     record: dict = {
-        "trigger": "hover" if el.tag == qn("a:hlinkHover") else "click",
+        "trigger": "hover" if el.tag in HLINK_HOVER_QNAMES else "click",
         "tooltip": el.get("tooltip"),
         "broken": False,
     }

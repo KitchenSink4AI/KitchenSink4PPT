@@ -444,3 +444,107 @@ def test_validate_does_not_promise_coordinates_it_may_not_have():
     assert "when it can be located" in doc, (
         "the coordinate sentence must say the coordinates may be absent"
     )
+
+
+# ----------------------------------------------------------------- G3b
+#
+# The run-level hover element again, this time on the READING side. Every
+# whole-tree sweep and every container scan named a:hlinkClick and
+# a:hlinkHover, which is the SHAPE-level pair. A run's a:hlinkMouseOver
+# (what PowerPoint writes for Insert > Action > Mouse Over on selected
+# text) was invisible to all of them: list_hyperlinks did not report it,
+# set/remove left it in place, and a sweep that removed its relationship
+# left its r:id pointing at nothing.
+
+
+def _run_hover_link(pkg, slide, shape_id, rid):
+    """Turn the run's existing a:hlinkClick into an a:hlinkMouseOver, which
+    is what a mouse-over action on text looks like in a real deck."""
+    from kitchensink4ppt.ops import read as _read
+    from kitchensink4ppt.ops import shapes as _shapes
+
+    part = _read.slide_table(pkg)[slide]["part"]
+    elem, _chain = _shapes._find_shape(pkg, part, shape_id)
+    swapped = 0
+    for rpr in elem.iter(qn("a:rPr")):
+        for el in list(rpr):
+            if el.tag == qn("a:hlinkClick"):
+                el.tag = qn("a:hlinkMouseOver")
+                swapped += 1
+    pkg.mark_dirty(part)
+    assert swapped == 1
+    return part
+
+
+def test_the_hyperlink_element_list_is_shared_and_complete():
+    from kitchensink4ppt.ops._runmap import HLINK_ELEMENTS, HLINK_HOVER_ELEMENTS
+
+    assert set(HLINK_ELEMENTS) == {
+        "a:hlinkClick", "a:hlinkHover", "a:hlinkMouseOver"
+    }
+    assert set(HLINK_HOVER_ELEMENTS) == {"a:hlinkHover", "a:hlinkMouseOver"}
+
+
+def test_a_run_level_mouse_over_link_is_listed(make_deck):
+    from kitchensink4ppt.core.package import PptxPackage
+    from kitchensink4ppt.ops import links, text as _text
+
+    pkg = PptxPackage(make_deck("hover_list.pptx"))
+    box = _text.insert_textbox(pkg, 0, "Click here for details", 1, 1, 4, 1)
+    links.set_hyperlink(
+        pkg, 0, {"shape_id": box["shape_id"], "paragraph": 0},
+        url="https://example.com/",
+    )
+    _run_hover_link(pkg, 0, box["shape_id"], "rId2")
+    found = [
+        rec for rec in links.list_hyperlinks(pkg)["hyperlinks"]
+        if rec.get("where") == "text"
+    ]
+    assert found, "a run's mouse-over link was not listed at all"
+    assert found[0]["trigger"] == "hover"
+    assert found[0].get("url") == "https://example.com/"
+
+
+def test_removing_a_run_level_mouse_over_link_works(make_deck):
+    from kitchensink4ppt.core.package import PptxPackage
+    from kitchensink4ppt.ops import links, read as _read
+    from kitchensink4ppt.ops import shapes as _shapes, text as _text
+
+    pkg = PptxPackage(make_deck("hover_remove.pptx"))
+    box = _text.insert_textbox(pkg, 0, "Click here for details", 1, 1, 4, 1)
+    links.set_hyperlink(
+        pkg, 0, {"shape_id": box["shape_id"], "paragraph": 0},
+        url="https://example.com/",
+    )
+    _run_hover_link(pkg, 0, box["shape_id"], "rId2")
+    result = links.remove_hyperlink(pkg, 0, box["shape_id"])
+    assert result["removed"] >= 1
+    part = _read.slide_table(pkg)[0]["part"]
+    elem, _chain = _shapes._find_shape(pkg, part, box["shape_id"])
+    assert not list(elem.iter(qn("a:hlinkMouseOver"))), (
+        "the mouse-over link survived a removal that reported success"
+    )
+
+
+def test_deleting_a_slide_neuters_a_run_level_mouse_over_jump(make_deck):
+    """The dangerous one: the rel goes, and an unswept r:id is left behind
+    pointing at a relationship that no longer exists."""
+    from kitchensink4ppt.core.package import PptxPackage
+    from kitchensink4ppt.ops import links, read as _read
+    from kitchensink4ppt.ops import shapes as _shapes, slides as _slides
+    from kitchensink4ppt.ops import text as _text
+
+    pkg = PptxPackage(make_deck("hover_jump.pptx", extra_slides=2))
+    box = _text.insert_textbox(pkg, 0, "Jump to the last slide", 1, 1, 4, 1)
+    links.set_hyperlink(
+        pkg, 0, {"shape_id": box["shape_id"], "paragraph": 0}, to_slide=2
+    )
+    _run_hover_link(pkg, 0, box["shape_id"], "rId2")
+    _slides.delete_slide(pkg, 2)
+    part = _read.slide_table(pkg)[0]["part"]
+    elem, _chain = _shapes._find_shape(pkg, part, box["shape_id"])
+    left = list(elem.iter(qn("a:hlinkMouseOver")))
+    assert not left, (
+        "the jump's rel was removed but its mouse-over element was left "
+        "behind with a dangling r:id"
+    )

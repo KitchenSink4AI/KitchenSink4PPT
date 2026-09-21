@@ -56,6 +56,7 @@ from ..core.package import (
     resolve_target,
 )
 from ..core.sandbox import check_path
+from ._runmap import HLINK_QNAMES
 
 _RT = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/"
 RT_NOTES_SLIDE = _RT + "notesSlide"
@@ -740,8 +741,9 @@ def _drop_custom_show_refs(pkg: PptxPackage, rid: str) -> dict:
 def _neuter_jump_hyperlinks(pkg: PptxPackage, deleted_part: str) -> list[dict]:
     """Other parts (slides, layouts, masters, notesSlides) can carry jump
     hyperlinks (slide-reltype rels) targeting the deleted slide. Drop the
-    rel and remove the referencing a:hlinkClick/a:hlinkHover elements so the
-    click becomes a no-op; every neutered link is flagged in the result."""
+    rel and remove every referencing hyperlink element (shape-level and
+    run-level, click and hover) so the click becomes a no-op; every
+    neutered link is flagged in the result."""
     flagged: list[dict] = []
     pres_rels = rels_name(PRESENTATION_PART)
     for name in list(pkg.part_names()):
@@ -761,7 +763,7 @@ def _neuter_jump_hyperlinks(pkg: PptxPackage, deleted_part: str) -> list[dict]:
                 changed = True
                 removed = 0
                 src_root = pkg.root(source)
-                for el in list(src_root.iter(qn("a:hlinkClick"), qn("a:hlinkHover"))):
+                for el in list(src_root.iter(*HLINK_QNAMES)):
                     if el.get(qn("r:id")) == rid:
                         el.getparent().remove(el)
                         removed += 1
