@@ -149,7 +149,7 @@ FIGURE_SURFACES = (
 #: with a re-run of the named script.
 PUBLISHED_FIGURES = (
     ('142', 'tools', 'scripts/measure_surface.py'),
-    ('1,562', 'tests', 'scripts/stamp_figures.py'),
+    ('1,596', 'tests', 'scripts/stamp_figures.py'),
     ('7.2k', 'tokens in the lite core', 'scripts/measure_surface.py'),
 )
 

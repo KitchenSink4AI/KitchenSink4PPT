@@ -89,7 +89,7 @@ After replacing text, inspect the result for the formatting that was preserved a
 - Presentation writes are serialized across processes. A live lock is not reclaimed merely because it is more than ten minutes old, and a lock written by another host is not reclaimed locally. Wait for the lock or report the refusal.
 - A timeout may end only a PowerPoint process started by this server. It must not end a PowerPoint process that was already running when the call began.
 - Saves preserve each embedded media file's existing compression. A text or structure edit must not recompress unrelated media.
-- Release evidence for v1.2: 1,562 tests, over 1,500 adversarial calls through the raw MCP stdio transport, zero corruptions, verified by opening outputs in invisible PowerPoint and failing on any repair prompt.
+- Release evidence for v1.2: 1,596 tests, over 1,500 adversarial calls through the raw MCP stdio transport, zero corruptions, verified by opening outputs in invisible PowerPoint and failing on any repair prompt.
 
 ## Documented refusals
 
