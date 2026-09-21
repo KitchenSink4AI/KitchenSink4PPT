@@ -523,68 +523,75 @@ def _powerpoint():
 
 
 def _start_powerpoint(win32client, pythoncom, before_pids):
-    """DispatchEx with ONE bounded retry, and PID accounting around it.
+    """DispatchEx with ONE bounded retry. NOTHING HERE ENDS A PROCESS.
 
     The only action taken between the two attempts is re-arming this
     thread's apartment, so only the faults that action repairs are retried
-    (STARTUP_RETRY_HRESULTS). A failed attempt is nonetheless capable of
-    leaving a POWERPNT.EXE behind, so the process table is re-read after a
-    failed attempt and anything that appeared is ENDED before the next one.
-    That is the difference between a retry and a process leak (review
-    finding M3).
+    (STARTUP_RETRY_HRESULTS).
 
-    THE CLEANUP IS ARMED ONLY WHEN NO POWERPOINT WAS RUNNING AT ENTRY. That
-    is the same rule the timeout kill-switch uses and the same promise the
-    module docstring makes: nothing here ends a process it did not start.
-    If an instance was already running we attached to it, and a process
-    appearing mid-call is not ours to reason about.
+    The previous version read the process table after a failed attempt and
+    force-ended every POWERPNT.EXE that had appeared since entry, on the
+    reasoning that an empty entry snapshot made any new process ours. It is
+    not evidence of ownership: the user or another session can launch
+    PowerPoint between that snapshot and this call's failure, and that
+    instance was then killed with no save prompt. The snapshot can also be
+    empty because `tasklist` itself failed, which turns "unknown" into
+    "nothing was running" (second review, G2, 2026-09-22).
 
-    `before_pids` is REQUIRED, and it must be a true snapshot: a caller that
-    passed an empty set while PowerPoint was in fact running would turn this
-    into a killer of other people's processes. Caught by a test on a machine
-    where another session happened to have PowerPoint open, 2026-09-22.
+    So the difference is only LOOKED at, never acted on: a pid that appears
+    across a failed attempt is reported in the refusal as something left
+    running, and its appearance stops the retry, because launching again on
+    top of a state we cannot explain is how one unexplained process becomes
+    two.
 
-    Returns (app, pids_this_call_ended)."""
-    can_clean = not before_pids
-    ended: set = set()
+    `before_pids` is the entry snapshot, used only to tell an old process
+    from a new one in that report. When it is NON-empty an instance was
+    already up, we were attaching to it rather than starting one, and a
+    process appearing mid-call is not ours to reason about at all: the look
+    is skipped and the retry runs as before.
+
+    Returns (app, pids_that_appeared)."""
+    watch = not before_pids
+    appeared: set = set()
     last = None
     for attempt in (0, 1):
         try:
-            return win32client.DispatchEx("PowerPoint.Application"), ended
+            return win32client.DispatchEx("PowerPoint.Application"), appeared
         except Exception as exc:  # noqa: BLE001 - re-raised classified below
             last = exc
-            if can_clean:
-                # Nothing was running when we started, so a process that
-                # exists now and never handed us a proxy is ours, is
-                # unreachable by anything else, and must not be left behind.
-                for pid in powerpnt_pids() - before_pids:
-                    with contextlib.suppress(Exception):
-                        subprocess.run(
-                            ["taskkill", "/PID", str(pid), "/F"],
-                            capture_output=True, timeout=15,
-                        )
-                        ended.add(pid)
-            if attempt == 1 or not (_hresults(exc) & STARTUP_RETRY_HRESULTS):
+            if watch:
+                with contextlib.suppress(Exception):
+                    appeared |= powerpnt_pids() - set(before_pids)
+            if (
+                attempt == 1
+                or appeared
+                or not (_hresults(exc) & STARTUP_RETRY_HRESULTS)
+            ):
                 break
             with contextlib.suppress(Exception):
                 _ensure_apartment(pythoncom)
             time.sleep(STARTUP_RETRY_DELAY)
-    _raise_startup(last, ended)
+    _raise_startup(last, appeared)
 
 
-def _raise_startup(exc, ended: set) -> None:
-    """Classify a start-up failure, saying honestly whether a partially
-    launched PowerPoint had to be ended."""
+def _raise_startup(exc, appeared: set) -> None:
+    """Classify a start-up failure and report, without acting on it, any
+    PowerPoint process that appeared while it was failing."""
+    note = ""
+    if appeared:
+        pids = ", ".join(str(p) for p in sorted(appeared))
+        note = (
+            " A PowerPoint process appeared during the failed start: "
+            f"pid {pids}; it was left running."
+        )
     typed = _classify(exc)
     if typed is not None:
-        if ended:
-            typed = type(typed)(
-                str(typed)
-                + f" A PowerPoint process this call started ({len(ended)}) "
-                "did not answer and was ended."
-            )
+        if note:
+            typed = type(typed)(str(typed) + note)
         raise typed from exc
-    raise PptMcpError(f"PowerPoint could not be started: {exc}") from exc
+    raise PptMcpError(
+        f"PowerPoint could not be started on this thread: {exc}{note}"
+    ) from exc
 
 
 def _powerpoint_locked():
@@ -607,7 +614,7 @@ def _powerpoint_locked():
     before_pids = powerpnt_pids()
     launched = not before_pids
     pre_count = len(before_pids)
-    app, _ended = _start_powerpoint(win32client, pythoncom, before_pids)
+    app, _appeared = _start_powerpoint(win32client, pythoncom, before_pids)
     if launched:
         # Arm the kill-switch for exactly the process WE just started.
         created = powerpnt_pids() - before_pids
