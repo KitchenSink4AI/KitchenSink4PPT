@@ -187,8 +187,7 @@ def _classify(exc):
         # so that case gets the honest sentence instead (review, 2026-09-22).
         aftermath = (
             " No presentation was opened and no file was changed; a "
-            "PowerPoint process may have been started and is ended by this "
-            "call when it can be identified."
+            "PowerPoint process may have been started and was left running."
             if CO_E_SERVER_EXEC_FAILURE in hrs
             else " Nothing was opened and nothing was changed."
         )
@@ -400,10 +399,14 @@ def _run_bounded(name: str, timeout: float, fn):
 
     On expiry: if the worker never got the lock, that is queue contention
     and PowerPointBusy names the operation actually running. If it got the
-    lock and then stalled, the POWERPNT instance IT launched is terminated
-    so the COM call errors out and the lock is released (PowerPointBlocked).
-    When the stalled call was working against the USER's PowerPoint no
-    process is touched at all; the error says so and the caller decides."""
+    lock and then stalled, the caller is told (PowerPointBlocked) and
+    NOTHING IS CANCELLED: the deadline bounds how long the CALLER waits,
+    not how long the work runs. The worker thread is still inside the COM
+    call, can finish later, and can still save its output, so the refusal
+    says exactly that and tells the caller how to check before retrying.
+    No process is terminated here, or anywhere else in this package; a
+    PowerPoint this call started is named as an observation and left
+    running (final check, R5-1, 2026-09-22)."""
     # Preserve the bridge's documented side effect: before v1.1 every public
     # operation ran ON THE CALLING THREAD and left that thread's COM
     # apartment initialized (this module initializes freely and never
@@ -474,27 +477,40 @@ def _run_bounded(name: str, timeout: float, fn):
         from . import dialogs as _dialogs
 
         dialogs_seen = _dialogs.pending_dialogs()
+    # The pid clause reports an OBSERVATION, not proven ownership: the
+    # acquisition token says this process was not running when the call
+    # began and looked freshly created, which is evidence, not proof, and
+    # the caller is told to check before ending anything (R5-1).
     if ours:
         pids = ", ".join(str(p) for p in sorted(ours))
         detail = (
-            f" (the PowerPoint this call started, pid {pids}, was left "
-            "running; end it from Task Manager if it stays unresponsive)"
+            f" (a PowerPoint process that was not running when this call "
+            f"began, pid {pids}, was left running; before ending it from "
+            "Task Manager, make sure no person or other program is using "
+            "it)"
         )
     else:
         detail = (
-            " (it was working against a PowerPoint this server did not "
-            "launch, so no process was touched)"
+            " (PowerPoint was already running when this call began, so no "
+            "process was touched)"
         )
     if dialogs_seen:
         titles = ", ".join(
             d.get("title") or d.get("class", "?") for d in dialogs_seen[:3]
         )
         detail += f". PowerPoint has a dialog open: {titles}"
+    # NOTHING WAS CANCELLED. The old sentence said the operation "was
+    # aborted", which is false: the deadline bounds the caller's wait, the
+    # worker is still inside the COM call, and it can still finish and
+    # save. A caller told it was aborted retries, and a retry on top of a
+    # live operation is how a deck gets written twice (R5-1).
     raise PowerPointBlocked(
-        f"{name} did not finish within {timeout:.0f}s and was aborted"
+        f"PowerPoint did not answer within {timeout:.0f} s. The operation "
+        "was NOT cancelled: it may still be running and may still finish "
+        "and save its output. Do not retry yet: call powerpoint_status and "
+        "wait until it reports no COM operation in progress, then check the "
+        "output file before repeating the call."
         + detail
-        + ". The deck may be very large, or PowerPoint may be stuck. Check "
-        "powerpoint_status, and pass a larger timeout to raise the bound."
     )
 
 
