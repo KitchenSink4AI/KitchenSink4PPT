@@ -113,13 +113,22 @@ STARTUP_HRESULTS = {
     REGDB_E_CLASSNOTREG,
     CO_E_SERVER_EXEC_FAILURE,
 }
-#: The subset worth one more try after re-arming this thread's apartment.
-#: A class that is not registered will not register itself on a retry.
+#: The subset worth one more try. The ONLY action taken between the two
+#: attempts is re-arming this thread's apartment, so the retry set is
+#: exactly the errors that action can repair, and nothing else (review
+#: finding M3, 2026-09-22). Deliberately NOT retried:
+#:   REGDB_E_CLASSNOTREG       a second attempt cannot register a class;
+#:   RPC_E_CHANGED_MODE        the thread's apartment model is already set,
+#:                             and re-initializing it the same way cannot
+#:                             change it, so a retry is theatre;
+#:   CO_E_SERVER_EXEC_FAILURE  PowerPoint may have PARTIALLY LAUNCHED before
+#:                             failing, and starting a second one without
+#:                             accounting for the first is how a process
+#:                             gets stranded and the zombie alarm fires on
+#:                             an otherwise successful call.
 STARTUP_RETRY_HRESULTS = {
     CO_E_NOTINITIALIZED,
     CO_E_ALREADYINITIALIZED,
-    RPC_E_CHANGED_MODE,
-    CO_E_SERVER_EXEC_FAILURE,
 }
 STARTUP_RETRY_DELAY = 0.5  # seconds between the two start attempts
 
@@ -172,13 +181,23 @@ def _classify(exc):
             "Backstage, or a running command). Close it and retry."
         )
     if hrs & STARTUP_HRESULTS:
+        # "Nothing was opened" is only true when PowerPoint never ran. A
+        # server-execution failure can leave a partially launched process,
+        # so that case gets the honest sentence instead (review, 2026-09-22).
+        aftermath = (
+            " No presentation was opened and no file was changed; a "
+            "PowerPoint process may have been started and is ended by this "
+            "call when it can be identified."
+            if CO_E_SERVER_EXEC_FAILURE in hrs
+            else " Nothing was opened and nothing was changed."
+        )
         return PowerPointNotRunning(
             "PowerPoint could not be started on this thread: "
             + _startup_detail(hrs)
-            + " Nothing was opened and nothing was changed. The file-based "
-            "tools do not need PowerPoint; retry the COM call, and if it "
-            "keeps failing check that PowerPoint is installed and that no "
-            "install repair is in progress."
+            + aftermath
+            + " The file-based tools do not need PowerPoint; retry the COM "
+            "call, and if it keeps failing check that PowerPoint is "
+            "installed and that no install repair is in progress."
         )
     return None
 
@@ -223,13 +242,23 @@ def _ensure_apartment(pythoncom) -> str:
     it is recorded and the call proceeds; COM still marshals, it just
     marshals differently.
 
+    A pythoncom without CoInitializeEx falls back to CoInitialize, which is
+    the same request in the older API. A MISSING API is not an apartment
+    failure and must not be reported as one, or the N1 refusal below would
+    turn an old pywin32 into "PowerPoint could not be started".
+
     CoUninitialize is never paired here, for the reason in the module
     docstring. Returns one of "initialized", "already", "changed-mode", or
     "failed: ...", and records it per thread so a later start-up failure can
     quote it."""
     tid = threading.get_ident()
+    init_ex = getattr(pythoncom, "CoInitializeEx", None)
+    mode = getattr(pythoncom, "COINIT_APARTMENTTHREADED", 2)
     try:
-        pythoncom.CoInitializeEx(pythoncom.COINIT_APARTMENTTHREADED)
+        if init_ex is not None:
+            init_ex(mode)
+        else:
+            pythoncom.CoInitialize()
         state = "initialized"
     except Exception as exc:
         hrs = _hresults(exc)
@@ -354,9 +383,15 @@ def _run_bounded(name: str, timeout: float, fn):
     # The failure used to be swallowed by contextlib.suppress, which meant a
     # caller thread whose apartment could not be armed produced no evidence
     # at all: the next COM call two frames away failed with "CoInitialize
-    # has not been called" and the report said nothing about why. It is
-    # carried now, on the result and in _APARTMENT_STATE, so the error the
-    # caller finally sees can quote it.
+    # has not been called" and the report said nothing about why.
+    #
+    # It is recorded now, in _APARTMENT_STATE, keyed by thread. That is an
+    # IN-PROCESS diagnostic and nothing more: it is read by _startup_detail
+    # when a start-up fault is classified, and reported by powerpoint_status
+    # as com_apartment. It is deliberately NOT injected into this operation's
+    # return value, because every public result here has an established shape
+    # and diagnostics do not belong conditionally inside them (review finding
+    # N2, 2026-09-22, which caught the earlier comment claiming otherwise).
     caller_apartment = "no pythoncom"
     try:
         import pythoncom
@@ -487,27 +522,69 @@ def _powerpoint():
         yield from _powerpoint_locked()
 
 
-def _start_powerpoint(win32client, pythoncom):
-    """DispatchEx with ONE bounded retry on a start-up fault.
+def _start_powerpoint(win32client, pythoncom, before_pids):
+    """DispatchEx with ONE bounded retry, and PID accounting around it.
 
-    The apartment is re-armed between the two attempts, which is the whole
-    point: a CO_E_NOTINITIALIZED on the first attempt means this thread's
-    apartment was not there when COM was asked, and the retry is what turns
-    that into a working call instead of a refusal. A class that is not
-    registered is not retried, because a second attempt cannot register it.
-    """
+    The only action taken between the two attempts is re-arming this
+    thread's apartment, so only the faults that action repairs are retried
+    (STARTUP_RETRY_HRESULTS). A failed attempt is nonetheless capable of
+    leaving a POWERPNT.EXE behind, so the process table is re-read after a
+    failed attempt and anything that appeared is ENDED before the next one.
+    That is the difference between a retry and a process leak (review
+    finding M3).
+
+    THE CLEANUP IS ARMED ONLY WHEN NO POWERPOINT WAS RUNNING AT ENTRY. That
+    is the same rule the timeout kill-switch uses and the same promise the
+    module docstring makes: nothing here ends a process it did not start.
+    If an instance was already running we attached to it, and a process
+    appearing mid-call is not ours to reason about.
+
+    `before_pids` is REQUIRED, and it must be a true snapshot: a caller that
+    passed an empty set while PowerPoint was in fact running would turn this
+    into a killer of other people's processes. Caught by a test on a machine
+    where another session happened to have PowerPoint open, 2026-09-22.
+
+    Returns (app, pids_this_call_ended)."""
+    can_clean = not before_pids
+    ended: set = set()
     last = None
     for attempt in (0, 1):
         try:
-            return win32client.DispatchEx("PowerPoint.Application")
+            return win32client.DispatchEx("PowerPoint.Application"), ended
         except Exception as exc:  # noqa: BLE001 - re-raised classified below
             last = exc
+            if can_clean:
+                # Nothing was running when we started, so a process that
+                # exists now and never handed us a proxy is ours, is
+                # unreachable by anything else, and must not be left behind.
+                for pid in powerpnt_pids() - before_pids:
+                    with contextlib.suppress(Exception):
+                        subprocess.run(
+                            ["taskkill", "/PID", str(pid), "/F"],
+                            capture_output=True, timeout=15,
+                        )
+                        ended.add(pid)
             if attempt == 1 or not (_hresults(exc) & STARTUP_RETRY_HRESULTS):
                 break
             with contextlib.suppress(Exception):
                 _ensure_apartment(pythoncom)
             time.sleep(STARTUP_RETRY_DELAY)
-    _raise_classified(last, "PowerPoint could not be started")
+    _raise_startup(last, ended)
+
+
+def _raise_startup(exc, ended: set) -> None:
+    """Classify a start-up failure, saying honestly whether a partially
+    launched PowerPoint had to be ended."""
+    typed = _classify(exc)
+    if typed is not None:
+        if ended:
+            typed = type(typed)(
+                str(typed)
+                + f" A PowerPoint process this call started ({len(ended)}) "
+                "did not answer and was ended."
+            )
+        raise typed from exc
+    raise PptMcpError(f"PowerPoint could not be started: {exc}") from exc
 
 
 def _powerpoint_locked():
@@ -516,12 +593,21 @@ def _powerpoint_locked():
     # Tolerant of "already initialized" (S_FALSE) and of a thread another
     # library put in the other threading model (RPC_E_CHANGED_MODE), both
     # handled in _ensure_apartment; never paired with CoUninitialize.
-    _ensure_apartment(pythoncom)
+    state = _ensure_apartment(pythoncom)
+    if state.startswith("failed:"):
+        # N1: an apartment that genuinely could not be armed is not
+        # something Dispatch can recover from. Refusing here names the real
+        # cause instead of letting a second, vaguer COM failure speak for it.
+        raise PowerPointNotRunning(
+            "PowerPoint could not be started on this thread: the COM "
+            f"apartment could not be initialized ({state[len('failed: '):]}). "
+            "Nothing was opened and nothing was changed."
+        )
     tid = threading.get_ident()
     before_pids = powerpnt_pids()
     launched = not before_pids
     pre_count = len(before_pids)
-    app = _start_powerpoint(win32client, pythoncom)
+    app, _ended = _start_powerpoint(win32client, pythoncom, before_pids)
     if launched:
         # Arm the kill-switch for exactly the process WE just started.
         created = powerpnt_pids() - before_pids

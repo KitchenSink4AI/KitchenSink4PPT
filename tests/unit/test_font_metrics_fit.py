@@ -247,8 +247,11 @@ def test_check_layout_estimate_path_keeps_the_wide_margin(deck, monkeypatch):
 def test_overflow_check_declares_both_thresholds():
     opts, caveat = dc.CHECKS["overflow"]
     assert opts["min_fill_ratio"] == 1.4
-    assert opts["min_fill_ratio_metrics"] == 1.05
-    assert "advance widths" in caveat
+    # 1.0, not 1.05: the conservative calibration moved INSIDE the
+    # measurement in round 2, so this model needs no extra margin here.
+    assert opts["min_fill_ratio_metrics"] == 1.0
+    assert "measured against its own font" in caveat
+    assert "per-line allowance" in caveat
 
 
 # ------------------------------------------------------- the module itself

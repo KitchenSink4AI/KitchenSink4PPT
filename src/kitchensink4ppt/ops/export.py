@@ -73,15 +73,33 @@ def _find_soffice() -> Path | None:
     return Path(hit) if hit else None
 
 
+def _runnable(path: Path) -> bool:
+    """A usable executable: a FILE, and on POSIX one we may execute.
+
+    Path.exists() alone accepted a DIRECTORY named pdftoppm, and on Unix a
+    non-executable file. Either is reported as an available renderer and
+    then fails at subprocess launch, which moves the error from detection
+    (where it is actionable) to the middle of an export (where it is not).
+    Review finding N4, 2026-09-22."""
+    try:
+        if not path.is_file():
+            return False
+    except OSError:
+        return False
+    if os.name == "posix":
+        return os.access(path, os.X_OK)
+    return True
+
+
 def _find_pdftoppm() -> Path | None:
     env = os.environ.get("KS4P_PDFTOPPM")
-    if env and Path(env).exists():
+    if env and _runnable(Path(env)):
         return Path(env)
     hit = shutil.which("pdftoppm")
     if hit:
         return Path(hit)
     for cand in PDFTOPPM_WELL_KNOWN:
-        if cand.exists():
+        if _runnable(cand):
             return cand
     return None
 
