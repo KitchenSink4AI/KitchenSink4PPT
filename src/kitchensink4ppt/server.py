@@ -2079,8 +2079,8 @@ def create_table(
     row from data (short rows pad, long rows refuse). style: a built-in
     table style by name or GUID (apply_table_style lists the families);
     first_row/band_rows set the header and banding flags. row_heights
-    and col_widths size the grid at creation: a list of inches or an
-    {index: inches} dict, the rest splitting what is left.
+    and col_widths size the grid at creation: a full list of inches sets
+    the box, an {index: inches} dict splits what is left.
     Returns the shape id, the handle other table tools take. Saves
     atomically with two-slot backup; backup=False skips rotation."""
     return _edit(

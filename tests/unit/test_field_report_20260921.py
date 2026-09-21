@@ -634,6 +634,9 @@ def test_create_table_refuses_a_wrong_length_list(tmp_path):
 
 
 def test_create_table_refuses_sizes_that_overflow_the_box(tmp_path):
+    """The refusal case is a PARTIAL dict that leaves the unstated columns
+    nothing. A COMPLETE list is the caller stating the whole grid, so it
+    resizes the frame instead of refusing (review finding M5)."""
     from kitchensink4ppt.core.errors import PptMcpError
     from kitchensink4ppt.ops import tables as tb
 
@@ -643,11 +646,9 @@ def test_create_table_refuses_sizes_that_overflow_the_box(tmp_path):
     prs.save(str(path))
     pkg = PptxPackage(str(path))
     with pytest.raises(PptMcpError) as excinfo:
-        tb.create_table(
-            pkg, 0, 2, 2, 1, 1, 6, 3, col_widths=[5.0, 5.0]
-        )
+        tb.create_table(pkg, 0, 2, 3, 1, 1, 6, 3, col_widths={0: 7.0})
     message = str(excinfo.value)
-    assert "col_widths" in message and "6" in message
+    assert "col_widths" in message and "unstated" in message
 
 
 def test_create_table_description_stays_in_budget():
@@ -664,8 +665,8 @@ def test_create_table_description_stays_in_budget():
 # ----------------------------------------------------------------- #887
 
 
-_NOTE = (
-    "tools/list_changed was sent. If the new tools are not in your tool "
+_BODY = (
+    "If the new tools are not in your tool "
     "list, this client fixed its list when the session or worker started: "
     "do not retry here. What works in every client: ask the user to add "
     "the packs to KS4P_MODE (comma list) in this server's launch "
@@ -674,6 +675,12 @@ _NOTE = (
     "enable_tools in the main session and then start a new worker. If "
     "enable_tools refuses a pack, an administrator locked the tool set: "
     "do not retry."
+)
+
+_NOTE = "tools/list_changed was sent. " + _BODY
+
+_NOOP_NOTE = (
+    "These packs were already on, so no list change was sent. " + _BODY
 )
 
 _WORKER_SENTENCE = (
@@ -713,7 +720,12 @@ def test_the_note_is_emitted_on_a_no_op_re_enable(pristine_packs):
     again = packs.enable(["graphics"])
     assert again["enabled"] == []
     assert again["already_enabled"] == ["graphics"]
-    assert again["note"] == _NOTE
+    # N1: _sync fires the visibility hook only when a tool actually
+    # flipped, so claiming a notification here was a plain falsehood.
+    assert again["note"] == _NOOP_NOTE
+    assert "tools/list_changed was sent" not in again["note"]
+    # the guidance itself is identical either way
+    assert _BODY in again["note"]
 
 
 def test_the_worker_sentence_is_in_the_instructions_and_the_index():
@@ -1425,3 +1437,136 @@ def test_mixed_tristate_is_not_treated_as_yes():
     pres = _FakePres([_FakeSlide(256, [shape])])
     out = bridge._full_load(pres)
     assert out["text_reads"] == 0, "a mixed tri-state was probed as a yes"
+
+
+# ------------------------------------------------------- M5 (table geometry)
+
+
+def _table_pkg(tmp_path, name="m5.pptx"):
+    prs = Presentation()
+    prs.slides.add_slide(prs.slide_layouts[6])
+    path = tmp_path / name
+    prs.save(str(path))
+    return PptxPackage(str(path))
+
+
+def _geometry(pkg):
+    from kitchensink4ppt.ops import geometry as g
+
+    part = get_slide_info(pkg, 0)["part"]
+    frame = pkg.root(part).find(f".//{qn('p:graphicFrame')}")
+    ext = frame.find(f"{qn('p:xfrm')}/{qn('a:ext')}")
+    tbl = frame.find(f".//{qn('a:tbl')}")
+    widths = [int(c.get("w")) for c in tbl.iter(qn("a:gridCol"))]
+    heights = [int(r.get("h")) for r in tbl.findall(qn("a:tr"))]
+    return {
+        "frame_cx": int(ext.get("cx")),
+        "frame_cy": int(ext.get("cy")),
+        "widths": widths,
+        "heights": heights,
+        "in": g.emu_to_in,
+    }
+
+
+def test_a_complete_underfilling_list_resizes_the_frame(tmp_path):
+    """M5: a 6-inch frame around a grid declaring 2 inches is geometry
+    PowerPoint has to normalize away, so the widths that rendered were not
+    the widths the caller asked for."""
+    from kitchensink4ppt.ops import tables as tb
+    from kitchensink4ppt.ops import geometry as g
+
+    pkg = _table_pkg(tmp_path)
+    out = tb.create_table(
+        pkg, 0, 2, 2, 1, 1, 6, 3, col_widths=[1.0, 1.0]
+    )
+    geo = _geometry(pkg)
+    assert geo["widths"] == [g.in_to_emu(1.0), g.in_to_emu(1.0)]
+    assert geo["frame_cx"] == sum(geo["widths"]), (
+        "the frame still claims a width the grid does not fill"
+    )
+    assert out["w_in"] == 2.0
+    assert "box_resized" in out and "width" in out["box_resized"]
+
+
+def test_a_complete_overfilling_list_resizes_the_frame_too(tmp_path):
+    """M5: the same rule in the other direction, instead of a refusal."""
+    from kitchensink4ppt.ops import tables as tb
+    from kitchensink4ppt.ops import geometry as g
+
+    pkg = _table_pkg(tmp_path)
+    out = tb.create_table(
+        pkg, 0, 3, 2, 1, 1, 6, 3, row_heights=[2.0, 2.0, 2.0]
+    )
+    geo = _geometry(pkg)
+    assert geo["heights"] == [g.in_to_emu(2.0)] * 3
+    assert geo["frame_cy"] == sum(geo["heights"])
+    assert out["h_in"] == 6.0
+    assert "height" in out["box_resized"]
+
+
+def test_a_complete_exact_list_does_not_claim_a_resize(tmp_path):
+    """M5 guard: a list that already totals the box says nothing."""
+    from kitchensink4ppt.ops import tables as tb
+
+    pkg = _table_pkg(tmp_path)
+    out = tb.create_table(
+        pkg, 0, 2, 2, 1, 1, 6, 3, col_widths=[2.0, 4.0],
+        row_heights=[1.5, 1.5],
+    )
+    geo = _geometry(pkg)
+    assert geo["frame_cx"] == sum(geo["widths"])
+    assert geo["frame_cy"] == sum(geo["heights"])
+    assert "box_resized" not in out
+
+
+def test_a_single_row_underfill_resizes(tmp_path):
+    """M5: the 1-row and 1-column edges the reviewer asked for."""
+    from kitchensink4ppt.ops import tables as tb
+    from kitchensink4ppt.ops import geometry as g
+
+    pkg = _table_pkg(tmp_path)
+    tb.create_table(pkg, 0, 1, 1, 1, 1, 6, 3, row_heights=[0.4],
+                    col_widths=[0.9])
+    geo = _geometry(pkg)
+    assert geo["heights"] == [g.in_to_emu(0.4)]
+    assert geo["widths"] == [g.in_to_emu(0.9)]
+    assert geo["frame_cy"] == g.in_to_emu(0.4)
+    assert geo["frame_cx"] == g.in_to_emu(0.9)
+
+
+def test_a_partial_dict_still_fits_the_box_it_was_given(tmp_path):
+    """M5 guard: a dict names some rows and leaves the rest to the box, so
+    the box still rules and the frame does not move."""
+    from kitchensink4ppt.ops import tables as tb
+    from kitchensink4ppt.ops import geometry as g
+
+    pkg = _table_pkg(tmp_path)
+    out = tb.create_table(pkg, 0, 3, 2, 1, 1, 6, 3, row_heights={1: 2.0})
+    geo = _geometry(pkg)
+    assert sum(geo["heights"]) == g.in_to_emu(3)
+    assert geo["frame_cy"] == g.in_to_emu(3)
+    assert "box_resized" not in out
+
+
+def test_a_partial_dict_that_leaves_no_room_still_refuses(tmp_path):
+    """M5: the one case a dict cannot resolve."""
+    from kitchensink4ppt.core.errors import PptMcpError
+    from kitchensink4ppt.ops import tables as tb
+
+    pkg = _table_pkg(tmp_path)
+    with pytest.raises(PptMcpError) as excinfo:
+        tb.create_table(pkg, 0, 3, 2, 1, 1, 6, 3, row_heights={0: 4.0})
+    message = str(excinfo.value)
+    assert "row_heights" in message and "unstated" in message
+
+
+def test_a_sized_table_still_saves(tmp_path):
+    """M5: the geometry the tests read has to survive the save gate."""
+    from kitchensink4ppt.ops import tables as tb
+
+    pkg = _table_pkg(tmp_path)
+    tb.create_table(pkg, 0, 3, 2, 1, 1, 6, 3, col_widths=[1.0, 1.0],
+                    data=[["a", "b"], ["c", "d"], ["e", "f"]])
+    out = tmp_path / "sized.pptx"
+    pkg.save(str(out))
+    assert out.is_file()
