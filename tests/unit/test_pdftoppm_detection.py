@@ -17,9 +17,22 @@ from kitchensink4ppt.ops import diagnostics as diag
 from kitchensink4ppt.ops import export as export_ops
 
 
+def _make_executable(path: Path) -> Path:
+    """A fixture standing in for an INSTALLED binary.
+
+    `write_bytes(b"")` alone produces a file with no execute bit, which on
+    POSIX is correctly not a renderer: the round-2 N4 check refuses it, and
+    three of these tests failed on the Linux CI runner until the fixtures
+    started representing what they claim to represent.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"")
+    path.chmod(0o755)
+    return path
+
+
 def test_env_override_wins(monkeypatch, tmp_path):
-    fake = tmp_path / "pdftoppm.exe"
-    fake.write_bytes(b"")
+    fake = _make_executable(tmp_path / "pdftoppm.exe")
     monkeypatch.setenv("KS4P_PDFTOPPM", str(fake))
     assert export_ops._find_pdftoppm() == fake
 
@@ -34,9 +47,7 @@ def test_env_override_pointing_nowhere_is_ignored(monkeypatch, tmp_path):
 def test_well_known_paths_are_probed(monkeypatch, tmp_path):
     monkeypatch.delenv("KS4P_PDFTOPPM", raising=False)
     monkeypatch.setattr(export_ops.shutil, "which", lambda _n: None)
-    fake = tmp_path / "poppler" / "bin" / "pdftoppm.exe"
-    fake.parent.mkdir(parents=True)
-    fake.write_bytes(b"")
+    fake = _make_executable(tmp_path / "poppler" / "bin" / "pdftoppm.exe")
     monkeypatch.setattr(
         export_ops, "PDFTOPPM_WELL_KNOWN", (Path(tmp_path / "no"), fake)
     )
@@ -108,8 +119,7 @@ def test_a_well_known_path_that_is_a_directory_is_skipped(monkeypatch, tmp_path)
     monkeypatch.setattr(export_ops.shutil, "which", lambda _n: None)
     d = tmp_path / "poppler_dir"
     d.mkdir()
-    good = tmp_path / "pdftoppm.exe"
-    good.write_bytes(b"")
+    good = _make_executable(tmp_path / "pdftoppm.exe")
     monkeypatch.setattr(export_ops, "PDFTOPPM_WELL_KNOWN", (d, good))
     assert export_ops._find_pdftoppm() == good
 
