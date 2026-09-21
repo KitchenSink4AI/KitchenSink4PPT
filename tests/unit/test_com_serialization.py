@@ -269,12 +269,17 @@ def test_run_bounded_fast_path_and_error_propagation():
         )
 
 
-def test_run_bounded_stuck_op_raises_powerpoint_blocked():
+def test_run_bounded_stuck_op_raises_powerpoint_blocked(monkeypatch):
     def stuck():
         time.sleep(3)
         return {}
 
     t0 = time.monotonic()
+    # R6-1: the deadline is followed by a grace period, and a worker that
+    # finishes inside it is a SUCCESS, not a timeout. This op has to be
+    # still running when the refusal is built, so the grace is shortened
+    # rather than letting the 3 second sleep finish inside the default 10.
+    monkeypatch.setattr(bridge, "TIMEOUT_GRACE_SECONDS", 0.1)
     # R5-1: the refusal no longer says the operation was aborted, because
     # nothing cancels it; it says PowerPoint did not answer in time.
     with pytest.raises(PowerPointBlocked, match="did not answer within"):
