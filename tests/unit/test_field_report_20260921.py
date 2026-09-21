@@ -766,3 +766,245 @@ def test_the_accepted_pack_policies_still_work(monkeypatch):
     assert packs.resolve_lock() is False
     monkeypatch.setenv(packs.ENV_PACK_POLICY, "")
     assert packs.resolve_lock() is False
+
+
+# ============================================================ ROUND 2
+# Findings from the second review of PR #32 (2026-09-22). The test bodies
+# for B1 and B2 are the reviewer's, adopted as written where they fit.
+
+
+def _bare_body():
+    body = etree.Element(qn("p:txBody"))
+    etree.SubElement(body, qn("a:bodyPr"))
+    etree.SubElement(body, qn("a:lstStyle"))
+    return body
+
+
+def _spec(text, level=0, explicit=False):
+    return {"text": text, "level": level, "level_explicit": explicit}
+
+
+def test_placeholder_retext_uses_field_character_properties():
+    """B1: a placeholder holding nothing but a slide-number field lost its
+    size, colour and East Asian font the moment the text was replaced, and
+    reported no loss. a:fld carries a real a:rPr."""
+    from kitchensink4ppt.ops.text import _replace_body_paragraphs
+
+    body = _bare_body()
+    p = etree.SubElement(body, qn("a:p"))
+    fld = etree.SubElement(p, qn("a:fld"))
+    rpr = etree.SubElement(fld, qn("a:rPr"))
+    rpr.set("sz", "2400")
+    etree.SubElement(rpr, qn("a:ea")).set("typeface", "Malgun Gothic")
+    etree.SubElement(fld, qn("a:t")).text = "1"
+
+    _replace_body_paragraphs(body, [_spec("Literal")])
+    new = body.find(f"{qn('a:p')}/{qn('a:r')}/{qn('a:rPr')}")
+    assert new is not None and new.get("sz") == "2400"
+    assert new.find(qn("a:ea")).get("typeface") == "Malgun Gothic"
+
+
+def test_placeholder_retext_uses_break_character_properties():
+    """B1: the same for a paragraph whose only property carrier is a:br."""
+    from kitchensink4ppt.ops.text import _replace_body_paragraphs
+
+    body = _bare_body()
+    p = etree.SubElement(body, qn("a:p"))
+    br = etree.SubElement(p, qn("a:br"))
+    rpr = etree.SubElement(br, qn("a:rPr"))
+    rpr.set("sz", "1600")
+    etree.SubElement(rpr, qn("a:latin")).set("typeface", "Consolas")
+
+    _replace_body_paragraphs(body, [_spec("Literal")])
+    new = body.find(f"{qn('a:p')}/{qn('a:r')}/{qn('a:rPr')}")
+    assert new is not None and new.get("sz") == "1600"
+    assert new.find(qn("a:latin")).get("typeface") == "Consolas"
+
+
+def test_a_field_in_the_replacement_gets_the_properties_too():
+    """B1: a:fld and a:br are landing spots as well as sources."""
+    from kitchensink4ppt.ops import shapes as _shp
+
+    old = _bare_body()
+    p = etree.SubElement(old, qn("a:p"))
+    r = etree.SubElement(p, qn("a:r"))
+    etree.SubElement(r, qn("a:rPr")).set("sz", "2800")
+    etree.SubElement(r, qn("a:t")).text = "old"
+
+    new = _bare_body()
+    np_ = etree.SubElement(new, qn("a:p"))
+    fld = etree.SubElement(np_, qn("a:fld"))
+    etree.SubElement(fld, qn("a:rPr"))
+    etree.SubElement(fld, qn("a:t")).text = "3"
+
+    _shp._carry_text_properties(old, new, set())
+    assert new.find(
+        f"{qn('a:p')}/{qn('a:fld')}/{qn('a:rPr')}"
+    ).get("sz") == "2800"
+
+
+def test_empty_replacement_keeps_the_end_paragraph_style():
+    """M2: the paragraph-ending insertion style is what an empty paragraph
+    renders at. Taking the first visible run's style instead buried a
+    24 pt insertion point under 10 pt body text and called it preserved."""
+    from kitchensink4ppt.ops.text import _replace_body_paragraphs
+
+    body = _bare_body()
+    p = etree.SubElement(body, qn("a:p"))
+    r = etree.SubElement(p, qn("a:r"))
+    etree.SubElement(r, qn("a:rPr")).set("sz", "1000")
+    etree.SubElement(r, qn("a:t")).text = "visible"
+    etree.SubElement(p, qn("a:endParaRPr")).set("sz", "2400")
+
+    _replace_body_paragraphs(body, [_spec("")])
+    end = body.find(f"{qn('a:p')}/{qn('a:endParaRPr')}")
+    assert end is not None, "the end-paragraph style is gone"
+    assert end.get("sz") == "2400", (
+        f"empty replacement took the run style, not endParaRPr: "
+        f"sz={end.get('sz')}"
+    )
+
+
+def test_a_visible_run_still_takes_the_run_style_not_end_para():
+    """M2 guard: the other direction must not flip."""
+    from kitchensink4ppt.ops.text import _replace_body_paragraphs
+
+    body = _bare_body()
+    p = etree.SubElement(body, qn("a:p"))
+    r = etree.SubElement(p, qn("a:r"))
+    etree.SubElement(r, qn("a:rPr")).set("sz", "1000")
+    etree.SubElement(r, qn("a:t")).text = "visible"
+    etree.SubElement(p, qn("a:endParaRPr")).set("sz", "2400")
+
+    _replace_body_paragraphs(body, [_spec("new words")])
+    assert body.find(
+        f"{qn('a:p')}/{qn('a:r')}/{qn('a:rPr')}"
+    ).get("sz") == "1000"
+
+
+def _two_run_para(body, second_rpr_edit):
+    p = etree.SubElement(body, qn("a:p"))
+    for i, edit in enumerate((None, second_rpr_edit)):
+        r = etree.SubElement(p, qn("a:r"))
+        rpr = etree.SubElement(r, qn("a:rPr"))
+        rpr.set("sz", "1800")
+        etree.SubElement(rpr, qn("a:ea")).set("typeface", "Yu Gothic")
+        if edit is not None:
+            edit(rpr)
+        etree.SubElement(r, qn("a:t")).text = f"run{i}"
+    return p
+
+
+def _collapse_probe(old):
+    from kitchensink4ppt.ops import shapes as _shp
+
+    new = _bare_body()
+    np_ = etree.SubElement(new, qn("a:p"))
+    r = etree.SubElement(np_, qn("a:r"))
+    etree.SubElement(r, qn("a:rPr"))
+    etree.SubElement(r, qn("a:t")).text = "merged"
+    carried, facts = _shp._carry_text_properties(old, new, set())
+    return new, carried, facts
+
+
+def test_east_asian_difference_is_reported_as_a_collapse():
+    """M1: two runs differing only in East Asian typeface compared EQUAL
+    under the old hand-picked signature, so the collapse onto the first
+    run happened with nothing said."""
+    old = _bare_body()
+    _two_run_para(
+        old, lambda rpr: rpr.find(qn("a:ea")).set("typeface", "Malgun Gothic")
+    )
+    _new, _carried, facts = _collapse_probe(old)
+    assert facts.get("runs_collapsed_to_first") is True, (
+        "an East Asian typeface difference was collapsed in silence"
+    )
+
+
+def test_rtl_difference_is_reported_as_a_collapse():
+    """M1: same for a:rtl, which the old signature never looked at."""
+    old = _bare_body()
+    _two_run_para(
+        old, lambda rpr: etree.SubElement(rpr, qn("a:rtl")).set("val", "1")
+    )
+    _new, _carried, facts = _collapse_probe(old)
+    assert facts.get("runs_collapsed_to_first") is True
+
+
+def test_identical_runs_are_not_reported_as_a_collapse():
+    """M1 guard: the widened signature must not cry wolf on runs that
+    really are alike, including a bare a:br between them."""
+    old = _bare_body()
+    p = _two_run_para(old, None)
+    p.insert(1, etree.Element(qn("a:br")))
+    _new, _carried, facts = _collapse_probe(old)
+    assert "runs_collapsed_to_first" not in facts
+
+
+def test_disagreeing_hyperlinks_are_dropped_not_spread():
+    """M1: a paragraph whose first run links to A and whose second links
+    nowhere became one replacement run entirely linked to A, silently."""
+    from kitchensink4ppt.core.package import NSMAP
+
+    old = _bare_body()
+    p = etree.SubElement(old, qn("a:p"))
+    for i in range(2):
+        r = etree.SubElement(p, qn("a:r"))
+        rpr = etree.SubElement(r, qn("a:rPr"))
+        rpr.set("sz", "1800")
+        if i == 0:
+            link = etree.SubElement(rpr, qn("a:hlinkClick"))
+            link.set(f"{{{NSMAP['r']}}}id", "rId7")
+        etree.SubElement(r, qn("a:t")).text = f"run{i}"
+
+    new, _carried, facts = _collapse_probe(old)
+    merged = new.find(f"{qn('a:p')}/{qn('a:r')}/{qn('a:rPr')}")
+    assert merged.find(qn("a:hlinkClick")) is None, (
+        "the first run's hyperlink was spread over the whole replacement"
+    )
+    assert "hyperlinks_dropped" in facts
+    # what every run DID agree on still rides through
+    assert merged.get("sz") == "1800"
+
+
+def test_one_shared_hyperlink_still_rides_through():
+    """M1 guard: agreement is not a loss. A link every run shared stays."""
+    from kitchensink4ppt.core.package import NSMAP
+
+    old = _bare_body()
+    p = etree.SubElement(old, qn("a:p"))
+    for i in range(2):
+        r = etree.SubElement(p, qn("a:r"))
+        rpr = etree.SubElement(r, qn("a:rPr"))
+        etree.SubElement(rpr, qn("a:hlinkClick")).set(
+            f"{{{NSMAP['r']}}}id", "rId7"
+        )
+        etree.SubElement(r, qn("a:t")).text = f"run{i}"
+
+    new, _carried, facts = _collapse_probe(old)
+    merged = new.find(f"{qn('a:p')}/{qn('a:r')}/{qn('a:rPr')}")
+    assert merged.find(qn("a:hlinkClick")) is not None
+    assert "hyperlinks_dropped" not in facts
+
+
+def test_a_carried_level_survives_a_later_explicit_one(field_deck):
+    """N2: `carried` is body-global, so a later paragraph whose level the
+    caller stated used to erase the accurate report from an earlier one."""
+    from kitchensink4ppt.ops import text as txt
+
+    pkg, slide, _sid, ph_id = field_deck
+    out = txt.set_placeholder_text(
+        pkg, slide, "body",
+        paragraphs=[
+            {"text": "keeps its carried level"},
+            {"text": "restyled", "level": 1},
+            {"text": "states its own", "level": 4},
+        ],
+    )
+    part = get_slide_info(pkg, slide)["part"]
+    elem, _chain = shp._find_shape(pkg, part, ph_id)
+    paras = elem.find(qn("p:txBody")).findall(qn("a:p"))
+    assert paras[2].find(qn("a:pPr")).get("lvl") == "4"
+    assert "level" in out.get("preserved", []), (
+        "paragraph 1 carried a level and the report lost it"
+    )

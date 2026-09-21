@@ -523,10 +523,12 @@ def _landing_spots(body: etree._Element) -> None:
     nothing and paragraph formatting kept dying. Anything the carry leaves
     empty is removed again by _strip_empty_props.
     """
+    from .shapes import _RUN_FAMILY
+
     for p in body.findall(qn("a:p")):
         if p.find(qn("a:pPr")) is None:
             p.insert(0, etree.Element(qn("a:pPr")))
-        runs = p.findall(qn("a:r"))
+        runs = [el for holder in _RUN_FAMILY for el in p.findall(qn(holder))]
         for r in runs:
             ensure_rPr(r)
         if not runs and p.find(qn("a:endParaRPr")) is None:
@@ -538,15 +540,18 @@ def _landing_spots(body: etree._Element) -> None:
 def _strip_empty_props(body: etree._Element) -> None:
     """Drop the landing spots nothing was carried into, so a body that had
     no formatting to keep comes out exactly as it used to."""
+    from .shapes import _RUN_FAMILY
+
     for p in body.findall(qn("a:p")):
         for tag in ("a:pPr", "a:endParaRPr"):
             el = p.find(qn(tag))
             if el is not None and not len(el) and not el.attrib:
                 p.remove(el)
-        for r in p.findall(qn("a:r")):
-            rpr = r.find(qn("a:rPr"))
-            if rpr is not None and not len(rpr) and not rpr.attrib:
-                r.remove(rpr)
+        for holder in _RUN_FAMILY:
+            for r in p.findall(qn(holder)):
+                rpr = r.find(qn("a:rPr"))
+                if rpr is not None and not len(rpr) and not rpr.attrib:
+                    r.remove(rpr)
 
 
 def _replace_body_paragraphs(
