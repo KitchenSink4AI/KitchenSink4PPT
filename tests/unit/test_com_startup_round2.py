@@ -172,8 +172,10 @@ def test_a_pre_existing_powerpoint_is_never_touched(bridge, monkeypatch):
 def test_a_stranded_process_is_reported_when_the_call_still_fails(
     bridge, monkeypatch
 ):
-    """Round 3 (G2): the refusal names the pid it saw and says it is still
-    running. It may not claim to have ended anything, because it does not."""
+    """Round 3 (G2): the refusal names the pid it saw. It may not claim to
+    have ended anything, because it does not, and since R7-2 it may not
+    claim the process is still running either: the snapshot was taken
+    while the start was failing and says nothing about now."""
     world = {"pids": set()}
     monkeypatch.setattr(bridge, "powerpnt_pids", lambda: set(world["pids"]))
 
@@ -194,7 +196,12 @@ def test_a_stranded_process_is_reported_when_the_call_still_fails(
         bridge._start_powerpoint(win32, _FakePythoncom(), set())
     message = str(exc_info.value)
     assert "was ended" not in message
-    assert "7777" in message and "left running" in message
+    assert "left running" not in message
+    assert (
+        "A PowerPoint process appeared during the failed start: pid 7777. "
+        "This call did not force-end it; its current state was not "
+        "re-checked."
+    ) in message
     assert world["pids"] == {7777}, "the process is left exactly as found"
 
 
