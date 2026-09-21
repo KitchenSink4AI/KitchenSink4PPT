@@ -259,6 +259,21 @@ def _declared_code(exc: BaseException) -> str | None:
     return code if isinstance(code, str) and code in CLOSED_CODES else None
 
 
+def _declared_hint(exc: BaseException) -> str | None:
+    """A remedy the raise site states for itself, which beats the blanket
+    per-code entry in _HINTS.
+
+    The per-code hint is a decent guess about a whole class of refusal and
+    a bad one about a specific failure inside it: copy_presentation to a
+    folder that does not exist refused NOT_FOUND and told the caller to
+    re-run get_presentation_view, which is neither the problem nor the fix
+    (field report 2026-09-21, P3). A raise site that knows better says so
+    through exc.hint, the same way it declares exc.hint_tools.
+    """
+    hint = getattr(exc, "hint", None)
+    return hint if isinstance(hint, str) and hint.strip() else None
+
+
 def _refusal(exc: BaseException) -> dict:
     code = _declared_code(exc) or _classify(exc)
     message = str(exc)
@@ -270,7 +285,7 @@ def _refusal(exc: BaseException) -> dict:
             "probably has the wrong shape (list where a dict belongs, or "
             "vice versa)"
         )
-    hint = _HINTS.get(code, "")
+    hint = _declared_hint(exc) or _HINTS.get(code, "")
     ph = _pack_hint(exc)
     if ph:
         hint = f"{hint} {ph}".strip()
@@ -952,6 +967,21 @@ def copy_presentation(
     if not Path(file_path).is_file():
         raise _err.DocumentNotFound(f"no presentation at {file_path}")
     dest = Path(dest_path)
+    parent = dest.parent
+    if not parent.is_dir():
+        # The folder is NOT created here. A typo in a path should refuse,
+        # not build a tree the caller then has to find and delete. The old
+        # refusal was the raw "[WinError 3] The system cannot find the path
+        # specified" plus a hint about re-reading the deck, and neither
+        # named the real problem (field report 2026-09-21, P3).
+        exc = _err.DocumentNotFound(
+            f"destination folder does not exist: {parent}"
+        )
+        exc.hint = (
+            "create the folder first, or pass a dest_path inside a folder "
+            "that exists; copy_presentation never creates directories"
+        )
+        raise exc
     overwrote = False
     if dest.exists():
         if not overwrite:

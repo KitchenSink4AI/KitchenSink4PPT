@@ -487,7 +487,7 @@ def test_notes_rebuilt_from_nothing_still_has_a_paragraph(tmp_path):
 
 
 def _copy_presentation(**kwargs):
-    from kitchensink4ppt import packs
+    from kitchensink4ppt import packs, server  # noqa: F401  (registers tools)
 
     return packs.tool_objects()["copy_presentation"].fn(**kwargs)
 
@@ -649,7 +649,7 @@ def test_create_table_refuses_sizes_that_overflow_the_box(tmp_path):
 
 
 def test_create_table_description_stays_in_budget():
-    from kitchensink4ppt import packs
+    from kitchensink4ppt import packs, server  # noqa: F401  (registers tools)
 
     tool = packs.tool_objects()["create_table"]
     desc = tool.description or ""
