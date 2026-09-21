@@ -175,8 +175,17 @@ def test_overflow_flags_stuffed_frame(blank_deck):
     assert len(hits) == 1
     f = hits[0]
     assert f["shape_ids"] == [s["shape_id"]]
-    assert f["heuristic"] is True  # honest labeling is part of the contract
-    assert "HEURISTIC" in f["message"]
+    # Honest labeling is part of the contract, and since 1.3.1 there are two
+    # models to be honest about: a measurement of the font's own advance
+    # widths is not a heuristic and must not call itself one, while the
+    # character-count fallback still must.
+    if f["method"] == "font-metrics":
+        assert f["heuristic"] is False
+        assert "measured against" in f["message"]
+        assert f["font_file"]
+    else:
+        assert f["heuristic"] is True
+        assert "HEURISTIC" in f["message"]
     assert f["fill_ratio"] >= 1.4
     assert "format_text" in f["fix"] and "export_slide_images" in f["fix"]
 

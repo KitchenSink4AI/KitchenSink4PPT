@@ -111,6 +111,10 @@ BRIDGE_EXEMPT = {
     "powerpnt_pids": "tasklist only, no COM",
     "powerpoint_installed": "registry read only, no COM",
     "zombie_check": "tasklist only, no COM",
+    "apartment_state": (
+        "reads the per-thread record _ensure_apartment leaves behind; an "
+        "in-memory dict lookup, no COM"
+    ),
     "open_presentation": (
         "session-scoped helper: it takes a _PowerPointSession, which only "
         "exists inside an already-locked _powerpoint()"
