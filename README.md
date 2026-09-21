@@ -43,6 +43,8 @@ pip install kitchensink4ppt
 
 Then follow your client's guide for adding a local MCP server. Installing the package on its own does not connect it to an AI app.
 
+Optional: `pip install "kitchensink4ppt[metrics]"` adds installed-font width measurement for text fitting and overflow checks; results remain estimates, so render to verify.
+
 **Business edition**
 
 Compare the editions on the [pricing page](https://kitchensink4.ai/pricing/). Already purchased? Your Windows installer and download link are in your [license portal](https://get.kitchensink4.ai/my-license/).
@@ -97,15 +99,15 @@ fix it.
 
 | Pack | Tools | ~Tokens | What is in it |
 |---|---|---|---|
-| lite core (always on) | 25 | 7.1k | anchored deck view, atomic batch edits, get/find/replace text (live-aware, SmartArt text included), slide insert/delete/duplicate/reorder, placeholder text, hyperlinks (set/remove/list with broken-link detection), info and enumeration, copy, snapshots, backups, diagnose, workflows, enable/disable_tools |
+| lite core (always on) | 25 | 7.2k | anchored deck view, atomic batch edits, get/find/replace text (live-aware, SmartArt text included), slide insert/delete/duplicate/reorder, placeholder text, hyperlinks (set/remove/list with broken-link detection), info and enumeration, copy, snapshots, backups, diagnose, workflows, enable/disable_tools |
 | graphics | 27 | 8.8k | shapes, glued connectors, SVG compiler, one-call diagram generators (timeline, org chart, matrix, cycle, comparison), images, video/audio embed, groups, align/distribute, z-order, text boxes, run formatting, bullets, format painter (copy_format/copy_position), native LaTeX equations |
-| tables-charts | 19 | 5.3k | create table, bulk cells, merge/unmerge, row and column insert/delete, borders and fills, widths/heights, 74 built-in styles, CSV/JSON export/import, bar/line/pie/scatter/combo charts with editable data workbooks, chart formatting and data readback |
+| tables-charts | 19 | 5.4k | create table, bulk cells, merge/unmerge, row and column insert/delete, borders and fills, widths/heights, 74 built-in styles, CSV/JSON export/import, bar/line/pie/scatter/combo charts with editable data workbooks, chart formatting and data readback |
 | design | 25 | 6.8k | create presentation FROM template, apply layouts, theme read AND write (colors, fonts), brand extract/apply, layout guardrail checks, slide size, hide/move slide, autofit report, slide and master/layout backgrounds, full master and layout editing (placeholders, decoration shapes, create_layout), accessibility audit and repair |
-| assembly-export | 28 | 7.2k | speaker notes, sections, footers and slide numbers, PDF/PNG/handout export, engine detection, opens-clean validation, text extraction, cross-deck slide copy, deck merge and split, agenda slides, deck statistics, document properties, anonymize, slide-show setup and custom shows, slide transitions (fade/push/wipe/split/cut/random, millisecond durations, auto-advance) and bounded entrance animations (appear/fade/wipe, click builds, by-paragraph) |
+| assembly-export | 28 | 7.3k | speaker notes, sections, footers and slide numbers, PDF/PNG/handout export, engine detection, opens-clean validation, text extraction, cross-deck slide copy, deck merge and split, agenda slides, deck statistics, document properties, anonymize, slide-show setup and custom shows, slide transitions (fade/push/wipe/split/cut/random, millisecond durations, auto-advance) and bounded entrance animations (appear/fade/wipe, click builds, by-paragraph) |
 | review-sweeps | 13 | 3.3k | modern threaded comments (add, replies, resolve, cascade delete, dual-system listing), whole-deck review report, structural deck-to-deck diff (compare_decks), and the deck-wide sweeps: font inventory/replace (incl. charts and phantom declarations), color remap and literal-to-theme unification, proofing language, whole-deck logo replace, compress/purge |
 | com (Windows only) | 5 | 0.9k | PowerPoint status and zombie process check, plus editing the deck while it is OPEN in the user's PowerPoint: explicit save, scroll-to-slide, session status; eleven file tools route here automatically via `live='auto'` |
 
-Full surface: about 39.4k tokens if you pin `KS4P_MODE=full` (numbers from
+Full surface: about 39.7k tokens if you pin `KS4P_MODE=full` (numbers from
 `scripts/measure_surface.py`, not hand-math).
 
 v1.1 consolidated nine packs into six. The v1.0 names
@@ -119,7 +121,7 @@ MCP server; they were previously COM-or-nothing.
 
 ## Tiered loading: start light, grow mid-session
 
-The server starts in lite mode: 25 tools, roughly 7.1k tokens of tool
+The server starts in lite mode: 25 tools, roughly 7.2k tokens of tool
 context, covering reading, slide CRUD, text, hyperlinks, batch editing,
 backups, and diagnostics. The other 117 tools are registered but disabled
 until asked for:
@@ -191,7 +193,7 @@ The same discipline as KitchenSink4Word, applied from day one:
 
 Beta. The file layer (packages, slides, text, graphics, tables, charts,
 comments, animations, themes, links, media, notes, masters, equations,
-accessibility, deck assembly, sweeps, export) is covered by a 1,251-test
+accessibility, deck assembly, sweeps, export) is covered by a 1,562-test
 suite, including validation that generated decks open clean in real
 PowerPoint, and the server passes a raw stdio protocol round-trip suite.
 Live editing of decks open in PowerPoint runs every call through one

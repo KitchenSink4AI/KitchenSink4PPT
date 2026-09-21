@@ -2,7 +2,7 @@
 
 > Everything plus the kitchen sink for Microsoft PowerPoint: the KitchenSink-family .pptx MCP server. 142 tools organized as capability packs with tiered loading from day one. Headline capability: native tweakable graphics, meaning SVG converted to grouped native PowerPoint shapes with glued connectors, editable afterward by shape identity (move the node, the arrows follow). Also the first file-based structural table operations in any PowerPoint MCP server (merge cells, insert/delete rows and columns), slide CRUD done right (insert, deep duplicate, delete with cleanup, reorder, hide), create-from-template with theme-color-referenced fills, and render-to-verify export. Engineered not to corrupt: atomic validated saves, automatic backups before every mutation, byte-identical passthrough of untouched parts, published adversarial test evidence.
 
-Release: v1.3.0
+Release: v1.3.1
 Platform: file-based tools (the large majority) are cross-platform and need no PowerPoint installation; the export and validation tools (PDF, per-slide PNG, opens-clean check) use a local Microsoft PowerPoint via COM on Windows when present.
 MCP transport: stdio.
 
@@ -17,7 +17,7 @@ MCP transport: stdio.
 
 ## Tiered loading (day one, not a roadmap item)
 
-Sessions start in a lite core of 25 tools (about 7,100 tokens; the full surface is about 39,400). Packs are enabled mid-session with `enable_tools(["pack-name"])`; the server emits tools/list_changed and reports the token cost added. The lite core contains no degraded stand-ins for pack capabilities, and any refusal for out-of-scope work names the exact pack and the exact enable_tools call that unlocks it.
+Sessions start in a lite core of 25 tools (about 7,200 tokens; the full surface is about 39,700). Packs are enabled mid-session with `enable_tools(["pack-name"])`; the server reports the token cost added. `enable_tools` and `disable_tools` send `tools/list_changed` when they change the visible set, but some clients keep the list from session or worker startup; set `KS4P_MODE` to a comma list, restart the app or session, then start a new worker, or in Claude Code enable packs in the main session before starting workers. The lite core contains no degraded stand-ins for pack capabilities, and any refusal for out-of-scope work names the exact pack and the exact enable_tools call that unlocks it.
 
 Environment pins for clients without list_changed support, or for power users:
 - `KS4P_MODE=lite` (default) | `KS4P_MODE=full` | `KS4P_MODE=graphics,design` (comma-separated pack list)
@@ -45,7 +45,7 @@ design:
 assembly-export:
 `set_notes`/`get_notes` (speaker notes), `manage_section`, `set_footer` and slide numbers, `hide_slide`, `export_pdf` (COM), `export_slide_image` (per-slide PNG, the render-to-verify primitive), `validate` (opens-clean plus overflow report), `extract_text`
 
-Six packs plus the lite core, all populated in v1.1: lite (25 tools, ~7.1k tokens), graphics (27, ~8.8k), tables-charts (19, ~5.3k), design (25, ~6.8k), assembly-export (28, ~7.2k), review-sweeps (13, ~3.3k), com (5, ~0.9k). Every figure counts the whole tools/list entry the client receives, not description and schema alone. assembly-export also carries slide transitions and bounded entrance animations. review-sweeps covers threaded comments, structural deck compare, and the deck-wide font/color/language/logo sweeps plus compress. com is Windows only: PowerPoint status, zombie check, and editing decks open in PowerPoint via live=auto routing. v1.1 consolidated nine packs into six; the v1.0 names transitions-animations, review, sweeps, and com-live still resolve to their new homes in enable_tools, disable_tools, and KS4P_MODE.
+Six packs plus the lite core, all populated in v1.1: lite (25 tools, ~7.2k tokens), graphics (27, ~8.8k), tables-charts (19, ~5.4k), design (25, ~6.8k), assembly-export (28, ~7.3k), review-sweeps (13, ~3.3k), com (5, ~0.9k). Every figure counts the whole tools/list entry the client receives, not description and schema alone. assembly-export also carries slide transitions and bounded entrance animations. review-sweeps covers threaded comments, structural deck compare, and the deck-wide font/color/language/logo sweeps plus compress. com is Windows only: PowerPoint status, zombie check, and editing decks open in PowerPoint via live=auto routing. v1.1 consolidated nine packs into six; the v1.0 names transitions-animations, review, sweeps, and com-live still resolve to their new homes in enable_tools, disable_tools, and KS4P_MODE.
 
 ## Recommended workflows
 
@@ -77,6 +77,8 @@ After replacing text, inspect the result for the formatting that was preserved a
 
 `format_text` accepts `anchor` and `wrap`. Inside `apply_edits`, the vertical-anchor key is `text_anchor`. Unknown keys in line and fill specifications are refused by name; use only the keys listed in the tool descriptions.
 
+`validate` may return `failed_slide_index`, `failed_slide_id`, `failed_shape_index` and `failed_shape_name`. Install `kitchensink4ppt[metrics]` for installed-font width measurement; `fit_text`, `get_autofit_state` and `check_layout` report `method="font-metrics"` or `method="estimate"`. `create_table` accepts `row_heights` and `col_widths` as a full inches list or `{index: inches}`. `KS4P_PDFTOPPM` names the poppler executable. `KS4P_PACK_POLICY` accepts only `auto` or `locked`. A complete `row_heights` or `col_widths` list resizes the table frame and the result reports `box_resized`. `validate` also reports `walk_truncated` on very large decks.
+
 ## Safety model
 
 - Atomic validated saves; a failed operation leaves the original byte-identical.
@@ -87,7 +89,7 @@ After replacing text, inspect the result for the formatting that was preserved a
 - Presentation writes are serialized across processes. A live lock is not reclaimed merely because it is more than ten minutes old, and a lock written by another host is not reclaimed locally. Wait for the lock or report the refusal.
 - A timeout may end only a PowerPoint process started by this server. It must not end a PowerPoint process that was already running when the call began.
 - Saves preserve each embedded media file's existing compression. A text or structure edit must not recompress unrelated media.
-- Release evidence for v1.2: 1,251 tests, over 1,500 adversarial calls through the raw MCP stdio transport, zero corruptions, verified by opening outputs in invisible PowerPoint and failing on any repair prompt.
+- Release evidence for v1.2: 1,562 tests, over 1,500 adversarial calls through the raw MCP stdio transport, zero corruptions, verified by opening outputs in invisible PowerPoint and failing on any repair prompt.
 
 ## Documented refusals
 

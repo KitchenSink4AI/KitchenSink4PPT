@@ -4,10 +4,10 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <!--
-  SHIPPED NUMBERS (page ships v1.2.2; figures last derived 2026-09-10 against v1.2.2 with scripts/check_site.py,
+  SHIPPED NUMBERS (page ships v1.3.1; figures last derived 2026-09-22 against v1.3.1 with scripts/check_site.py,
   scripts/measure_surface.py, and pytest collection, all three agreeing with the figures below; re-derive before any deploy):
     142   registered tools (scripts/measure_surface.py) - masthead catalog no., specs strip, colophon
-    1251  tests (python -m pytest tests/ --co -q, stamped by scripts/stamp_figures.py) - specs strip, comparison foot-note
+    1562  tests (python -m pytest tests/ --co -q, stamped by scripts/stamp_figures.py) - specs strip, comparison foot-note
     1646  adversarial stress calls across three raw-stdio rounds (400 + 881 + 365) - specs strip, foot-note
   Also re-verify the comparison-table survey date line before ship.
   COUNT DOCTRINE: 142 is the ONLY tool total stated on this page; the inventory deliberately
@@ -875,7 +875,7 @@ footer .colophon{text-align:center}
   <p class="idiom-note rev d3" data-i18n="hero.idiom"></p>
   <div class="specs-strip rev d4">
     <div class="spec"><span class="n">142</span><span class="l" data-i18n="spec.tools">Tools</span></div>
-    <div class="spec"><span class="n">1,251</span><span class="l" data-i18n="spec.tests">Tests</span></div>
+    <div class="spec"><span class="n">1,562</span><span class="l" data-i18n="spec.tests">Tests</span></div>
     <div class="spec"><span class="n">1,646</span><span class="l" data-i18n="spec.stress">Stress calls</span></div>
     <div class="spec"><span class="n">0</span><span class="l" data-i18n="spec.corr">Corruptions</span></div>
   </div>
@@ -894,26 +894,28 @@ footer .colophon{text-align:center}
       <summary>
         <span class="tag" data-i18n="new.label">JUST IN</span>
         <span class="ttl" data-i18n="h2.new">New on the shelf</span>
-        <time class="release-date" datetime="2026-09-21">2026-09-21</time>
+        <time class="release-date" datetime="2026-09-22">2026-09-22</time>
       </summary>
     <div class="newin">
-      <p class="sub"><span data-i18n="new.sub">The changes you will notice in KitchenSink4PPT 1.3.0.</span> <time class="release-date" datetime="2026-09-21">2026-09-21</time></p>
+      <p class="sub"><span data-i18n="new.sub">The changes you will notice in KitchenSink4PPT 1.3.1.</span> <time class="release-date" datetime="2026-09-22">2026-09-22</time></p>
       <ul>
-        <li data-i18n="new1"><b>New: New presentations open in widescreen.</b> A deck made without a template now starts at 16:9. Ask for 4:3 when you need it; a deck made from a template keeps the template's size.</li>
-        <li data-i18n="new2"><b>New: Layout checks look inside grouped graphics.</b> Shapes that overlap inside a group are now reported, and you can name shapes to leave out, in any language.</li>
-        <li data-i18n="new3"><b>Fixed: Replaced text keeps the look you did not ask to change.</b> Color, alignment, bullets, indents and vertical position stay as they were. If the new text is longer and may no longer fit its box, the result says so and points to the tool that fits text.</li>
-        <li data-i18n="new4"><b>Fixed: Text formatting does what you asked.</b> Turning bold or italic off now works, even when the slide layout made the text bold. A font you set also applies to Korean, Japanese, Chinese and other non-Latin text.</li>
-        <li data-i18n="new5"><b>Fixed: Lines and fills either work or stop with an explanation.</b> Hidden borders stay hidden, connector arrowheads stay attached, and unsupported settings are refused by name instead of disappearing silently.</li>
-        <li data-i18n="new6"><b>Fixed: Layout checks judge what PowerPoint actually shows.</b> They account for inherited font sizes, automatic text shrink and the real background behind text, including table cells. When a picture, gradient or built-in table style has no single color to read, the result says it is undetermined instead of calling it an error. A deck that passed before can show new findings.</li>
-        <li data-i18n="new7"><b>Fixed: Long decks can be read to the end.</b> Reading a large deck in pages now says how to continue. Accessibility and reading-order checks also see where a placeholder takes its position from the slide layout.</li>
+        <li data-i18n="new1"><b>New: Text fitting can use the fonts on your computer.</b> An optional install measures real character widths and wraps words before judging whether text fits. The result says which method it used, and still tells you to render the slide before presenting.</li>
+        <li data-i18n="new2"><b>New: Size a table when you create it.</b> Give rows and columns their sizes up front. Name every size, or name only the special ones and let the rest share the space that remains.</li>
+        <li data-i18n="new3"><b>Fixed: Replacing placeholder text keeps its formatting.</b> Indents, spacing, bullets, fonts, colors and run formatting stay with the replacement. Fields and line breaks keep their character formatting, and the result tells you when mixed formatting was collapsed.</li>
+        <li data-i18n="new4"><b>Fixed: A broken text body is stopped before save.</b> One missing paragraph can make PowerPoint refuse an entire deck. KitchenSink4PPT now catches that structure before saving, names the slide and shape, and leaves the original file untouched.</li>
+        <li data-i18n="new5"><b>Fixed: PowerPoint startup errors point to startup.</b> A threading or application-start failure no longer blames your arguments. The message names the fault and records evidence for diagnosis. The rare field failure did not reproduce, so its cause remains unknown.</li>
+        <li data-i18n="new6"><b>Fixed: A misspelled pack lock cannot fail open.</b> If an administrator mistypes the pack policy, the server refuses to start instead of leaving optional tools switchable.</li>
+        <li data-i18n="new7"><b>Fixed: Pack instructions work with clients that do not refresh.</b> When newly enabled tools stay hidden, the result explains the startup setting and restart that make them available in the next session or worker.</li>
       </ul>
-      <p class="sub"><b>KitchenSink4PPT 1.2.3</b> <time class="release-date" datetime="2026-09-16">2026-09-16</time></p>
+      <p class="sub"><b>KitchenSink4PPT 1.3.0</b> <time class="release-date" datetime="2026-09-21">2026-09-21</time></p>
       <ul>
-        <li data-i18n="prev1"><b>New: Install the whole family side by side.</b> Word, Excel, PowerPoint, and Web now install together without getting in each other's way.</li>
-        <li data-i18n="prev2"><b>Faster: Saves no longer recompress your images.</b> Media keeps its original compression instead of losing quality each time the deck is saved.</li>
-        <li data-i18n="prev3"><b>Fixed: Your own PowerPoint stays open.</b> A timeout can close only a PowerPoint process the server started, never the presentation you already had open.</li>
-        <li data-i18n="prev4"><b>Fixed: Failed writes name the real problem.</b> A failed edit no longer sends you looking for protection settings on a file that is not protected.</li>
-        <li data-i18n="prev5"><b>Fixed: More than one assistant can work safely.</b> Sessions editing the same deck now wait their turn instead of mixing text or overwriting one another.</li>
+        <li data-i18n="prev1"><b>New: New presentations open in widescreen.</b> A deck made without a template now starts at 16:9. Ask for 4:3 when you need it; a deck made from a template keeps the template's size.</li>
+        <li data-i18n="prev2"><b>New: Layout checks look inside grouped graphics.</b> Shapes that overlap inside a group are now reported, and you can name shapes to leave out, in any language.</li>
+        <li data-i18n="prev3"><b>Fixed: Replaced text keeps the look you did not ask to change.</b> Color, alignment, bullets, indents and vertical position stay as they were. If the new text is longer and may no longer fit its box, the result says so and points to the tool that fits text.</li>
+        <li data-i18n="prev4"><b>Fixed: Text formatting does what you asked.</b> Turning bold or italic off now works, even when the slide layout made the text bold. A font you set also applies to Korean, Japanese, Chinese and other non-Latin text.</li>
+        <li data-i18n="prev5"><b>Fixed: Lines and fills either work or stop with an explanation.</b> Hidden borders stay hidden, connector arrowheads stay attached, and unsupported settings are refused by name instead of disappearing silently.</li>
+        <li data-i18n="prev6"><b>Fixed: Layout checks judge what PowerPoint actually shows.</b> They account for inherited font sizes, automatic text shrink and the real background behind text, including table cells. When a picture, gradient or built-in table style has no single color to read, the result says it is undetermined instead of calling it an error. A deck that passed before can show new findings.</li>
+        <li data-i18n="prev7"><b>Fixed: Long decks can be read to the end.</b> Reading a large deck in pages now says how to continue. Accessibility and reading-order checks also see where a placeholder takes its position from the slide layout.</li>
       </ul>
     </div>
     </details>
@@ -1019,7 +1021,7 @@ footer .colophon{text-align:center}
         <tr><td data-i18n="cr7.q">"Reply to the reviewer's comment."</td><td class="us yes" data-i18n="cr7.us">threaded replies, verified rendering in PowerPoint itself</td><td class="no">✘</td><td class="no" data-i18n="cr7.com">✘ reply exists in no PowerPoint MCP server today</td></tr>
       </table>
     </div></div>
-    <p class="foot-note" data-i18n="cmp.note">Capability survey as of 2026-08-31, compiled from public repositories, documentation, and issue trackers. n/d: not documented in the sources surveyed (not a claimed absence). The most popular server is GongRzhe/Office-PowerPoint-MCP-Server, archived since March 2026. * COM tier: the servers that automate a running PowerPoint on Windows (Ayushmaniar/powerpoint-mcp 113, ykuwai/ppt-mcp 58, trsdn/mcp-server-ppt 36, sbroenne/mcp-server-powerpoint 19); capable, but Windows-locked and unavailable without the application. &dagger; Star counts read from the GitHub API on 2026-09-04, shown for context: stars say how long a shelf has been in view, not what is on it. The 1,851-star leader has been archived since March 2026 and still cannot take a slide back out. Test and stress evidence lives in the specs strip up top (1,251 tests, over 1,500 adversarial transport calls, 0 corruptions). Corrections welcome: open an issue.</p>
+    <p class="foot-note" data-i18n="cmp.note">Capability survey as of 2026-08-31, compiled from public repositories, documentation, and issue trackers. n/d: not documented in the sources surveyed (not a claimed absence). The most popular server is GongRzhe/Office-PowerPoint-MCP-Server, archived since March 2026. * COM tier: the servers that automate a running PowerPoint on Windows (Ayushmaniar/powerpoint-mcp 113, ykuwai/ppt-mcp 58, trsdn/mcp-server-ppt 36, sbroenne/mcp-server-powerpoint 19); capable, but Windows-locked and unavailable without the application. &dagger; Star counts read from the GitHub API on 2026-09-04, shown for context: stars say how long a shelf has been in view, not what is on it. The 1,851-star leader has been archived since March 2026 and still cannot take a slide back out. Test and stress evidence lives in the specs strip up top (1,562 tests, over 1,500 adversarial transport calls, 0 corruptions). Corrections welcome: open an issue.</p>
   </div>
 </section>
 
@@ -1029,7 +1031,7 @@ footer .colophon{text-align:center}
     <p class="for-lead" data-i18n="eff.lead">Every MCP server takes up part of an AI's working memory before any work starts, the way every fixture on the floor takes up floor space whether anyone is browsing it or not. This one starts small on purpose: a lean core to begin, and when a job needs more, the agent opens the pack it needs by name, mid-session, like pulling one more can off the shelf. Your assistant stays fast and cheap until the moment it genuinely needs to be big.</p>
     <div class="specs-strip" style="margin-top:26px">
       <div class="spec"><span class="n">24</span><span class="l" data-i18n="eff.s1">Tools in the lite core</span></div>
-      <div class="spec"><span class="n">7.1k</span><span class="l" data-i18n="eff.s2">Tokens, lite core up front</span></div>
+      <div class="spec"><span class="n">7.2k</span><span class="l" data-i18n="eff.s2">Tokens, lite core up front</span></div>
       <div class="spec"><span class="n">1</span><span class="l" data-i18n="eff.s3">Call to the whole sink</span></div>
     </div>
     <div class="term" style="margin-top:26px"><div><span class="c"># an agent in lite mode tries structural table work</span>
@@ -1315,19 +1317,21 @@ en: {
 "hero.invite": "↓ or try it first: there is a diagram below you can drag, and the arrows follow",
 "sw.store": "The Works",
 "h2.new": "New on the shelf", "new.label": "JUST IN",
-"new.sub": "The changes you will notice in KitchenSink4PPT 1.3.0.",
-"new1": "<b>New: New presentations open in widescreen.</b> A deck made without a template now starts at 16:9. Ask for 4:3 when you need it; a deck made from a template keeps the template's size.",
-"new2": "<b>New: Layout checks look inside grouped graphics.</b> Shapes that overlap inside a group are now reported, and you can name shapes to leave out, in any language.",
-"new3": "<b>Fixed: Replaced text keeps the look you did not ask to change.</b> Color, alignment, bullets, indents and vertical position stay as they were. If the new text is longer and may no longer fit its box, the result says so and points to the tool that fits text.",
-"new4": "<b>Fixed: Text formatting does what you asked.</b> Turning bold or italic off now works, even when the slide layout made the text bold. A font you set also applies to Korean, Japanese, Chinese and other non-Latin text.",
-"new5": "<b>Fixed: Lines and fills either work or stop with an explanation.</b> Hidden borders stay hidden, connector arrowheads stay attached, and unsupported settings are refused by name instead of disappearing silently.",
-"new6": "<b>Fixed: Layout checks judge what PowerPoint actually shows.</b> They account for inherited font sizes, automatic text shrink and the real background behind text, including table cells. When a picture, gradient or built-in table style has no single color to read, the result says it is undetermined instead of calling it an error. A deck that passed before can show new findings.",
-"new7": "<b>Fixed: Long decks can be read to the end.</b> Reading a large deck in pages now says how to continue. Accessibility and reading-order checks also see where a placeholder takes its position from the slide layout.",
-"prev1": "<b>New: Install the whole family side by side.</b> Word, Excel, PowerPoint, and Web now install together without getting in each other's way.",
-"prev2": "<b>Faster: Saves no longer recompress your images.</b> Media keeps its original compression instead of losing quality each time the deck is saved.",
-"prev3": "<b>Fixed: Your own PowerPoint stays open.</b> A timeout can close only a PowerPoint process the server started, never the presentation you already had open.",
-"prev4": "<b>Fixed: Failed writes name the real problem.</b> A failed edit no longer sends you looking for protection settings on a file that is not protected.",
-"prev5": "<b>Fixed: More than one assistant can work safely.</b> Sessions editing the same deck now wait their turn instead of mixing text or overwriting one another.",
+"new.sub": "The changes you will notice in KitchenSink4PPT 1.3.1.",
+"new1": "<b>New: Text fitting can use the fonts on your computer.</b> An optional install measures real character widths and wraps words before judging whether text fits. The result says which method it used, and still tells you to render the slide before presenting.",
+"new2": "<b>New: Size a table when you create it.</b> Give rows and columns their sizes up front. Name every size, or name only the special ones and let the rest share the space that remains.",
+"new3": "<b>Fixed: Replacing placeholder text keeps its formatting.</b> Indents, spacing, bullets, fonts, colors and run formatting stay with the replacement. Fields and line breaks keep their character formatting, and the result tells you when mixed formatting was collapsed.",
+"new4": "<b>Fixed: A broken text body is stopped before save.</b> One missing paragraph can make PowerPoint refuse an entire deck. KitchenSink4PPT now catches that structure before saving, names the slide and shape, and leaves the original file untouched.",
+"new5": "<b>Fixed: PowerPoint startup errors point to startup.</b> A threading or application-start failure no longer blames your arguments. The message names the fault and records evidence for diagnosis. The rare field failure did not reproduce, so its cause remains unknown.",
+"new6": "<b>Fixed: A misspelled pack lock cannot fail open.</b> If an administrator mistypes the pack policy, the server refuses to start instead of leaving optional tools switchable.",
+"new7": "<b>Fixed: Pack instructions work with clients that do not refresh.</b> When newly enabled tools stay hidden, the result explains the startup setting and restart that make them available in the next session or worker.",
+"prev1": "<b>New: New presentations open in widescreen.</b> A deck made without a template now starts at 16:9. Ask for 4:3 when you need it; a deck made from a template keeps the template's size.",
+"prev2": "<b>New: Layout checks look inside grouped graphics.</b> Shapes that overlap inside a group are now reported, and you can name shapes to leave out, in any language.",
+"prev3": "<b>Fixed: Replaced text keeps the look you did not ask to change.</b> Color, alignment, bullets, indents and vertical position stay as they were. If the new text is longer and may no longer fit its box, the result says so and points to the tool that fits text.",
+"prev4": "<b>Fixed: Text formatting does what you asked.</b> Turning bold or italic off now works, even when the slide layout made the text bold. A font you set also applies to Korean, Japanese, Chinese and other non-Latin text.",
+"prev5": "<b>Fixed: Lines and fills either work or stop with an explanation.</b> Hidden borders stay hidden, connector arrowheads stay attached, and unsupported settings are refused by name instead of disappearing silently.",
+"prev6": "<b>Fixed: Layout checks judge what PowerPoint actually shows.</b> They account for inherited font sizes, automatic text shrink and the real background behind text, including table cells. When a picture, gradient or built-in table style has no single color to read, the result says it is undetermined instead of calling it an error. A deck that passed before can show new findings.",
+"prev7": "<b>Fixed: Long decks can be read to the end.</b> Reading a large deck in pages now says how to continue. Accessibility and reading-order checks also see where a placeholder takes its position from the slide layout.",
 "no0": "DEPT. 00", "no1": "DEPT. 01", "no2": "DEPT. 02", "no3": "DEPT. 03", "no4": "DEPT. 04", "no5": "DEPT. 05", "no6": "DEPT. 06", "no7": "DEPT. 07",
 "h2.demo": "Move the node, the arrows follow",
 "demo.lead": "Every AI pipeline can put a diagram on a slide. Almost all of them hand you a picture of one: flat pixels behind glass. The night before you present, one box needs to move half an inch, and a picture does not care how small the change is. This server draws the diagram out of real PowerPoint shapes, the same ones you would draw by hand, with the arrows genuinely attached to the boxes they join. Drag a node in PowerPoint and the arrows follow. Ask the agent to recolor one box by name and only that box changes. No starting over, no waiting on an image service, and nothing extra to install to build it.",
@@ -1398,7 +1402,7 @@ en: {
 "cr7.q": "\"Reply to the reviewer's comment.\"",
 "cr7.us": "threaded replies, verified rendering in PowerPoint itself",
 "cr7.com": "✘ reply exists in no PowerPoint MCP server today",
-"cmp.note": "Capability survey as of 2026-08-31, compiled from public repositories, documentation, and issue trackers. n/d: not documented in the sources surveyed (not a claimed absence). The most popular server is GongRzhe/Office-PowerPoint-MCP-Server, archived since March 2026. * COM tier: the servers that automate a running PowerPoint on Windows (Ayushmaniar/powerpoint-mcp 113, ykuwai/ppt-mcp 58, trsdn/mcp-server-ppt 36, sbroenne/mcp-server-powerpoint 19); capable, but Windows-locked and unavailable without the application. &dagger; Star counts read from the GitHub API on 2026-09-04, shown for context: stars say how long a shelf has been in view, not what is on it. The 1,851-star leader has been archived since March 2026 and still cannot take a slide back out. Test and stress evidence lives in the specs strip up top (1,251 tests, over 1,500 adversarial transport calls, 0 corruptions). Corrections welcome: open an issue.",
+"cmp.note": "Capability survey as of 2026-08-31, compiled from public repositories, documentation, and issue trackers. n/d: not documented in the sources surveyed (not a claimed absence). The most popular server is GongRzhe/Office-PowerPoint-MCP-Server, archived since March 2026. * COM tier: the servers that automate a running PowerPoint on Windows (Ayushmaniar/powerpoint-mcp 113, ykuwai/ppt-mcp 58, trsdn/mcp-server-ppt 36, sbroenne/mcp-server-powerpoint 19); capable, but Windows-locked and unavailable without the application. &dagger; Star counts read from the GitHub API on 2026-09-04, shown for context: stars say how long a shelf has been in view, not what is on it. The 1,851-star leader has been archived since March 2026 and still cannot take a slide back out. Test and stress evidence lives in the specs strip up top (1,562 tests, over 1,500 adversarial transport calls, 0 corruptions). Corrections welcome: open an issue.",
 "h2.eff": "The context bill",
 "eff.lead": "Every MCP server takes up part of an AI's working memory before any work starts, the way every fixture on the floor takes up floor space whether anyone is browsing it or not. This one starts small on purpose: a lean core to begin, and when a job needs more, the agent opens the pack it needs by name, mid-session, like pulling one more can off the shelf. Your assistant stays fast and cheap until the moment it genuinely needs to be big.",
 "eff.s1": "Tools in the lite core",
@@ -1483,19 +1487,21 @@ ko: {
 "hero.invite": "↓ 먼저 써 보셔도 됩니다: 아래에 직접 드래그할 수 있는 다이어그램이 있고, 화살표가 따라옵니다",
 "sw.store": "전체 매장",
 "h2.new": "선반에 새로 올라온 것", "new.label": "신규 입고",
-"new.sub": "KitchenSink4PPT 1.3.0에서 눈에 띄는 변화입니다.",
-"new1": "<b>신규: 새 프레젠테이션이 와이드스크린으로 열립니다.</b> 템플릿 없이 만든 덱은 이제 16:9로 시작합니다. 4:3이 필요하면 그렇게 요청하시면 되고, 템플릿으로 만든 덱은 템플릿의 크기를 그대로 지킵니다.",
-"new2": "<b>신규: 레이아웃 검사가 그룹으로 묶인 도형 안까지 봅니다.</b> 그룹 안에서 서로 겹치는 도형도 이제 보고되고, 제외할 도형 이름은 어떤 언어로든 지정할 수 있습니다.",
-"new3": "<b>수정: 바꿔 넣은 텍스트가 건드리지 않은 모양새를 그대로 지킵니다.</b> 색, 정렬, 글머리 기호, 들여쓰기, 세로 위치가 원래대로 남습니다. 새 텍스트가 더 길어서 상자에 들어가지 않을 수 있으면 결과가 그렇게 알려 주고, 텍스트를 맞춰 주는 도구를 짚어 줍니다.",
-"new4": "<b>수정: 텍스트 서식이 요청한 대로 동작합니다.</b> 굵게나 기울임을 끄는 지정이 이제 제대로 먹히고, 슬라이드 레이아웃이 글자를 굵게 만들어 둔 경우에도 그렇습니다. 지정한 글꼴은 한국어, 일본어, 중국어를 비롯한 비라틴 문자에도 함께 적용됩니다.",
-"new5": "<b>수정: 선과 채우기는 제대로 적용되거나, 이유를 밝히며 멈춥니다.</b> 감춘 테두리는 감춘 채로 남고, 연결선의 화살표 머리는 그대로 붙어 있으며, 지원하지 않는 설정은 조용히 사라지는 대신 이름을 짚어 거부됩니다.",
-"new6": "<b>수정: 레이아웃 검사가 PowerPoint가 실제로 보여 주는 것을 기준으로 판단합니다.</b> 상속된 글꼴 크기, 자동 텍스트 축소, 그리고 표 셀을 포함해 텍스트 뒤에 실제로 놓인 배경까지 함께 계산합니다. 그림이나 그러데이션, PowerPoint 기본 제공 표 스타일처럼 읽어 낼 색이 하나로 정해지지 않는 경우에는, 오류로 단정하는 대신 판정할 수 없다고 알려 줍니다. 전에는 통과했던 덱에서 새로운 지적이 나올 수 있습니다.",
-"new7": "<b>수정: 긴 덱도 끝까지 읽을 수 있습니다.</b> 큰 덱을 나눠 읽을 때 이어 가는 방법을 이제 알려 줍니다. 접근성 검사와 읽기 순서 검사도 개체 틀이 슬라이드 레이아웃에서 위치를 물려받는 경우를 함께 봅니다.",
-"prev1": "<b>신규: 온 식구를 나란히 설치하세요.</b> Word, Excel, PowerPoint, Web을 이제 한자리에 함께 설치해도 서로 방해하지 않습니다.",
-"prev2": "<b>속도: 저장할 때 이미지를 다시 압축하지 않습니다.</b> 미디어는 원래 압축을 그대로 지키므로, 덱을 저장할 때마다 화질이 떨어지지 않습니다.",
-"prev3": "<b>수정: 사용자가 열어 둔 PowerPoint는 그대로 남습니다.</b> 시간 초과로 닫을 수 있는 것은 서버가 시작한 PowerPoint 프로세스뿐이고, 이미 열어 두신 프레젠테이션은 절대 닫지 않습니다.",
-"prev4": "<b>수정: 쓰기가 실패하면 진짜 원인을 짚어 줍니다.</b> 편집이 실패했다고 해서, 보호가 걸려 있지도 않은 파일의 보호 설정을 찾아 헤매실 일은 이제 없습니다.",
-"prev5": "<b>수정: 어시스턴트가 둘 이상이어도 안전하게 작업합니다.</b> 같은 덱을 편집하는 세션들은 이제 차례를 기다리므로, 텍스트가 뒤섞이거나 서로 덮어쓰는 일이 없습니다.",
+"new.sub": "KitchenSink4PPT 1.3.1에서 눈에 띄는 변화입니다.",
+"new1": "<b>신규: 텍스트 맞춤이 컴퓨터에 설치된 글꿄을 쓸 수 있습니다.</b> 선택 설치 항목 하나를 넣으면 실제 글자 너비를 재고 단어 단위로 줄을 바꾼 뒤에 텍스트가 들어가는지 판단합니다. 결과는 어떤 방식으로 재는지 알려 주고, 발표 전에 슬라이드를 그려 확인하라는 안내도 그대로 합니다.",
+"new2": "<b>신규: 표를 만드실 때 크기도 함께 정하세요.</b> 행과 열의 크기를 처음부터 지정할 수 있습니다. 전부 지정하셔도 되고, 특별한 것만 지정하고 나머지는 남은 공간을 나눠 쓰게 두셔도 됩니다.",
+"new3": "<b>수정: 개체 틀 텍스트를 바꿔 넣어도 서식이 그대로 남습니다.</b> 들여쓰기, 간격, 글머리 기호, 글꿄, 색, 그리고 런 서식이 새 텍스트에 따라옵니다. 필드와 줄 바꿈도 문자 서식을 지키고, 여러 서식이 하나로 합쳤지는 경우에는 결과가 그렇게 알려 줍니다.",
+"new4": "<b>수정: 망가진 텍스트 본문은 저장 전에 걸러 냅니다.</b> 단락 하나가 빠진 것만으로도 PowerPoint가 덱 전체를 거부할 수 있습니다. KitchenSink4PPT는 이제 저장하기 전에 그 구조를 잡아내고, 슬라이드와 도형을 짚어 주며, 원본 파일은 건드리지 않습니다.",
+"new5": "<b>수정: PowerPoint 시작 오류는 시작 문제를 가리킵니다.</b> 스레딩이나 응용 프로그램 시작에서 생긴 실패가 더 이상 사용자의 인자 탓으로 돌아가지 않습니다. 메시지가 어떤 오류인지 짚어 주고 진단에 쓸 근거를 남깁니다. 현장에서 드물게 나온 그 실패는 재현되지 않아, 원인은 아직 알 수 없습니다.",
+"new6": "<b>수정: 팩 잠금을 잘못 적어도 열린 채로 풀리지 않습니다.</b> 관리자가 팩 정책을 잘못 입력하면, 선택 도구를 켜질 수 있는 상태로 두는 대신 서버가 아예 시작을 거부합니다.",
+"new7": "<b>수정: 목록을 새로 읽지 않는 클라이언트에서도 팩 안내가 통합니다.</b> 새로 켜진 도구가 보이지 않을 때, 다음 세션이나 워커에서 그 도구를 쓸 수 있게 해 주는 시작 설정과 재시작 방법을 결과가 설명해 줍니다.",
+"prev1": "<b>신규: 새 프레젠테이션이 와이드스크린으로 열립니다.</b> 템플릿 없이 만든 덱은 이제 16:9로 시작합니다. 4:3이 필요하면 그렇게 요청하시면 되고, 템플릿으로 만든 덱은 템플릿의 크기를 그대로 지킵니다.",
+"prev2": "<b>신규: 레이아웃 검사가 그룹으로 묶인 도형 안까지 봅니다.</b> 그룹 안에서 서로 겹치는 도형도 이제 보고되고, 제외할 도형 이름은 어떤 언어로든 지정할 수 있습니다.",
+"prev3": "<b>수정: 바꿔 넣은 텍스트가 건드리지 않은 모양새를 그대로 지킵니다.</b> 색, 정렬, 글머리 기호, 들여쓰기, 세로 위치가 원래대로 남습니다. 새 텍스트가 더 길어서 상자에 들어가지 않을 수 있으면 결과가 그렇게 알려 주고, 텍스트를 맞춰 주는 도구를 짚어 줍니다.",
+"prev4": "<b>수정: 텍스트 서식이 요청한 대로 동작합니다.</b> 굵게나 기울임을 끄는 지정이 이제 제대로 먹히고, 슬라이드 레이아웃이 글자를 굵게 만들어 둔 경우에도 그렇습니다. 지정한 글꼴은 한국어, 일본어, 중국어를 비롯한 비라틴 문자에도 함께 적용됩니다.",
+"prev5": "<b>수정: 선과 채우기는 제대로 적용되거나, 이유를 밝히며 멈춥니다.</b> 감춘 테두리는 감춘 채로 남고, 연결선의 화살표 머리는 그대로 붙어 있으며, 지원하지 않는 설정은 조용히 사라지는 대신 이름을 짚어 거부됩니다.",
+"prev6": "<b>수정: 레이아웃 검사가 PowerPoint가 실제로 보여 주는 것을 기준으로 판단합니다.</b> 상속된 글꼴 크기, 자동 텍스트 축소, 그리고 표 셀을 포함해 텍스트 뒤에 실제로 놓인 배경까지 함께 계산합니다. 그림이나 그러데이션, PowerPoint 기본 제공 표 스타일처럼 읽어 낼 색이 하나로 정해지지 않는 경우에는, 오류로 단정하는 대신 판정할 수 없다고 알려 줍니다. 전에는 통과했던 덱에서 새로운 지적이 나올 수 있습니다.",
+"prev7": "<b>수정: 긴 덱도 끝까지 읽을 수 있습니다.</b> 큰 덱을 나눠 읽을 때 이어 가는 방법을 이제 알려 줍니다. 접근성 검사와 읽기 순서 검사도 개체 틀이 슬라이드 레이아웃에서 위치를 물려받는 경우를 함께 봅니다.",
 "no0": "부문 00", "no1": "부문 01", "no2": "부문 02", "no3": "부문 03", "no4": "부문 04", "no5": "부문 05", "no6": "부문 06", "no7": "부문 07",
 "h2.demo": "노드를 옮기면 화살표가 따라옵니다",
 "demo.lead": "슬라이드에 다이어그램을 넣을 수 있는 AI 파이프라인은 얼마든지 있습니다. 그런데 거의 전부가 다이어그램의 '그림'을 건네줍니다: 납작한 픽셀, 유리 안에 걸린 그림. 발표 전날 밤 상자 하나를 반 인치만 옮겨야 하는데, 그림은 그 변경이 아무리 작아도 상관하지 않습니다. 이 서버는 다이어그램을 진짜 PowerPoint 도형으로, 직접 손으로 그렸을 바로 그 도형으로 그려 냅니다. 화살표는 잇는 상자에 실제로 붙어 있습니다. PowerPoint에서 노드를 드래그하면 화살표가 따라오고, 에이전트에게 상자 하나를 이름으로 지정해 색을 바꾸라고 하면 그 상자만 바뀝니다. 처음부터 다시 만들 일도, 이미지 서비스를 기다릴 일도, 만들기 위해 따로 설치할 것도 없습니다.",
@@ -1566,7 +1572,7 @@ ko: {
 "cr7.q": "“검토자 메모에 답글 달아 줘.”",
 "cr7.us": "스레드형 답글, PowerPoint 본체에서 렌더링 검증 완료",
 "cr7.com": "✘ 답글 기능은 오늘날 어떤 PowerPoint MCP 서버에도 없음",
-"cmp.note": "2026-08-31 기준 기능 조사. 공개 저장소, 문서, 이슈 트래커에서 취합했습니다. n/d: 조사한 자료에서 확인되지 않음(없다는 주장이 아닙니다). 최다 인기 서버는 GongRzhe/Office-PowerPoint-MCP-Server이며 2026년 3월부터 보관 상태입니다. * COM 계열: Windows에서 실행 중인 PowerPoint를 자동화하는 서버들(Ayushmaniar/powerpoint-mcp 113, ykuwai/ppt-mcp 58, trsdn/mcp-server-ppt 36, sbroenne/mcp-server-powerpoint 19)로, 유능하지만 Windows에 묶여 있고 애플리케이션 없이는 쓸 수 없습니다. &dagger; 스타 수는 2026-09-04에 GitHub API로 읽은 값이며 참고용입니다. 스타는 그 선반이 얼마나 오래 눈에 띄었는지를 보여줄 뿐, 그 위에 무엇이 놓였는지는 말해 주지 않습니다. 스타 1,851개의 선두 제품은 2026년 3월부터 보관 상태이고, 지금도 슬라이드를 도로 빼내지 못합니다. 테스트와 스트레스 근거는 상단 사양 띠에 있습니다(테스트 1,251건, 적대적 전송 호출 1,500건 이상, 손상 0건). 정정은 환영합니다. 이슈를 열어 주세요.",
+"cmp.note": "2026-08-31 기준 기능 조사. 공개 저장소, 문서, 이슈 트래커에서 취합했습니다. n/d: 조사한 자료에서 확인되지 않음(없다는 주장이 아닙니다). 최다 인기 서버는 GongRzhe/Office-PowerPoint-MCP-Server이며 2026년 3월부터 보관 상태입니다. * COM 계열: Windows에서 실행 중인 PowerPoint를 자동화하는 서버들(Ayushmaniar/powerpoint-mcp 113, ykuwai/ppt-mcp 58, trsdn/mcp-server-ppt 36, sbroenne/mcp-server-powerpoint 19)로, 유능하지만 Windows에 묶여 있고 애플리케이션 없이는 쓸 수 없습니다. &dagger; 스타 수는 2026-09-04에 GitHub API로 읽은 값이며 참고용입니다. 스타는 그 선반이 얼마나 오래 눈에 띄었는지를 보여줄 뿐, 그 위에 무엇이 놓였는지는 말해 주지 않습니다. 스타 1,851개의 선두 제품은 2026년 3월부터 보관 상태이고, 지금도 슬라이드를 도로 빼내지 못합니다. 테스트와 스트레스 근거는 상단 사양 띠에 있습니다(테스트 1,562건, 적대적 전송 호출 1,500건 이상, 손상 0건). 정정은 환영합니다. 이슈를 열어 주세요.",
 "h2.eff": "컨텍스트 청구서",
 "eff.lead": "모든 MCP 서버는 일이 시작되기도 전에 AI의 작업 기억 일부를 차지합니다. 매장에 놓인 집기 하나하나가 아무도 구경하지 않아도 바닥 자리를 차지하는 것과 같습니다. 이 서버는 일부러 작게 시작합니다. 처음에는 가벼운 코어로 열고, 일이 더 필요해지면 에이전트가 세션 도중에 필요한 팩을 이름으로 엽니다. 선반에서 페인트 통 하나를 더 꺼내 오는 것과 같습니다. 어시스턴트는 정말로 커져야 하는 순간까지 빠르고 저렴한 상태로 남습니다.",
 "eff.s1": "라이트 코어의 도구 수",
@@ -1651,19 +1657,21 @@ ja: {
 "hero.invite": "↓ まず試してみてください:下にドラッグできる図があり、矢印がついてきます",
 "sw.store": "ストア全体",
 "h2.new": "棚に並んだ新入荷", "new.label": "新入荷",
-"new.sub": "KitchenSink4PPT 1.3.0 で気づく変化です。",
-"new1": "<b>新機能: 新しいプレゼンテーションはワイド画面で開きます。</b> テンプレートなしで作ったデッキは 16:9 で始まります。4:3 が必要なときはそう頼んでください。テンプレートから作ったデッキはテンプレート自身のサイズを保ちます。",
-"new2": "<b>新機能: レイアウト検査がグループ化された図形の中まで見ます。</b> グループの内側で重なっている図形も報告されるようになり、除外する図形の名前はどの言語でも指定できます。",
-"new3": "<b>修正: 置き換えた文字が、変更を頼んでいない見た目を保ちます。</b> 色、配置、箇条書き、インデント、垂直位置はそのまま残ります。新しい文字が長くて枠に収まらなくなるおそれがあるときは、結果がそう伝え、文字を収める道具を示します。",
-"new4": "<b>修正: 文字の書式が頼んだとおりに効きます。</b> 太字や斜体を解除する指定が効くようになり、スライドレイアウトが太字にしている場合でも同じです。指定したフォントは、韓国語・日本語・中国語などラテン文字以外の文字にも適用されます。",
-"new5": "<b>修正: 線と塗りは、効くか、説明して止まるかのどちらかです。</b> 隠した枠線は隠れたまま、コネクタの矢じりは付いたまま残り、対応していない設定は黙って消える代わりに名前を挙げて拒否されます。",
-"new6": "<b>修正: レイアウト検査は PowerPoint が実際に表示するものを見て判断します。</b> 継承されたフォントサイズ、文字の自動縮小、そして表のセルを含め文字の背後に実際にある背景を計算に入れます。画像やグラデーション、PowerPoint 組み込みの表スタイルのように読み取れる色がひとつに定まらないときは、エラーと決めつけず判定できないと伝えます。以前は問題なしだったデッキに、新しい指摘が出ることがあります。",
-"new7": "<b>修正: 長いデッキも最後まで読めます。</b> 大きなデッキをページに分けて読むとき、続きの進め方を伝えるようになりました。アクセシビリティ検査と読み上げ順序の検査も、プレースホルダーがスライドレイアウトから位置を受け継いでいる場合を見るようになりました。",
-"prev1": "<b>新機能: 一家そろって並べて入れられます。</b> Word、Excel、PowerPoint、Web を一緒に入れても、互いに邪魔をしなくなりました。",
-"prev2": "<b>高速化: 保存のたびに画像を圧縮し直しません。</b> メディアは元の圧縮のまま残るので、デッキを保存するたびに画質が落ちることはありません。",
-"prev3": "<b>修正: ご自分で開いている PowerPoint はそのままです。</b> タイムアウトで閉じられるのはサーバーが起動した PowerPoint のプロセスだけで、すでに開いていたプレゼンテーションには決して手を出しません。",
-"prev4": "<b>修正: 書き込みに失敗したとき、本当の原因を名指しします。</b> 編集が失敗しても、保護などかかっていないファイルの保護設定を探しに行かされることはもうありません。",
-"prev5": "<b>修正: アシスタントが複数いても安全に作業できます。</b> 同じデッキを編集するセッションは順番を待つようになり、文字が混ざったり互いに上書きしたりしません。",
+"new.sub": "KitchenSink4PPT 1.3.1 で気づく変化です。",
+"new1": "<b>新機能: 文字合わせにお使いのパソコンのフォントを使えます。</b> 任意の追加インストールを入れると、実際の文字幅を測り、単語単位で折り返してから文字が収まるかを判断します。結果はどちらの方法で測ったかを伝え、発表前にスライドを描き出して確かめるようにという案内もそのまま続けます。",
+"new2": "<b>新機能: 表を作るときに大きさも決められます。</b> 行と列の大きさを最初から指定できます。すべて指定してもよく、特別なものだけ指定して残りは余った幅を分け合わせることもできます。",
+"new3": "<b>修正: プレースホルダーの文字を置き換えても書式が残ります。</b> インデント、間隔、箇条書き、フォント、色、そしてラン単位の書式が新しい文字に引き継がれます。フィールドと改行も文字書式を保ち、複数の書式がひとつにまとめられた場合は結果がそう伝えます。",
+"new4": "<b>修正: 壊れた文字本体は保存の前で止めます。</b> 段落がひとつ欠けているだけで、PowerPoint がデッキ全体を開けなくなることがあります。KitchenSink4PPT は保存する前にその構造を見つけ、スライドと図形を名指しし、元のファイルには手を付けません。",
+"new5": "<b>修正: PowerPoint の起動エラーは起動を指します。</b> スレッドやアプリケーションの起動で起きた失敗が、もう利用者の引数のせいにされません。メッセージがどの障害かを名指しし、診断に使える証拠を記録します。現場でまれに出たあの失敗は再現せず、原因はわかっていません。",
+"new6": "<b>修正: パックのロックを書き間違えても開いたままにはなりません。</b> 管理者がパックの方針を打ち間違えたときは、任意のツールを切り替えられる状態で残す代わりに、サーバーが起動そのものを拒否します。",
+"new7": "<b>修正: 一覧を取り直さないクライアントでもパックの案内が効きます。</b> 新しく有効にしたツールが見えないままのとき、次のセッションやワーカーでそれを使えるようにする起動設定と再起動の手順を、結果が説明します。",
+"prev1": "<b>新機能: 新しいプレゼンテーションはワイド画面で開きます。</b> テンプレートなしで作ったデッキは 16:9 で始まります。4:3 が必要なときはそう頼んでください。テンプレートから作ったデッキはテンプレート自身のサイズを保ちます。",
+"prev2": "<b>新機能: レイアウト検査がグループ化された図形の中まで見ます。</b> グループの内側で重なっている図形も報告されるようになり、除外する図形の名前はどの言語でも指定できます。",
+"prev3": "<b>修正: 置き換えた文字が、変更を頼んでいない見た目を保ちます。</b> 色、配置、箇条書き、インデント、垂直位置はそのまま残ります。新しい文字が長くて枠に収まらなくなるおそれがあるときは、結果がそう伝え、文字を収める道具を示します。",
+"prev4": "<b>修正: 文字の書式が頼んだとおりに効きます。</b> 太字や斜体を解除する指定が効くようになり、スライドレイアウトが太字にしている場合でも同じです。指定したフォントは、韓国語・日本語・中国語などラテン文字以外の文字にも適用されます。",
+"prev5": "<b>修正: 線と塗りは、効くか、説明して止まるかのどちらかです。</b> 隠した枠線は隠れたまま、コネクタの矢じりは付いたまま残り、対応していない設定は黙って消える代わりに名前を挙げて拒否されます。",
+"prev6": "<b>修正: レイアウト検査は PowerPoint が実際に表示するものを見て判断します。</b> 継承されたフォントサイズ、文字の自動縮小、そして表のセルを含め文字の背後に実際にある背景を計算に入れます。画像やグラデーション、PowerPoint 組み込みの表スタイルのように読み取れる色がひとつに定まらないときは、エラーと決めつけず判定できないと伝えます。以前は問題なしだったデッキに、新しい指摘が出ることがあります。",
+"prev7": "<b>修正: 長いデッキも最後まで読めます。</b> 大きなデッキをページに分けて読むとき、続きの進め方を伝えるようになりました。アクセシビリティ検査と読み上げ順序の検査も、プレースホルダーがスライドレイアウトから位置を受け継いでいる場合を見るようになりました。",
 "no0": "第00部", "no1": "第01部", "no2": "第02部", "no3": "第03部", "no4": "第04部", "no5": "第05部", "no6": "第06部", "no7": "第07部",
 "h2.demo": "ノードを動かせば、矢印がついてくる",
 "demo.lead": "スライドに図を載せられる AI パイプラインなら、いくらでもあります。しかしそのほとんどが渡してくるのは図の「画像」です:平らなピクセル、額の硝子の向こう。発表前夜、箱をひとつ半インチ動かしたいのに、画像は変更がどれほど小さかろうとお構いなしです。このサーバーは、図を本物の PowerPoint 図形で、あなたが手で描いたであろうその図形で描き起こします。矢印は、結ぶ箱に本当に付いています。PowerPoint でノードをドラッグすれば矢印がついてくる。エージェントに箱ひとつを名前で指定して色替えを頼めば、その箱だけが変わる。作り直しも、画像サービス待ちも、作るために別途インストールするものも要りません。",
@@ -1734,7 +1742,7 @@ ja: {
 "cr7.q": "「校閲者のコメントに返信して。」",
 "cr7.us": "スレッド返信、PowerPoint 本体での描画を検証済み",
 "cr7.com": "✘ 返信は今日どの PowerPoint MCP サーバーにも存在しない",
-"cmp.note": "2026-08-31 時点の機能調査。公開リポジトリ、ドキュメント、Issue トラッカーから集約しました。n/d:調査した資料では確認できず(欠如の断定ではありません)。最人気サーバーは GongRzhe/Office-PowerPoint-MCP-Server で、2026年3月からアーカイブ済みです。* COM 系:Windows 上で起動中の PowerPoint を自動化するサーバー群(Ayushmaniar/powerpoint-mcp 113、ykuwai/ppt-mcp 58、trsdn/mcp-server-ppt 36、sbroenne/mcp-server-powerpoint 19)。有能ですが Windows に縛られ、アプリケーションなしでは使えません。&dagger; スター数は 2026-09-04 に GitHub API から取得した参考値です。スターはその棚がどれだけ長く目に触れてきたかを示すもので、棚に何が載っているかを示すものではありません。スター1,851の売れ筋は2026年3月からアーカイブ済みで、いまだにスライドを取り下げることができません。テストと負荷の証跡は上部のスペック帯に(テスト1,251件、敵対的トランスポート呼び出し1,500件超、破損0件)。訂正歓迎、Issue をどうぞ。",
+"cmp.note": "2026-08-31 時点の機能調査。公開リポジトリ、ドキュメント、Issue トラッカーから集約しました。n/d:調査した資料では確認できず(欠如の断定ではありません)。最人気サーバーは GongRzhe/Office-PowerPoint-MCP-Server で、2026年3月からアーカイブ済みです。* COM 系:Windows 上で起動中の PowerPoint を自動化するサーバー群(Ayushmaniar/powerpoint-mcp 113、ykuwai/ppt-mcp 58、trsdn/mcp-server-ppt 36、sbroenne/mcp-server-powerpoint 19)。有能ですが Windows に縛られ、アプリケーションなしでは使えません。&dagger; スター数は 2026-09-04 に GitHub API から取得した参考値です。スターはその棚がどれだけ長く目に触れてきたかを示すもので、棚に何が載っているかを示すものではありません。スター1,851の売れ筋は2026年3月からアーカイブ済みで、いまだにスライドを取り下げることができません。テストと負荷の証跡は上部のスペック帯に(テスト1,562件、敵対的トランスポート呼び出し1,500件超、破損0件)。訂正歓迎、Issue をどうぞ。",
 "h2.eff": "コンテキストの請求書",
 "eff.lead": "どの MCP サーバーも、仕事が始まる前から AI の作業記憶の一部を占めています。売り場の什器が、誰も見て回らなくても床の場所を取るのと同じです。このサーバーは意図して小さく始めます。はじめは身軽なコアで、仕事に足りなくなればエージェントがセッションの途中で必要なパックを名前で開けます。棚から缶をもうひとつ下ろすようなものです。アシスタントは、本当に大きくなる必要が生じるその瞬間まで、速くて安いままでいられます。",
 "eff.s1": "ライトコアのツール数",
@@ -1819,19 +1827,21 @@ zh: {
 "hero.invite": "↓ 或者先试试:下面有一张可以拖动的图,箭头会跟着走",
 "sw.store": "整个商店",
 "h2.new": "新上架", "new.label": "新到货",
-"new.sub": "KitchenSink4PPT 1.3.0 里你会注意到的变化。",
-"new1": "<b>新增:新建的演示文稿以宽屏打开。</b> 不用模板创建的幻灯片现在从 16:9 开始。需要 4:3 就直接说;用模板创建的幻灯片保留模板自己的尺寸。",
-"new2": "<b>新增:版式检查会看进组合图形内部。</b> 组合内部相互重叠的图形现在也会报告,要排除的图形名称用任何语言都能指定。",
-"new3": "<b>修复:替换后的文字保留你没要求改动的样子。</b> 颜色、对齐、项目符号、缩进和垂直位置都维持原样。如果新文字更长、可能放不进框里,结果会说明,并指向能把文字装进去的工具。",
-"new4": "<b>修复:文字格式按你说的来。</b> 关掉加粗或斜体现在真的有效,哪怕加粗是幻灯片版式带来的。你设定的字体也会应用到韩文、日文、中文等非拉丁文字上。",
-"new5": "<b>修复:线条和填充要么生效,要么带着说明停下。</b> 隐藏的边框保持隐藏,连接线的箭头保持挂着,不支持的设置会被点名拒绝,而不是悄悄消失。",
-"new6": "<b>修复:版式检查按 PowerPoint 实际显示的样子来判断。</b> 它会算上继承来的字号、文字自动缩小,以及文字背后真正的背景,包括表格单元格。遇到图片、渐变或 PowerPoint 内置表格样式这类读不出单一颜色的情况,结果会说无法判定,而不是直接判成错误。以前通过的幻灯片,现在可能会有新的提示。",
-"new7": "<b>修复:长幻灯片可以读到最后。</b> 分页读取大文件时,现在会说明怎么继续。无障碍检查和阅读顺序检查也能看到占位符从幻灯片版式继承位置的情况。",
-"prev1": "<b>新增:一家人可以并排装下。</b> Word、Excel、PowerPoint 和 Web 现在能装在一起,互不碍事。",
-"prev2": "<b>更快:保存时不再重新压缩你的图片。</b> 媒体保留原来的压缩,不会每存一次幻灯片就掉一次质量。",
-"prev3": "<b>修复:你自己开着的 PowerPoint 不会被动。</b> 超时只能关掉服务器自己启动的 PowerPoint 进程,绝不会碰你早就打开的演示文稿。",
-"prev4": "<b>修复:写入失败会说出真正的原因。</b> 编辑失败不会再把你打发去检查一个根本没上保护的文件的保护设置。",
-"prev5": "<b>修复:多个助手也能安全地干活。</b> 编辑同一套幻灯片的会话现在会排队等候,不会把文字搅在一起或互相覆盖。",
+"new.sub": "KitchenSink4PPT 1.3.1 里你会注意到的变化。",
+"new1": "<b>新增:文字适配可以用你电脑上的字体。</b> 装上一个可选组件后,它会量出真实的字符宽度,按词换行,再判断文字放不放得下。结果会说明用的是哪种方法,也照旧提醒你在演示前先把幻灯片画出来看一眼。",
+"new2": "<b>新增:建表时就能定好大小。</b> 行和列的尺寸可以一开始就给。可以每一个都给,也可以只给特别的那几个,剩下的分摊余下的空间。",
+"new3": "<b>修复:替换占位符文字会保留它的格式。</b> 缩进、间距、项目符号、字体、颜色和文本运行格式都跟着新文字走。域和换行也保留各自的字符格式,如果多种格式被并成了一种,结果会告诉你。",
+"new4": "<b>修复:损坏的文本主体在保存前就被拦下。</b> 少一个段落就可能让 PowerPoint 拒绝打开整份幻灯片。KitchenSink4PPT 现在会在保存前抓出这种结构,点名是哪张幻灯片、哪个图形,并且不动原文件。",
+"new5": "<b>修复:PowerPoint 的启动错误指向启动本身。</b> 线程或程序启动上的失败不再怪到你的参数头上。消息会点名是哪种故障,并记下可供诊断的证据。现场那次少见的失败没能复现,原因仍然不明。",
+"new6": "<b>修复:包锁写错了也不会敞开。</b> 管理员把包策略打错时,服务器会直接拒绝启动,而不是让可选工具仍旧可以开关。",
+"new7": "<b>修复:遇上不刷新列表的客户端,包的说明依然有用。</b> 新启用的工具一直不出现时,结果会说明哪项启动设置和怎样重启,能让它们在下一个会话或工作进程里可用。",
+"prev1": "<b>新增:新建的演示文稿以宽屏打开。</b> 不用模板创建的幻灯片现在从 16:9 开始。需要 4:3 就直接说;用模板创建的幻灯片保留模板自己的尺寸。",
+"prev2": "<b>新增:版式检查会看进组合图形内部。</b> 组合内部相互重叠的图形现在也会报告,要排除的图形名称用任何语言都能指定。",
+"prev3": "<b>修复:替换后的文字保留你没要求改动的样子。</b> 颜色、对齐、项目符号、缩进和垂直位置都维持原样。如果新文字更长、可能放不进框里,结果会说明,并指向能把文字装进去的工具。",
+"prev4": "<b>修复:文字格式按你说的来。</b> 关掉加粗或斜体现在真的有效,哪怕加粗是幻灯片版式带来的。你设定的字体也会应用到韩文、日文、中文等非拉丁文字上。",
+"prev5": "<b>修复:线条和填充要么生效,要么带着说明停下。</b> 隐藏的边框保持隐藏,连接线的箭头保持挂着,不支持的设置会被点名拒绝,而不是悄悄消失。",
+"prev6": "<b>修复:版式检查按 PowerPoint 实际显示的样子来判断。</b> 它会算上继承来的字号、文字自动缩小,以及文字背后真正的背景,包括表格单元格。遇到图片、渐变或 PowerPoint 内置表格样式这类读不出单一颜色的情况,结果会说无法判定,而不是直接判成错误。以前通过的幻灯片,现在可能会有新的提示。",
+"prev7": "<b>修复:长幻灯片可以读到最后。</b> 分页读取大文件时,现在会说明怎么继续。无障碍检查和阅读顺序检查也能看到占位符从幻灯片版式继承位置的情况。",
 "no0": "第00部", "no1": "第01部", "no2": "第02部", "no3": "第03部", "no4": "第04部", "no5": "第05部", "no6": "第06部", "no7": "第07部",
 "h2.demo": "移动节点,箭头跟着走",
 "demo.lead": "能往幻灯片里放图表的 AI 流水线遍地都是,可几乎全都递给你一张图表的“图片”:扁平的像素,裱在玻璃后面。汇报前夜,一个框要挪半英寸,而图片不在乎改动有多小。这台服务器是用真正的 PowerPoint 图形把图画出来的,和你亲手会画的那些一模一样,箭头是真的连在它们所接的框上。在 PowerPoint 里拖动节点,箭头跟着走;让智能体按名字给某个框改色,就只有那个框会变。不用从头再来,不用等图片服务,构建时也不用额外装什么。",
@@ -1902,7 +1912,7 @@ zh: {
 "cr7.q": "“回复审阅人的批注。”",
 "cr7.us": "多层回复,渲染已在 PowerPoint 本尊里验证",
 "cr7.com": "✘ 回复功能今天不存在于任何 PowerPoint MCP 服务器",
-"cmp.note": "能力调查,截至 2026-08-31,汇总自公开仓库、文档与 issue 跟踪器。n/d:在所查资料中未见记载(并非断言其没有)。最流行的服务器是 GongRzhe/Office-PowerPoint-MCP-Server,自 2026 年 3 月起已归档。* COM 阵营:在 Windows 上自动化运行中 PowerPoint 的那些服务器(Ayushmaniar/powerpoint-mcp 113、ykuwai/ppt-mcp 58、trsdn/mcp-server-ppt 36、sbroenne/mcp-server-powerpoint 19);有本事,但被锁在 Windows 上,没有应用就没法用。&dagger; 星标数于 2026-09-04 通过 GitHub API 读取,仅供参考:星标说明一个货架被人看了多久,而不是架上摆着什么。那位 1,851 星的领头货自 2026 年 3 月起归档,至今仍然没法把一张幻灯片撤下来。测试与压力证据在顶部规格条里(1,251 项测试,1,500 余次对抗性传输调用,0 次损坏)。欢迎指正,请开 issue。",
+"cmp.note": "能力调查,截至 2026-08-31,汇总自公开仓库、文档与 issue 跟踪器。n/d:在所查资料中未见记载(并非断言其没有)。最流行的服务器是 GongRzhe/Office-PowerPoint-MCP-Server,自 2026 年 3 月起已归档。* COM 阵营:在 Windows 上自动化运行中 PowerPoint 的那些服务器(Ayushmaniar/powerpoint-mcp 113、ykuwai/ppt-mcp 58、trsdn/mcp-server-ppt 36、sbroenne/mcp-server-powerpoint 19);有本事,但被锁在 Windows 上,没有应用就没法用。&dagger; 星标数于 2026-09-04 通过 GitHub API 读取,仅供参考:星标说明一个货架被人看了多久,而不是架上摆着什么。那位 1,851 星的领头货自 2026 年 3 月起归档,至今仍然没法把一张幻灯片撤下来。测试与压力证据在顶部规格条里(1,562 项测试,1,500 余次对抗性传输调用,0 次损坏)。欢迎指正,请开 issue。",
 "h2.eff": "上下文账单",
 "eff.lead": "每个 MCP 服务器都在开工之前就占掉 AI 一部分工作记忆,就像卖场里的每一件陈设,没人逛也照样占着地方。这一台是故意从小处起步的:开场只带一个精简内核,活儿需要更多时,智能体在会话中途按名字打开要用的包,就像从货架上再取下一罐漆。你的助手一直又快又便宜,直到它真的需要变大的那一刻。",
 "eff.s1": "精简内核的工具数",
@@ -1987,19 +1997,21 @@ de: {
 "hero.invite": "↓ oder erst ausprobieren: unten ist ein Diagramm zum Ziehen, und die Pfeile folgen",
 "sw.store": "Der ganze Laden",
 "h2.new": "Neu im Regal", "new.label": "NEU EINGETROFFEN",
-"new.sub": "Die Änderungen, die Ihnen in KitchenSink4PPT 1.3.0 auffallen werden.",
-"new1": "<b>Neu: Neue Präsentationen öffnen im Breitbildformat.</b> Ein ohne Vorlage erstellter Foliensatz startet jetzt in 16:9. Bitten Sie um 4:3, wenn Sie es brauchen; ein aus einer Vorlage erstellter Foliensatz behält die Größe der Vorlage.",
-"new2": "<b>Neu: Layout-Prüfungen schauen in gruppierte Grafiken hinein.</b> Formen, die sich innerhalb einer Gruppe überlappen, werden jetzt gemeldet, und Sie können Formen benennen, die ausgelassen werden sollen, in jeder Sprache.",
-"new3": "<b>Behoben: Ersetzter Text behält das Aussehen, um dessen Änderung Sie nicht gebeten haben.</b> Farbe, Ausrichtung, Aufzählungszeichen, Einzüge und die vertikale Position bleiben, wie sie waren. Wenn der neue Text länger ist und womöglich nicht mehr in seinen Rahmen passt, sagt das Ergebnis es und nennt das Werkzeug, das Text einpasst.",
-"new4": "<b>Behoben: Textformatierung tut, worum Sie gebeten haben.</b> Fett oder kursiv abzuschalten funktioniert jetzt, auch wenn das Folienlayout den Text fett gemacht hat. Eine von Ihnen gesetzte Schriftart gilt auch für koreanischen, japanischen, chinesischen und anderen nichtlateinischen Text.",
-"new5": "<b>Behoben: Linien und Füllungen funktionieren entweder oder halten mit einer Erklärung an.</b> Ausgeblendete Rahmen bleiben ausgeblendet, Pfeilspitzen an Verbindern bleiben angeheftet, und nicht unterstützte Einstellungen werden namentlich abgelehnt, statt stillschweigend zu verschwinden.",
-"new6": "<b>Behoben: Layout-Prüfungen beurteilen, was PowerPoint wirklich anzeigt.</b> Sie berücksichtigen geerbte Schriftgrößen, das automatische Verkleinern von Text und den echten Hintergrund hinter dem Text, Tabellenzellen eingeschlossen. Wenn ein Bild, ein Verlauf oder ein eingebauter Tabellenstil keine eindeutige Farbe hergibt, sagt das Ergebnis, dass sie unbestimmt ist, statt es als Fehler zu werten. Ein Foliensatz, der vorher durchging, kann neue Befunde zeigen.",
-"new7": "<b>Behoben: Lange Foliensätze lassen sich bis zum Ende lesen.</b> Wer einen großen Foliensatz seitenweise liest, erfährt jetzt, wie es weitergeht. Die Prüfungen für Barrierefreiheit und Lesereihenfolge sehen außerdem, wo ein Platzhalter seine Position vom Folienlayout übernimmt.",
-"prev1": "<b>Neu: Die ganze Familie nebeneinander installieren.</b> Word, Excel, PowerPoint und Web lassen sich jetzt zusammen installieren, ohne sich gegenseitig in die Quere zu kommen.",
-"prev2": "<b>Schneller: Beim Speichern werden Ihre Bilder nicht mehr neu komprimiert.</b> Medien behalten ihre ursprüngliche Kompression, statt bei jedem Speichern des Foliensatzes an Qualität zu verlieren.",
-"prev3": "<b>Behoben: Ihr eigenes PowerPoint bleibt offen.</b> Eine Zeitüberschreitung kann nur einen PowerPoint-Prozess beenden, den der Server gestartet hat, niemals die Präsentation, die Sie bereits offen hatten.",
-"prev4": "<b>Behoben: Fehlgeschlagene Schreibvorgänge nennen das echte Problem.</b> Eine gescheiterte Bearbeitung schickt Sie nicht mehr auf die Suche nach Schutzeinstellungen bei einer Datei, die gar nicht geschützt ist.",
-"prev5": "<b>Behoben: Mehrere Assistenten können sicher arbeiten.</b> Sitzungen, die denselben Foliensatz bearbeiten, warten jetzt, bis sie an der Reihe sind, statt Text zu vermischen oder sich gegenseitig zu überschreiben.",
+"new.sub": "Die Änderungen, die Ihnen in KitchenSink4PPT 1.3.1 auffallen werden.",
+"new1": "<b>Neu: Die Textanpassung kann die Schriftarten auf Ihrem Rechner verwenden.</b> Eine optionale Installation misst die echten Zeichenbreiten und bricht nach Wörtern um, bevor sie beurteilt, ob der Text passt. Das Ergebnis sagt, welche Methode es benutzt hat, und rät weiterhin dazu, die Folie vor dem Vortrag zu rendern.",
+"new2": "<b>Neu: Legen Sie die Größe einer Tabelle schon beim Anlegen fest.</b> Geben Sie Zeilen und Spalten ihre Maße von vornherein. Benennen Sie jedes Maß, oder nur die besonderen, und lassen Sie den Rest sich den verbleibenden Platz teilen.",
+"new3": "<b>Behoben: Ersetzter Platzhaltertext behält seine Formatierung.</b> Einzüge, Abstände, Aufzählungszeichen, Schriftarten, Farben und die Formatierung der einzelnen Textläufe bleiben beim Ersatz erhalten. Felder und Zeilenumbrüche behalten ihre Zeichenformatierung, und das Ergebnis sagt Ihnen, wenn gemischte Formatierung zusammengefasst wurde.",
+"new4": "<b>Behoben: Ein kaputter Textkörper wird vor dem Speichern gestoppt.</b> Ein einziger fehlender Absatz kann PowerPoint dazu bringen, einen ganzen Foliensatz abzulehnen. KitchenSink4PPT erkennt diese Struktur jetzt vor dem Speichern, benennt Folie und Form und lässt die Originaldatei unangetastet.",
+"new5": "<b>Behoben: PowerPoint-Startfehler zeigen auf den Start.</b> Ein Threading- oder Anwendungsstartfehler schiebt es nicht mehr auf Ihre Argumente. Die Meldung benennt den Fehler und hält Belege für die Diagnose fest. Der seltene Fehler aus dem Feld ließ sich nicht reproduzieren, seine Ursache bleibt also unbekannt.",
+"new6": "<b>Behoben: Eine falsch geschriebene Paketsperre kann nicht offen scheitern.</b> Vertippt sich ein Administrator bei der Paketrichtlinie, verweigert der Server den Start, statt die optionalen Werkzeuge schaltbar zu lassen.",
+"new7": "<b>Behoben: Paketanweisungen funktionieren auch mit Clients, die nicht neu laden.</b> Wenn neu eingeschaltete Werkzeuge verborgen bleiben, erklärt das Ergebnis die Starteinstellung und den Neustart, die sie in der nächsten Sitzung oder im nächsten Worker verfügbar machen.",
+"prev1": "<b>Neu: Neue Präsentationen öffnen im Breitbildformat.</b> Ein ohne Vorlage erstellter Foliensatz startet jetzt in 16:9. Bitten Sie um 4:3, wenn Sie es brauchen; ein aus einer Vorlage erstellter Foliensatz behält die Größe der Vorlage.",
+"prev2": "<b>Neu: Layout-Prüfungen schauen in gruppierte Grafiken hinein.</b> Formen, die sich innerhalb einer Gruppe überlappen, werden jetzt gemeldet, und Sie können Formen benennen, die ausgelassen werden sollen, in jeder Sprache.",
+"prev3": "<b>Behoben: Ersetzter Text behält das Aussehen, um dessen Änderung Sie nicht gebeten haben.</b> Farbe, Ausrichtung, Aufzählungszeichen, Einzüge und die vertikale Position bleiben, wie sie waren. Wenn der neue Text länger ist und womöglich nicht mehr in seinen Rahmen passt, sagt das Ergebnis es und nennt das Werkzeug, das Text einpasst.",
+"prev4": "<b>Behoben: Textformatierung tut, worum Sie gebeten haben.</b> Fett oder kursiv abzuschalten funktioniert jetzt, auch wenn das Folienlayout den Text fett gemacht hat. Eine von Ihnen gesetzte Schriftart gilt auch für koreanischen, japanischen, chinesischen und anderen nichtlateinischen Text.",
+"prev5": "<b>Behoben: Linien und Füllungen funktionieren entweder oder halten mit einer Erklärung an.</b> Ausgeblendete Rahmen bleiben ausgeblendet, Pfeilspitzen an Verbindern bleiben angeheftet, und nicht unterstützte Einstellungen werden namentlich abgelehnt, statt stillschweigend zu verschwinden.",
+"prev6": "<b>Behoben: Layout-Prüfungen beurteilen, was PowerPoint wirklich anzeigt.</b> Sie berücksichtigen geerbte Schriftgrößen, das automatische Verkleinern von Text und den echten Hintergrund hinter dem Text, Tabellenzellen eingeschlossen. Wenn ein Bild, ein Verlauf oder ein eingebauter Tabellenstil keine eindeutige Farbe hergibt, sagt das Ergebnis, dass sie unbestimmt ist, statt es als Fehler zu werten. Ein Foliensatz, der vorher durchging, kann neue Befunde zeigen.",
+"prev7": "<b>Behoben: Lange Foliensätze lassen sich bis zum Ende lesen.</b> Wer einen großen Foliensatz seitenweise liest, erfährt jetzt, wie es weitergeht. Die Prüfungen für Barrierefreiheit und Lesereihenfolge sehen außerdem, wo ein Platzhalter seine Position vom Folienlayout übernimmt.",
 "no0": "ABT. 00", "no1": "ABT. 01", "no2": "ABT. 02", "no3": "ABT. 03", "no4": "ABT. 04", "no5": "ABT. 05", "no6": "ABT. 06", "no7": "ABT. 07",
 "h2.demo": "Den Knoten verschieben, die Pfeile folgen",
 "demo.lead": "Jede KI-Pipeline kann ein Diagramm auf eine Folie setzen. Fast alle liefern dabei nur ein Bild davon: flache Pixel hinter Glas. Am Abend vor der Präsentation muss ein Kasten einen Zentimeter wandern, und einem Bild ist egal, wie klein die Änderung ist. Dieser Server zeichnet das Diagramm aus echten PowerPoint-Formen, denselben, die Sie von Hand zeichnen würden, und die Pfeile hängen wirklich an den Kästen, die sie verbinden. Ziehen Sie einen Knoten in PowerPoint, und die Pfeile folgen. Bitten Sie den Agenten, einen Kasten per Name umzufärben, und nur dieser Kasten ändert sich. Kein Von-vorn-Anfangen, kein Warten auf einen Bilddienst und nichts zusätzlich zu installieren, um es zu bauen.",
@@ -2070,7 +2082,7 @@ de: {
 "cr7.q": "„Antworte auf den Kommentar des Prüfers.“",
 "cr7.us": "Antworten im Thread, Darstellung in PowerPoint selbst verifiziert",
 "cr7.com": "✘ Antworten gibt es heute in keinem PowerPoint-MCP-Server",
-"cmp.note": "Fähigkeitserhebung, Stand 2026-08-31, zusammengetragen aus öffentlichen Repositories, Dokumentation und Issue-Trackern. n/d: in den gesichteten Quellen nicht dokumentiert (keine behauptete Abwesenheit). Der beliebteste Server ist GongRzhe/Office-PowerPoint-MCP-Server, seit März 2026 archiviert. * COM-Riege: die Server, die ein laufendes PowerPoint unter Windows automatisieren (Ayushmaniar/powerpoint-mcp 113, ykuwai/ppt-mcp 58, trsdn/mcp-server-ppt 36, sbroenne/mcp-server-powerpoint 19); fähig, aber Windows-gebunden und ohne die Anwendung nicht verfügbar. &dagger; Sternzahlen am 2026-09-04 über die GitHub-API gelesen, zur Einordnung: Sterne sagen, wie lange ein Regal schon zu sehen ist, nicht was darin steht. Der Spitzenreiter mit 1.851 Sternen ist seit März 2026 archiviert und bekommt eine Folie noch immer nicht wieder heraus. Test- und Stressbelege stehen oben im Spezifikationsstreifen (1.251 Tests, über 1.500 adversariale Transportaufrufe, 0 Beschädigungen). Korrekturen willkommen: einfach ein Issue öffnen.",
+"cmp.note": "Fähigkeitserhebung, Stand 2026-08-31, zusammengetragen aus öffentlichen Repositories, Dokumentation und Issue-Trackern. n/d: in den gesichteten Quellen nicht dokumentiert (keine behauptete Abwesenheit). Der beliebteste Server ist GongRzhe/Office-PowerPoint-MCP-Server, seit März 2026 archiviert. * COM-Riege: die Server, die ein laufendes PowerPoint unter Windows automatisieren (Ayushmaniar/powerpoint-mcp 113, ykuwai/ppt-mcp 58, trsdn/mcp-server-ppt 36, sbroenne/mcp-server-powerpoint 19); fähig, aber Windows-gebunden und ohne die Anwendung nicht verfügbar. &dagger; Sternzahlen am 2026-09-04 über die GitHub-API gelesen, zur Einordnung: Sterne sagen, wie lange ein Regal schon zu sehen ist, nicht was darin steht. Der Spitzenreiter mit 1.851 Sternen ist seit März 2026 archiviert und bekommt eine Folie noch immer nicht wieder heraus. Test- und Stressbelege stehen oben im Spezifikationsstreifen (1.562 Tests, über 1.500 adversariale Transportaufrufe, 0 Beschädigungen). Korrekturen willkommen: einfach ein Issue öffnen.",
 "h2.eff": "Die Kontextrechnung",
 "eff.lead": "Jeder MCP-Server belegt einen Teil des Arbeitsgedächtnisses einer KI, bevor irgendeine Arbeit beginnt, so wie jedes Möbelstück im Laden Stellfläche braucht, ob jemand davor steht oder nicht. Dieser hier startet mit Absicht klein: ein schlanker Kern zu Beginn, und wenn ein Auftrag mehr braucht, öffnet der Agent mitten in der Sitzung das benötigte Paket per Name, so wie man eine weitere Dose aus dem Regal nimmt. Ihr Assistent bleibt schnell und günstig, bis zu dem Moment, in dem er wirklich groß sein muss.",
 "eff.s1": "Werkzeuge im Lite-Kern",
@@ -2155,19 +2167,21 @@ fr: {
 "hero.invite": "↓ ou essayez d'abord : il y a plus bas un diagramme à faire glisser, et les flèches suivent",
 "sw.store": "Toute la boutique",
 "h2.new": "Nouveautés en rayon", "new.label": "ARRIVAGE",
-"new.sub": "Les changements que vous remarquerez dans KitchenSink4PPT 1.3.0.",
-"new1": "<b>Nouveau : les nouvelles présentations s'ouvrent en écran large.</b> Un jeu de diapositives créé sans modèle démarre désormais en 16:9. Demandez du 4:3 quand vous en avez besoin ; un jeu créé à partir d'un modèle conserve la taille du modèle.",
-"new2": "<b>Nouveau : les contrôles de disposition regardent à l'intérieur des groupes de formes.</b> Les formes qui se chevauchent à l'intérieur d'un groupe sont désormais signalées, et vous pouvez nommer les formes à laisser de côté, dans n'importe quelle langue.",
-"new3": "<b>Corrigé : le texte remplacé garde l'apparence que vous n'avez pas demandé de changer.</b> Couleur, alignement, puces, retraits et position verticale restent tels quels. Si le nouveau texte est plus long et risque de ne plus tenir dans son cadre, le résultat le dit et indique l'outil qui ajuste le texte.",
-"new4": "<b>Corrigé : la mise en forme du texte fait ce que vous avez demandé.</b> Désactiver le gras ou l'italique fonctionne désormais, même quand c'est la disposition de la diapositive qui a mis le texte en gras. Une police que vous définissez s'applique aussi au coréen, au japonais, au chinois et aux autres écritures non latines.",
-"new5": "<b>Corrigé : les traits et les remplissages fonctionnent ou s'arrêtent avec une explication.</b> Les bordures masquées restent masquées, les pointes de flèche des connecteurs restent attachées, et les réglages non pris en charge sont refusés par leur nom au lieu de disparaître en silence.",
-"new6": "<b>Corrigé : les contrôles de disposition jugent ce que PowerPoint affiche vraiment.</b> Ils tiennent compte des tailles de police héritées, de la réduction automatique du texte et du vrai fond derrière le texte, cellules de tableau comprises. Quand une image, un dégradé ou un style de tableau intégré ne donne pas de couleur unique à lire, le résultat dit qu'elle est indéterminée au lieu d'en faire une erreur. Un jeu de diapositives qui passait avant peut faire apparaître de nouveaux signalements.",
-"new7": "<b>Corrigé : les longs jeux de diapositives se lisent jusqu'au bout.</b> La lecture d'un grand jeu par pages indique maintenant comment continuer. Les contrôles d'accessibilité et d'ordre de lecture voient aussi où un espace réservé tient sa position de la disposition de la diapositive.",
-"prev1": "<b>Nouveau : installez toute la famille côte à côte.</b> Word, Excel, PowerPoint et Web s'installent désormais ensemble sans se gêner.",
-"prev2": "<b>Plus rapide : l'enregistrement ne recompresse plus vos images.</b> Les médias gardent leur compression d'origine au lieu de perdre en qualité à chaque enregistrement du jeu de diapositives.",
-"prev3": "<b>Corrigé : votre propre PowerPoint reste ouvert.</b> Un délai dépassé ne peut fermer qu'un processus PowerPoint lancé par le serveur, jamais la présentation que vous aviez déjà ouverte.",
-"prev4": "<b>Corrigé : les écritures échouées nomment le vrai problème.</b> Une modification échouée ne vous envoie plus chercher des réglages de protection sur un fichier qui n'est pas protégé.",
-"prev5": "<b>Corrigé : plusieurs assistants peuvent travailler sans risque.</b> Les sessions qui modifient le même jeu de diapositives attendent maintenant leur tour au lieu de mélanger le texte ou de s'écraser l'une l'autre.",
+"new.sub": "Les changements que vous remarquerez dans KitchenSink4PPT 1.3.1.",
+"new1": "<b>Nouveau : l'ajustement du texte peut utiliser les polices de votre ordinateur.</b> Une installation facultative mesure les vraies largeurs de caractères et coupe par mots avant de juger si le texte tient. Le résultat dit quelle méthode il a employée, et vous invite toujours à rendre la diapositive avant de présenter.",
+"new2": "<b>Nouveau : donnez sa taille à un tableau au moment de le créer.</b> Indiquez les dimensions des lignes et des colonnes dès le départ. Nommez chaque dimension, ou seulement les particulières, et laissez le reste se partager la place qui demeure.",
+"new3": "<b>Corrigé : remplacer le texte d'un espace réservé conserve sa mise en forme.</b> Retraits, espacements, puces, polices, couleurs et mise en forme des passages suivent le remplacement. Les champs et les sauts de ligne gardent leur mise en forme de caractères, et le résultat vous dit quand une mise en forme mixte a été ramenée à une seule.",
+"new4": "<b>Corrigé : un corps de texte cassé est arrêté avant l'enregistrement.</b> Un seul paragraphe manquant peut amener PowerPoint à refuser tout un jeu de diapositives. KitchenSink4PPT repère désormais cette structure avant d'enregistrer, nomme la diapositive et la forme, et laisse le fichier d'origine intact.",
+"new5": "<b>Corrigé : les erreurs de démarrage de PowerPoint désignent le démarrage.</b> Un échec de threading ou de lancement de l'application n'accuse plus vos arguments. Le message nomme la panne et consigne des éléments pour le diagnostic. La rare panne observée sur le terrain ne s'est pas reproduite, sa cause reste donc inconnue.",
+"new6": "<b>Corrigé : un verrou de pack mal orthographié ne peut pas céder.</b> Si un administrateur se trompe en saisissant la politique des packs, le serveur refuse de démarrer au lieu de laisser les outils facultatifs activables.",
+"new7": "<b>Corrigé : les consignes sur les packs fonctionnent avec les clients qui n'actualisent pas.</b> Quand des outils fraîchement activés restent invisibles, le résultat explique le réglage de démarrage et le redémarrage qui les rendront disponibles dans la prochaine session ou le prochain worker.",
+"prev1": "<b>Nouveau : les nouvelles présentations s'ouvrent en écran large.</b> Un jeu de diapositives créé sans modèle démarre désormais en 16:9. Demandez du 4:3 quand vous en avez besoin ; un jeu créé à partir d'un modèle conserve la taille du modèle.",
+"prev2": "<b>Nouveau : les contrôles de disposition regardent à l'intérieur des groupes de formes.</b> Les formes qui se chevauchent à l'intérieur d'un groupe sont désormais signalées, et vous pouvez nommer les formes à laisser de côté, dans n'importe quelle langue.",
+"prev3": "<b>Corrigé : le texte remplacé garde l'apparence que vous n'avez pas demandé de changer.</b> Couleur, alignement, puces, retraits et position verticale restent tels quels. Si le nouveau texte est plus long et risque de ne plus tenir dans son cadre, le résultat le dit et indique l'outil qui ajuste le texte.",
+"prev4": "<b>Corrigé : la mise en forme du texte fait ce que vous avez demandé.</b> Désactiver le gras ou l'italique fonctionne désormais, même quand c'est la disposition de la diapositive qui a mis le texte en gras. Une police que vous définissez s'applique aussi au coréen, au japonais, au chinois et aux autres écritures non latines.",
+"prev5": "<b>Corrigé : les traits et les remplissages fonctionnent ou s'arrêtent avec une explication.</b> Les bordures masquées restent masquées, les pointes de flèche des connecteurs restent attachées, et les réglages non pris en charge sont refusés par leur nom au lieu de disparaître en silence.",
+"prev6": "<b>Corrigé : les contrôles de disposition jugent ce que PowerPoint affiche vraiment.</b> Ils tiennent compte des tailles de police héritées, de la réduction automatique du texte et du vrai fond derrière le texte, cellules de tableau comprises. Quand une image, un dégradé ou un style de tableau intégré ne donne pas de couleur unique à lire, le résultat dit qu'elle est indéterminée au lieu d'en faire une erreur. Un jeu de diapositives qui passait avant peut faire apparaître de nouveaux signalements.",
+"prev7": "<b>Corrigé : les longs jeux de diapositives se lisent jusqu'au bout.</b> La lecture d'un grand jeu par pages indique maintenant comment continuer. Les contrôles d'accessibilité et d'ordre de lecture voient aussi où un espace réservé tient sa position de la disposition de la diapositive.",
 "no0": "RAYON 00", "no1": "RAYON 01", "no2": "RAYON 02", "no3": "RAYON 03", "no4": "RAYON 04", "no5": "RAYON 05", "no6": "RAYON 06", "no7": "RAYON 07",
 "h2.demo": "Déplacez le nœud, les flèches suivent",
 "demo.lead": "Toutes les chaînes IA savent poser un diagramme sur une diapositive. Presque toutes vous en remettent une image : des pixels plats, sous verre. La veille de la présentation, une boîte doit bouger d'un demi-centimètre, et une image se moque de la taille du changement. Ce serveur dessine le diagramme à partir de vraies formes PowerPoint, celles-là mêmes que vous traceriez à la main, avec des flèches réellement accrochées aux boîtes qu'elles relient. Faites glisser un nœud dans PowerPoint et les flèches suivent. Demandez à l'agent de recolorer une boîte par son nom et seule cette boîte change. Pas de reprise à zéro, pas d'attente d'un service d'images, et rien de plus à installer pour la construire.",
@@ -2238,7 +2252,7 @@ fr: {
 "cr7.q": "« Réponds au commentaire du relecteur. »",
 "cr7.us": "réponses en fil, rendu vérifié dans PowerPoint lui-même",
 "cr7.com": "✘ la réponse n'existe aujourd'hui dans aucun serveur MCP PowerPoint",
-"cmp.note": "Recensement des capacités au 2026-08-31, compilé à partir des dépôts publics, de la documentation et des traqueurs de tickets. n/d : non documenté dans les sources consultées (ce n'est pas une absence affirmée). Le serveur le plus populaire est GongRzhe/Office-PowerPoint-MCP-Server, archivé depuis mars 2026. * Rang COM : les serveurs qui automatisent un PowerPoint en cours d'exécution sous Windows (Ayushmaniar/powerpoint-mcp 113, ykuwai/ppt-mcp 58, trsdn/mcp-server-ppt 36, sbroenne/mcp-server-powerpoint 19) ; capables, mais verrouillés sur Windows et indisponibles sans l'application. &dagger; Nombres d'étoiles relevés via l'API GitHub le 2026-09-04, à titre de contexte : les étoiles disent depuis combien de temps un rayon est visible, pas ce qu'il y a dessus. Le leader à 1 851 étoiles est archivé depuis mars 2026 et ne sait toujours pas retirer une diapositive. Les preuves de test et d'endurance vivent dans le bandeau de caractéristiques tout en haut (1 251 tests, plus de 1 500 appels de transport adversariaux, 0 corruption). Corrections bienvenues : ouvrez un ticket.",
+"cmp.note": "Recensement des capacités au 2026-08-31, compilé à partir des dépôts publics, de la documentation et des traqueurs de tickets. n/d : non documenté dans les sources consultées (ce n'est pas une absence affirmée). Le serveur le plus populaire est GongRzhe/Office-PowerPoint-MCP-Server, archivé depuis mars 2026. * Rang COM : les serveurs qui automatisent un PowerPoint en cours d'exécution sous Windows (Ayushmaniar/powerpoint-mcp 113, ykuwai/ppt-mcp 58, trsdn/mcp-server-ppt 36, sbroenne/mcp-server-powerpoint 19) ; capables, mais verrouillés sur Windows et indisponibles sans l'application. &dagger; Nombres d'étoiles relevés via l'API GitHub le 2026-09-04, à titre de contexte : les étoiles disent depuis combien de temps un rayon est visible, pas ce qu'il y a dessus. Le leader à 1 851 étoiles est archivé depuis mars 2026 et ne sait toujours pas retirer une diapositive. Les preuves de test et d'endurance vivent dans le bandeau de caractéristiques tout en haut (1 562 tests, plus de 1 500 appels de transport adversariaux, 0 corruption). Corrections bienvenues : ouvrez un ticket.",
 "h2.eff": "La facture de contexte",
 "eff.lead": "Chaque serveur MCP occupe une partie de la mémoire de travail d'une IA avant même que le travail commence, comme chaque présentoir du magasin occupe de la surface, que quelqu'un s'y arrête ou non. Celui-ci démarre petit à dessein : un noyau allégé au départ, et quand un travail en demande plus, l'agent ouvre le pack qu'il lui faut par son nom, en pleine session, comme on descend un pot de plus de l'étagère. Votre assistant reste rapide et bon marché jusqu'au moment où il a vraiment besoin d'être grand.",
 "eff.s1": "Outils dans le noyau allégé",
@@ -2323,19 +2337,21 @@ es: {
 "hero.invite": "↓ o pruébelo primero: abajo hay un diagrama que puede arrastrar, y las flechas lo siguen",
 "sw.store": "Toda la tienda",
 "h2.new": "Recién puesto en el estante", "new.label": "RECIÉN LLEGADO",
-"new.sub": "Los cambios que notará en KitchenSink4PPT 1.3.0.",
-"new1": "<b>Nuevo: las presentaciones nuevas se abren en pantalla panorámica.</b> Una presentación creada sin plantilla ahora empieza en 16:9. Pida 4:3 cuando lo necesite; una presentación creada desde una plantilla conserva el tamaño de la plantilla.",
-"new2": "<b>Nuevo: las comprobaciones de diseño miran dentro de los gráficos agrupados.</b> Las formas que se solapan dentro de un grupo ahora se informan, y puede nombrar las formas que quiere dejar fuera, en cualquier idioma.",
-"new3": "<b>Corregido: el texto reemplazado conserva el aspecto que no pidió cambiar.</b> Color, alineación, viñetas, sangrías y posición vertical se quedan como estaban. Si el texto nuevo es más largo y puede que ya no quepa en su cuadro, el resultado lo dice y señala la herramienta que ajusta el texto.",
-"new4": "<b>Corregido: el formato de texto hace lo que usted pidió.</b> Quitar la negrita o la cursiva ahora funciona, incluso cuando es el diseño de la diapositiva el que puso el texto en negrita. Una fuente que usted fije se aplica también al coreano, el japonés, el chino y otros textos no latinos.",
-"new5": "<b>Corregido: las líneas y los rellenos funcionan o se detienen con una explicación.</b> Los bordes ocultos siguen ocultos, las puntas de flecha de los conectores siguen puestas y los ajustes no admitidos se rechazan por su nombre en vez de desaparecer en silencio.",
-"new6": "<b>Corregido: las comprobaciones de diseño juzgan lo que PowerPoint muestra de verdad.</b> Tienen en cuenta los tamaños de fuente heredados, la reducción automática del texto y el fondo real que hay detrás del texto, incluidas las celdas de tabla. Cuando una imagen, un degradado o un estilo de tabla integrado no da un color único que leer, el resultado dice que está sin determinar en vez de llamarlo error. Una presentación que antes pasaba puede mostrar hallazgos nuevos.",
-"new7": "<b>Corregido: las presentaciones largas se pueden leer hasta el final.</b> Leer una presentación grande por páginas ahora dice cómo continuar. Las comprobaciones de accesibilidad y de orden de lectura también ven dónde un marcador de posición toma su posición del diseño de la diapositiva.",
-"prev1": "<b>Nuevo: instale a toda la familia una al lado de la otra.</b> Word, Excel, PowerPoint y Web ahora se instalan juntos sin estorbarse.",
-"prev2": "<b>Más rápido: al guardar ya no se recomprimen sus imágenes.</b> Los medios conservan su compresión original en vez de perder calidad cada vez que se guarda la presentación.",
-"prev3": "<b>Corregido: su propio PowerPoint sigue abierto.</b> Un tiempo de espera agotado solo puede cerrar un proceso de PowerPoint que haya iniciado el servidor, nunca la presentación que usted ya tenía abierta.",
-"prev4": "<b>Corregido: las escrituras fallidas nombran el problema real.</b> Una edición fallida ya no le manda a buscar ajustes de protección en un archivo que no está protegido.",
-"prev5": "<b>Corregido: más de un asistente puede trabajar sin riesgo.</b> Las sesiones que editan la misma presentación ahora esperan su turno en vez de mezclar texto o sobrescribirse entre sí.",
+"new.sub": "Los cambios que notará en KitchenSink4PPT 1.3.1.",
+"new1": "<b>Nuevo: el ajuste de texto puede usar las fuentes de su equipo.</b> Una instalación opcional mide los anchos reales de los caracteres y parte por palabras antes de juzgar si el texto cabe. El resultado dice qué método usó, y le sigue diciendo que represente la diapositiva antes de presentar.",
+"new2": "<b>Nuevo: dé tamaño a una tabla al crearla.</b> Indique de entrada las medidas de las filas y las columnas. Puede nombrarlas todas, o solo las especiales y dejar que el resto se reparta el espacio que queda.",
+"new3": "<b>Corregido: reemplazar el texto de un marcador de posición conserva su formato.</b> Sangrías, espaciado, viñetas, fuentes, colores y el formato de cada pasaje acompañan al reemplazo. Los campos y los saltos de línea conservan su formato de carácter, y el resultado le dice cuándo se unificó un formato mixto.",
+"new4": "<b>Corregido: un cuerpo de texto roto se detiene antes de guardar.</b> Un solo párrafo que falte puede hacer que PowerPoint rechace una presentación entera. KitchenSink4PPT ahora detecta esa estructura antes de guardar, nombra la diapositiva y la forma, y deja intacto el archivo original.",
+"new5": "<b>Corregido: los errores de arranque de PowerPoint señalan al arranque.</b> Un fallo de subprocesos o de inicio de la aplicación ya no culpa a sus argumentos. El mensaje nombra el fallo y deja constancia para el diagnóstico. El raro fallo visto en campo no se reprodujo, así que su causa sigue sin conocerse.",
+"new6": "<b>Corregido: un bloqueo de paquetes mal escrito no puede quedar abierto.</b> Si un administrador escribe mal la política de paquetes, el servidor se niega a arrancar en vez de dejar las herramientas opcionales activables.",
+"new7": "<b>Corregido: las instrucciones de paquetes funcionan con clientes que no actualizan.</b> Cuando las herramientas recién activadas siguen ocultas, el resultado explica el ajuste de arranque y el reinicio que las harán disponibles en la próxima sesión o en el próximo worker.",
+"prev1": "<b>Nuevo: las presentaciones nuevas se abren en pantalla panorámica.</b> Una presentación creada sin plantilla ahora empieza en 16:9. Pida 4:3 cuando lo necesite; una presentación creada desde una plantilla conserva el tamaño de la plantilla.",
+"prev2": "<b>Nuevo: las comprobaciones de diseño miran dentro de los gráficos agrupados.</b> Las formas que se solapan dentro de un grupo ahora se informan, y puede nombrar las formas que quiere dejar fuera, en cualquier idioma.",
+"prev3": "<b>Corregido: el texto reemplazado conserva el aspecto que no pidió cambiar.</b> Color, alineación, viñetas, sangrías y posición vertical se quedan como estaban. Si el texto nuevo es más largo y puede que ya no quepa en su cuadro, el resultado lo dice y señala la herramienta que ajusta el texto.",
+"prev4": "<b>Corregido: el formato de texto hace lo que usted pidió.</b> Quitar la negrita o la cursiva ahora funciona, incluso cuando es el diseño de la diapositiva el que puso el texto en negrita. Una fuente que usted fije se aplica también al coreano, el japonés, el chino y otros textos no latinos.",
+"prev5": "<b>Corregido: las líneas y los rellenos funcionan o se detienen con una explicación.</b> Los bordes ocultos siguen ocultos, las puntas de flecha de los conectores siguen puestas y los ajustes no admitidos se rechazan por su nombre en vez de desaparecer en silencio.",
+"prev6": "<b>Corregido: las comprobaciones de diseño juzgan lo que PowerPoint muestra de verdad.</b> Tienen en cuenta los tamaños de fuente heredados, la reducción automática del texto y el fondo real que hay detrás del texto, incluidas las celdas de tabla. Cuando una imagen, un degradado o un estilo de tabla integrado no da un color único que leer, el resultado dice que está sin determinar en vez de llamarlo error. Una presentación que antes pasaba puede mostrar hallazgos nuevos.",
+"prev7": "<b>Corregido: las presentaciones largas se pueden leer hasta el final.</b> Leer una presentación grande por páginas ahora dice cómo continuar. Las comprobaciones de accesibilidad y de orden de lectura también ven dónde un marcador de posición toma su posición del diseño de la diapositiva.",
 "no0": "DEPTO. 00", "no1": "DEPTO. 01", "no2": "DEPTO. 02", "no3": "DEPTO. 03", "no4": "DEPTO. 04", "no5": "DEPTO. 05", "no6": "DEPTO. 06", "no7": "DEPTO. 07",
 "h2.demo": "Mueva el nodo y las flechas lo siguen",
 "demo.lead": "Cualquier canalización de IA puede poner un diagrama en una diapositiva. Casi todas le entregan una imagen del diagrama: píxeles planos tras el cristal. La noche antes de presentar, una caja tiene que moverse medio centímetro, y a una imagen no le importa lo pequeño que sea el cambio. Este servidor dibuja el diagrama con formas reales de PowerPoint, las mismas que usted trazaría a mano, con las flechas de verdad pegadas a las cajas que unen. Arrastre un nodo en PowerPoint y las flechas lo siguen. Pida al agente recolorear una caja por su nombre y solo esa caja cambia. Sin empezar de cero, sin esperar a un servicio de imágenes y sin nada extra que instalar para construirlo.",
@@ -2406,7 +2422,7 @@ es: {
 "cr7.q": "«Responde al comentario del revisor.»",
 "cr7.us": "respuestas en hilo, representación verificada en el propio PowerPoint",
 "cr7.com": "✘ responder no existe hoy en ningún servidor MCP de PowerPoint",
-"cmp.note": "Estudio de capacidades a 2026-08-31, compilado de repositorios públicos, documentación y gestores de incidencias. n/d: no documentado en las fuentes consultadas (no es una ausencia afirmada). El servidor más popular es GongRzhe/Office-PowerPoint-MCP-Server, archivado desde marzo de 2026. * Nivel COM: los servidores que automatizan un PowerPoint en ejecución bajo Windows (Ayushmaniar/powerpoint-mcp 113, ykuwai/ppt-mcp 58, trsdn/mcp-server-ppt 36, sbroenne/mcp-server-powerpoint 19); capaces, pero atados a Windows e inservibles sin la aplicación. &dagger; Recuento de estrellas leído de la API de GitHub el 2026-09-04, a modo de contexto: las estrellas dicen cuánto tiempo lleva un estante a la vista, no lo que hay en él. El líder de 1.851 estrellas está archivado desde marzo de 2026 y sigue sin poder retirar una diapositiva. La evidencia de pruebas y estrés vive en la franja de especificaciones de arriba (1.251 pruebas, más de 1.500 llamadas de transporte adversariales, 0 corrupciones). Correcciones bienvenidas: abra un issue.",
+"cmp.note": "Estudio de capacidades a 2026-08-31, compilado de repositorios públicos, documentación y gestores de incidencias. n/d: no documentado en las fuentes consultadas (no es una ausencia afirmada). El servidor más popular es GongRzhe/Office-PowerPoint-MCP-Server, archivado desde marzo de 2026. * Nivel COM: los servidores que automatizan un PowerPoint en ejecución bajo Windows (Ayushmaniar/powerpoint-mcp 113, ykuwai/ppt-mcp 58, trsdn/mcp-server-ppt 36, sbroenne/mcp-server-powerpoint 19); capaces, pero atados a Windows e inservibles sin la aplicación. &dagger; Recuento de estrellas leído de la API de GitHub el 2026-09-04, a modo de contexto: las estrellas dicen cuánto tiempo lleva un estante a la vista, no lo que hay en él. El líder de 1.851 estrellas está archivado desde marzo de 2026 y sigue sin poder retirar una diapositiva. La evidencia de pruebas y estrés vive en la franja de especificaciones de arriba (1.562 pruebas, más de 1.500 llamadas de transporte adversariales, 0 corrupciones). Correcciones bienvenidas: abra un issue.",
 "h2.eff": "La factura de contexto",
 "eff.lead": "Todo servidor MCP ocupa una parte de la memoria de trabajo de una IA antes de que empiece cualquier trabajo, igual que cada mueble de la tienda ocupa suelo aunque nadie se pare a mirarlo. Este arranca pequeño a propósito: un núcleo ligero para empezar y, cuando un trabajo pide más, el agente abre el paquete que necesita por su nombre, en plena sesión, como quien baja otro bote del estante. Su asistente se mantiene rápido y barato hasta el momento en que de verdad necesita ser grande.",
 "eff.s1": "Herramientas en el núcleo ligero",
