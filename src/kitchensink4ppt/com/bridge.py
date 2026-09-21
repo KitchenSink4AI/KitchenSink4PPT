@@ -36,10 +36,17 @@ LIVE-SAFETY STACK (v1.1, ported from KS4W's 2026-09-03 stress report):
 - Bounded timeouts: the public operations run on a worker thread under a
   deadline, turning the report's 30-minute silent hang into a structured
   PowerPointBlocked. NOTHING IN THIS PACKAGE ENDS A POWERPOINT PROCESS.
-  On expiry the refusal names the pid this call started, when it is known
-  on positive evidence, and says the process was left running; a timeout
-  cannot revalidate a hung apartment, so a token taken minutes earlier is
-  not proof that the instance is still only ours.
+  The refusal REPORTS AN OBSERVATION AND A NON-ACTION: when a pid was
+  recorded on positive evidence it says that process was not running when
+  the call began, that this call did not force-end it, and that its
+  current state was not re-checked. It claims nothing about the present,
+  because a timeout cannot revalidate a hung apartment and a token taken
+  minutes earlier is not proof of what is true now.
+- Queue abandonment: a call that gives up while its worker is still
+  QUEUED on the serialization lock marks itself abandoned, atomically,
+  against the worker's own attempt to start. The loser stands down, so a
+  caller told the operation did not happen never has it happen anyway
+  behind its back, and the retry it was offered is safe (R7-1).
 - DisplayAlerts: suppressed for the duration and RESTORED when the instance
   is the user's. The pre-v1.1 code set ppAlertsNone on whatever instance it
   reached and never put it back, which on a singleton leaked into the
@@ -82,6 +89,13 @@ QUIT_POLL_SECONDS = 15.0
 #: worker that finishes in this window has finished and its result is
 #: returned instead of a false timeout (final check, R6-1, 2026-09-22).
 TIMEOUT_GRACE_SECONDS = 10.0
+
+#: TEST SEAM (R7-3). _run_bounded builds its internal completion signal
+#: through this factory, so a test can substitute an event whose waits it
+#: drives and pin WHICH stage observed completion without assuming
+#: anything about thread scheduling. Production behaviour is unchanged:
+#: this is threading.Event and nothing in the package reassigns it.
+_COMPLETION_EVENT_FACTORY = threading.Event
 
 DEFAULT_IMAGE_WIDTH = 1280
 
@@ -369,14 +383,21 @@ def _self_launched_pids_for_thread(tid) -> set:
     EVIDENCE, to have launched. Empty whenever we attached to a PowerPoint
     we did not start, which is the normal case.
 
-    EVIDENCE ONLY. This used to terminate them when a COM operation timed
-    out, and 1.3.1 removes that: the timeout path cannot revalidate a hung
-    apartment, so a token taken minutes earlier is not proof that the
-    process is still only ours. Another session can attach to the hidden
-    instance and open work in it while our operation hangs, and a kill
-    would destroy that work. Nothing in this package ends a PowerPoint
-    process now; the refusal names the pid and says it was left running
-    (final check, R4-1 amended, 2026-09-22)."""
+    EVIDENCE ONLY, AND ONLY ABOUT THE PAST. This used to terminate them
+    when a COM operation timed out, and 1.3.1 removes that: the timeout
+    path cannot revalidate a hung apartment, so a token taken minutes
+    earlier is not proof that the process is still only ours. Another
+    session can attach to the hidden instance and open work in it while
+    our operation hangs, and a kill would destroy that work.
+
+    A token records what was OBSERVED at entry, that this pid was not
+    running then and the instance looked freshly created, and it is not
+    proof of causation or of current liveness. Nothing in this package
+    ends a PowerPoint process, so the refusal reports the observation and
+    the NON-ACTION: it names the pid, says this call did not force-end it,
+    and says its current state was not re-checked. It does not describe
+    the process's present state, because this path does not know it
+    (final check, R4-1 amended, R7-2, 2026-09-22)."""
     return set(_SELF_LAUNCHED_PIDS.get(tid) or set())
 
 
@@ -457,20 +478,42 @@ def _run_bounded(name: str, timeout: float, fn):
         caller_apartment = f"failed: {exc}"
 
     result: dict = {"caller_apartment": caller_apartment}
-    lock_acquired = threading.Event()
-    done = threading.Event()
+    done = _COMPLETION_EVENT_FACTORY()
     worker_tid: list = []
+
+    # ONE decision per call, taken atomically under this lock, with exactly
+    # two outcomes: the caller ABANDONED the queued call, or the worker
+    # STARTED it. Whichever side reaches the decision first wins and the
+    # other is told it lost, so the two can never both be true (R7-1).
+    decision_lock = threading.Lock()
+    decision: list = []
+
+    def _elect(outcome: str) -> bool:
+        """Take this call's one decision, or lose it to the other side."""
+        with decision_lock:
+            if decision:
+                return False
+            decision.append(outcome)
+            return True
 
     def worker():
         worker_tid.append(threading.get_ident())
         try:
             with _serial.com_operation(name):
-                lock_acquired.set()
+                # THE GHOST WRITE STOPS HERE. Winning the serialization
+                # lock is not permission to run. The caller may have given
+                # up while this thread sat in the queue, and it was told
+                # the operation had not happened; running fn() now would
+                # perform that write anyway, so a retried non-idempotent
+                # edit would execute twice (two slide deletions removing
+                # two different slides). An abandoned call releases the
+                # lock and exits WITHOUT touching PowerPoint.
+                if not _elect("started"):
+                    return
                 result["value"] = fn()
         except BaseException as exc:  # noqa: BLE001 - re-raised in caller
             result["error"] = exc
         finally:
-            lock_acquired.set()
             done.set()
 
     t = threading.Thread(target=worker, daemon=True, name=f"ks4p-{name}")
@@ -479,7 +522,15 @@ def _run_bounded(name: str, timeout: float, fn):
         if "error" in result:
             raise result["error"]
         return result["value"]
-    if not lock_acquired.is_set():
+    if _elect("abandoned"):
+        # The worker had NOT started fn when this decision was taken, so it
+        # never will: it is still queued on the serialization lock, and
+        # when it reaches the front it loses this same decision, releases
+        # the lock and exits. Nothing ran and nothing was changed.
+        if "error" in result:
+            # It failed before it could reach the decision at all, so its
+            # own error is the honest answer, not a queue-contention one.
+            raise result["error"]
         snap = _serial.lock_snapshot()
         running = (snap.get("current_op") or {}).get(
             "name", "another COM operation"
@@ -488,7 +539,14 @@ def _run_bounded(name: str, timeout: float, fn):
             f"{name} waited {timeout:.0f}s for the COM serialization lock "
             f"({running} is still running); retry when it finishes. "
             "powerpoint_status reports the running operation."
+            " The queued call was abandoned before its operation ran; it "
+            "made no document changes. It is safe to retry after "
+            "powerpoint_status reports no COM operation in progress."
         )
+    # The worker won the decision, so fn IS running, or has already
+    # finished. This is no longer queue contention and the caller must not
+    # be told to simply retry: the grace path decides from here, and an
+    # operation still running gets the uncancelled-operation refusal.
     # The deadline has passed, but the work has NOT been cancelled, so the
     # grace wait below is a real second chance rather than a formality. A
     # worker that finishes during it finished, and reporting a timeout for
@@ -740,7 +798,8 @@ def _raise_startup(exc, appeared: set) -> None:
         pids = ", ".join(str(p) for p in sorted(appeared))
         note = (
             " A PowerPoint process appeared during the failed start: "
-            f"pid {pids}; it was left running."
+            f"pid {pids}. This call did not force-end it; its current "
+            "state was not re-checked."
         )
     typed = _classify(exc)
     if typed is not None:

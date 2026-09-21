@@ -24,6 +24,7 @@ from __future__ import annotations
 import contextlib
 import inspect
 import sys
+import threading
 
 import pytest
 from lxml import etree
@@ -212,9 +213,12 @@ def test_a_powerpoint_that_appears_during_a_failed_start_is_not_killed(
 
 
 @pytestmark_win
-def test_the_failed_start_reports_the_process_it_left_running(monkeypatch):
-    """G2: the refusal used to claim a process 'was ended'. It may now
-    only say what it saw."""
+def test_the_failed_start_reports_what_it_saw_and_what_it_did_not_do(
+    monkeypatch,
+):
+    """G2 and R7-2: the refusal used to claim a process 'was ended', then
+    that it 'was left running'. It may say only what it observed and what
+    this call did not do; liveness at read time is not knowable here."""
     from kitchensink4ppt.com import bridge
 
     world = {"pids": set()}
@@ -232,8 +236,12 @@ def test_the_failed_start_reports_the_process_it_left_running(monkeypatch):
         bridge._start_powerpoint(Win32(), _Pythoncom(), set())
     message = str(exc_info.value)
     assert "was ended" not in message
-    assert "7777" in message
-    assert "left running" in message
+    assert "left running" not in message
+    assert (
+        "A PowerPoint process appeared during the failed start: pid 7777. "
+        "This call did not force-end it; its current state was not "
+        "re-checked."
+    ) in message
 
 
 @pytestmark_win
@@ -1200,52 +1208,312 @@ def test_a_worker_still_running_when_the_refusal_is_built_gets_the_refusal(
     assert "check the output file before repeating the call" in message
 
 
-@pytestmark_win
-def test_a_worker_that_finishes_in_the_grace_wait_skips_the_diagnostics(
-    monkeypatch,
-):
-    """R6-1 stage ONE. The completion check runs the instant the grace wait
-    ends, BEFORE any process or dialog inspection, so a finished success is
-    never delayed behind a process-table call that can itself block.
+# ------------------------------------------------- R7-3 stage control
+#
+# Round 6 proved the two-stage ordering with tests that still left the
+# scheduler a vote: the stage-one case used timeout=0 and ASSUMED the
+# first wait could not observe a brand-new thread (200 instrumented runs
+# say it always did, so the first post-grace check was never reached),
+# and the stage-two harness set its own event before _run_bounded set its
+# internal one. Both are replaced here.
+#
+# _COMPLETION_EVENT_FACTORY is the seam. The event below is real, and the
+# worker sets it exactly as in production; what the test decides is WHICH
+# WAIT observes it, by running an action at a chosen wait. _run_bounded
+# waits on it exactly twice, the caller's deadline and then the grace, so
+# the stage is named by index and nothing is left to timing.
 
-    Deterministic without a sleep: the worker is never blocked, and the
-    first wait is zero seconds, which cannot observe a thread that has only
-    just been started. The grace wait then returns the moment the worker
-    sets its event.
-    """
+_STAGE_JOIN = 30.0
+
+
+class _StagedCompletion:
+    """_run_bounded's internal completion event, with the observing stage
+    chosen by the test rather than by the scheduler (R7-3)."""
+
+    INITIAL_WAIT = 0
+    GRACE_WAIT = 1
+
+    def __init__(self, release, actions=None):
+        self._inner = threading.Event()
+        self._release = release
+        self._actions = dict(actions or {})
+        self.waits = []
+
+    # the event interface _run_bounded uses
+    def set(self):
+        self._inner.set()
+
+    def is_set(self):
+        return self._inner.is_set()
+
+    def wait(self, timeout=None):
+        stage = len(self.waits)
+        self.waits.append(timeout)
+        action = self._actions.get(stage)
+        if action is not None:
+            action(self)
+        return self._inner.is_set()
+
+    # what the test drives
+    def finish_worker(self, *_):
+        """Let the worker run to completion and block until its OWN
+        completion signal is set, so no later step can outrun it."""
+        self._release.set()
+        assert self._inner.wait(_STAGE_JOIN), "the worker never signalled"
+
+
+@contextlib.contextmanager
+def _staged_run(monkeypatch, actions=None, during_diagnostics=None):
+    """One _run_bounded call with the completion seam installed and the
+    dialog probe counted. Yields (run, staged, probes)."""
     from kitchensink4ppt.com import bridge
     from kitchensink4ppt.com import dialogs as _dialogs
 
-    probed = []
-    monkeypatch.setattr(bridge, "TIMEOUT_GRACE_SECONDS", 30.0)
-    monkeypatch.setattr(
-        _dialogs, "pending_dialogs",
-        lambda *a, **k: (probed.append(1), [])[1],
-    )
-    assert bridge._run_bounded(
-        "prompt-op", 0.0, lambda: {"slides": 7}
-    ) == {"slides": 7}
-    assert probed == [], (
+    release = threading.Event()
+    staged = _StagedCompletion(release, actions)
+    probes = []
+
+    def probe(*_a, **_k):
+        probes.append(1)
+        if during_diagnostics is not None:
+            during_diagnostics(staged)
+        return []
+
+    monkeypatch.setattr(bridge, "_COMPLETION_EVENT_FACTORY", lambda: staged)
+    monkeypatch.setattr(_dialogs, "pending_dialogs", probe)
+
+    def body():
+        release.wait(_STAGE_JOIN)
+        return {"slides": 7}
+
+    try:
+        yield (lambda: bridge._run_bounded("staged-op", 30.0, body),
+               staged, probes)
+    finally:
+        release.set()
+
+
+@pytestmark_win
+def test_completion_during_the_initial_wait_returns_without_any_grace(
+    monkeypatch,
+):
+    """R7-3 stage ZERO: the ordinary success. The deadline wait itself
+    observes completion, so no grace and no inspection happen at all."""
+    with _staged_run(
+        monkeypatch,
+        actions={_StagedCompletion.INITIAL_WAIT:
+                 _StagedCompletion.finish_worker},
+    ) as (run, staged, probes):
+        assert run() == {"slides": 7}
+    assert len(staged.waits) == 1, "the grace wait ran on a finished worker"
+    assert probes == [], "a finished worker was inspected anyway"
+
+
+@pytestmark_win
+def test_completion_during_the_grace_wait_skips_the_diagnostics(
+    monkeypatch,
+):
+    """R7-3 stage ONE, the first post-grace check. Completion becomes
+    visible during the GRACE wait, and the check that runs the instant
+    that wait ends returns it, so a finished success is never delayed
+    behind a process-table call that can itself block."""
+    with _staged_run(
+        monkeypatch,
+        actions={_StagedCompletion.GRACE_WAIT:
+                 _StagedCompletion.finish_worker},
+    ) as (run, staged, probes):
+        assert run() == {"slides": 7}
+    assert len(staged.waits) == 2, "the grace wait was not reached"
+    assert probes == [], (
         "a completed result waited behind the process and dialog inspection"
     )
 
 
 @pytestmark_win
-def test_a_worker_that_finishes_during_the_grace_returns_its_result(
+def test_completion_during_the_diagnostics_returns_on_the_second_check(
     monkeypatch,
 ):
-    """R6-1 stage TWO and R6-3(b). The inspection itself can take long
-    enough for the worker to finish inside it, so the check runs again
-    afterwards. The harness releases the worker from inside the stubbed
-    dialog probe, which is exactly that window."""
-    from kitchensink4ppt.com import bridge
+    """R7-3 stage TWO, the second check. The inspection can itself take
+    long enough for the worker to finish inside it, and the answer it
+    gives then is still the worker's own."""
+    with _staged_run(
+        monkeypatch,
+        during_diagnostics=_StagedCompletion.finish_worker,
+    ) as (run, staged, probes):
+        assert run() == {"slides": 7}
+    assert len(staged.waits) == 2
+    assert probes == [1], "the second check ran without any inspection"
 
-    with _timeout_harness(
-        monkeypatch, bridge,
-        outcome=lambda: {"slides": 3},
-        during=lambda h: h.finish_now(),
-    ) as h:
-        assert h.run() == {"slides": 3}
+
+@pytestmark_win
+def test_a_worker_that_never_completes_gets_the_refusal(monkeypatch):
+    """R7-3 stage THREE. Neither check ever sees completion, the
+    inspection did run, and the refusal is what comes back."""
+    from kitchensink4ppt.core.errors import PowerPointBlocked
+
+    with _staged_run(monkeypatch) as (run, staged, probes):
+        with pytest.raises(PowerPointBlocked) as exc_info:
+            run()
+        assert len(staged.waits) == 2
+        assert probes == [1]
+    assert "The operation was NOT cancelled" in str(exc_info.value)
+
+
+# ----------------------------------------------- R7-1 queued ghost write
+#
+# A caller that gives up while its worker is still QUEUED on the COM
+# serialization lock used to get PowerPointBusy and an invitation to
+# retry, while the worker stayed in the queue and ran fn() anyway once the
+# holder released. A retried non-idempotent edit therefore ran twice: a
+# slide deletion by index deleted one slide when the abandoned worker
+# finally started and another when the retry ran. One atomic decision per
+# call now settles it, and these tests prove both sides of it.
+
+_ABANDONED_SENTENCE = (
+    " The queued call was abandoned before its operation ran; it made no "
+    "document changes. It is safe to retry after powerpoint_status reports "
+    "no COM operation in progress."
+)
+
+
+@contextlib.contextmanager
+def _lock_holder(name="existing-write"):
+    """Hold the process-wide COM serialization lock until released."""
+    from kitchensink4ppt.com import serial as _serial
+
+    held = threading.Event()
+    release = threading.Event()
+
+    def hold():
+        with _serial.com_operation(name):
+            held.set()
+            release.wait(_STAGE_JOIN)
+
+    t = threading.Thread(target=hold, daemon=True, name="ks4p-test-holder")
+    t.start()
+    assert held.wait(_STAGE_JOIN), "the holder never took the lock"
+    try:
+        yield release
+    finally:
+        release.set()
+        t.join(_STAGE_JOIN)
+
+
+def _queued_worker(name):
+    for t in threading.enumerate():
+        if t.name == f"ks4p-{name}":
+            return t
+    return None
+
+
+@pytestmark_win
+def test_a_call_abandoned_while_queued_never_runs_its_operation():
+    """R7-1(a). The holder keeps the lock past the caller's wait, so the
+    caller is told the call was abandoned. The proof is what happens
+    AFTER the holder releases: the queued worker reaches the front of the
+    queue, loses the decision, and exits without ever entering fn."""
+    from kitchensink4ppt.com import bridge
+    from kitchensink4ppt.core.errors import PowerPointBusy
+
+    calls = []
+    with _lock_holder() as release_holder:
+        with pytest.raises(PowerPointBusy) as exc_info:
+            bridge._run_bounded(
+                "queued-write", 0.05, lambda: calls.append("ran")
+            )
+        assert calls == [], "the operation ran before the caller gave up"
+        worker = _queued_worker("queued-write")
+        assert worker is not None, "the queued worker was not found"
+        release_holder.set()
+        worker.join(_STAGE_JOIN)
+        assert not worker.is_alive(), "the queued worker never finished"
+    assert calls == [], (
+        "the abandoned worker executed the operation after the holder "
+        "released the lock, so a caller told nothing had happened had it "
+        "happen behind its back"
+    )
+    assert _ABANDONED_SENTENCE in str(exc_info.value)
+
+
+@pytestmark_win
+def test_a_retry_after_an_abandoned_call_runs_the_operation_once():
+    """R7-1(c). The refusal invites a retry, so the retry must be the
+    only execution there ever is."""
+    from kitchensink4ppt.com import bridge
+    from kitchensink4ppt.core.errors import PowerPointBusy
+
+    calls = []
+
+    def delete_a_slide():
+        calls.append("ran")
+        return {"deleted": 1}
+
+    with _lock_holder() as release_holder:
+        with pytest.raises(PowerPointBusy):
+            bridge._run_bounded("queued-write", 0.05, delete_a_slide)
+        worker = _queued_worker("queued-write")
+        release_holder.set()
+        if worker is not None:
+            worker.join(_STAGE_JOIN)
+    assert bridge._run_bounded(
+        "queued-write", 30.0, delete_a_slide
+    ) == {"deleted": 1}
+    assert calls == ["ran"], (
+        "the non-idempotent operation ran twice, once from the abandoned "
+        "queued worker and once from the retry"
+    )
+
+
+@pytestmark_win
+def test_a_worker_that_wins_the_start_decision_is_never_told_to_retry(
+    monkeypatch,
+):
+    """R7-1(b). The other side of the same decision: the worker takes the
+    lock and starts fn in the instant before the caller would have
+    abandoned it. The caller must then follow the grace path and get the
+    worker's own answer, never a queue-contention retry.
+
+    The completion seam makes the order explicit rather than hoped for:
+    the lock is handed over during the caller's deadline wait, and that
+    wait does not return until fn has provably been entered."""
+    from kitchensink4ppt.com import bridge
+    from kitchensink4ppt.com import dialogs as _dialogs
+    from kitchensink4ppt.core.errors import PowerPointBusy
+
+    calls = []
+    entered = threading.Event()
+    finish = threading.Event()
+
+    def op():
+        calls.append("ran")
+        entered.set()
+        finish.wait(_STAGE_JOIN)
+        return {"slides": 4}
+
+    with _lock_holder() as release_holder:
+
+        def start_the_worker(_staged):
+            release_holder.set()
+            assert entered.wait(_STAGE_JOIN), "the worker never started fn"
+
+        staged = _StagedCompletion(
+            finish,
+            {
+                _StagedCompletion.INITIAL_WAIT: start_the_worker,
+                _StagedCompletion.GRACE_WAIT: _StagedCompletion.finish_worker,
+            },
+        )
+        monkeypatch.setattr(
+            bridge, "_COMPLETION_EVENT_FACTORY", lambda: staged
+        )
+        monkeypatch.setattr(_dialogs, "pending_dialogs", lambda *a, **k: [])
+        try:
+            assert bridge._run_bounded("racing-write", 30.0, op) == {
+                "slides": 4
+            }
+        except PowerPointBusy as exc:  # pragma: no cover - the defect
+            pytest.fail(f"a started operation was reported as queued: {exc}")
+    assert calls == ["ran"], "the operation did not run exactly once"
 
 
 @pytestmark_win
