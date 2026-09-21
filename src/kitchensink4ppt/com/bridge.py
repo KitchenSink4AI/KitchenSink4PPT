@@ -35,7 +35,7 @@ LIVE-SAFETY STACK (v1.1, ported from KS4W's 2026-09-03 stress report):
   server this is not a mitigation, it is the only isolation there is.
 - Bounded timeouts: the public operations run on a worker thread under a
   deadline, turning the report's 30-minute silent hang into a structured
-  PowerPointBlocked. NOTHING IN THIS PACKAGE ENDS A POWERPOINT PROCESS.
+  PowerPointBlocked. NOTHING IN THIS PACKAGE FORCE-ENDS A POWERPOINT PROCESS.
   The refusal REPORTS AN OBSERVATION AND A NON-ACTION: when a pid was
   recorded on positive evidence it says that process was not running when
   the call began, that this call did not force-end it, and that its
@@ -367,8 +367,8 @@ def powerpnt_count() -> int:
 
 
 # POWERPNT.EXE pids this server LAUNCHED, keyed by spawning thread.
-# EVIDENCE, not a target list: nothing in this package terminates a
-# process, and a timed-out operation only NAMES these in its refusal. An
+# EVIDENCE, not a target list: nothing in this package force-terminates
+# a process, and a timed-out operation only NAMES these in its refusal. An
 # entry exists only when _powerpoint() READ the process table, found no
 # PowerPoint running, started one itself, read the table again to name the
 # one new pid, and found that instance in the state of a just-created
@@ -447,7 +447,8 @@ def _run_bounded(name: str, timeout: float, fn):
     check, R6-1). Only if it is still not done is the refusal built, and
     everything it says about a process is read at that same moment and is
     state-neutral: what was observed, and what this path did not do.
-    No process is terminated here, and none anywhere else in this package
+    No process is force-terminated here, and none anywhere else in this
+    package
     (final check, R5-1 and R6-2, 2026-09-22)."""
     # Preserve the bridge's documented side effect: before v1.1 every public
     # operation ran ON THE CALLING THREAD and left that thread's COM

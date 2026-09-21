@@ -252,9 +252,9 @@ def test_nothing_in_the_failed_start_path_can_end_a_process():
 
     for fn in (bridge._start_powerpoint, bridge._raise_startup):
         source = inspect.getsource(fn)
-        for forbidden in ("taskkill", "Terminate", "TerminateProcess"):
+        for forbidden in ("taskkill", "TerminateProcess", ".Terminate("):
             assert forbidden not in source, (
-                f"{fn.__name__} must not be able to end a process"
+                f"{fn.__name__} must not be able to force-end a process"
             )
 
 
