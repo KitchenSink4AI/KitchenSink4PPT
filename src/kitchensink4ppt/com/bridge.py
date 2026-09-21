@@ -35,10 +35,11 @@ LIVE-SAFETY STACK (v1.1, ported from KS4W's 2026-09-03 stress report):
   server this is not a mitigation, it is the only isolation there is.
 - Bounded timeouts: the public operations run on a worker thread under a
   deadline, turning the report's 30-minute silent hang into a structured
-  PowerPointBlocked. On expiry the kill-switch terminates POWERPNT by
-  RECORDED PID, and it is armed ONLY when this call launched the process.
-  If we attached to the user's PowerPoint, nothing is ever recorded and
-  nothing can ever be killed.
+  PowerPointBlocked. NOTHING IN THIS PACKAGE ENDS A POWERPOINT PROCESS.
+  On expiry the refusal names the pid this call started, when it is known
+  on positive evidence, and says the process was left running; a timeout
+  cannot revalidate a hung apartment, so a token taken minutes earlier is
+  not proof that the instance is still only ours.
 - DisplayAlerts: suppressed for the duration and RESTORED when the instance
   is the user's. The pre-v1.1 code set ppAlertsNone on whatever instance it
   reached and never put it back, which on a singleton leaked into the
@@ -289,8 +290,7 @@ def _raise_classified(exc, fallback_message: str):
 def powerpnt_pids() -> set | None:
     """POWERPNT.EXE process ids via the process table (never COM), or None
     when the table could not be READ. PID precision is what lets the
-    timeout kill-switch terminate exactly the instance this server
-    launched and nothing else.
+    server name exactly the instance it started and nothing else.
 
     NONE MEANS UNKNOWN AND NEVER MEANS "NOTHING WAS RUNNING". This used to
     return an empty set for both, and every ownership decision in the
@@ -314,6 +314,13 @@ def powerpnt_pids() -> set | None:
             timeout=30,
         )
     except Exception:
+        return None
+    if result.returncode != 0:
+        # EVERY nonzero return is unknown, text on stdout or not: tasklist
+        # prints "ERROR: Access is denied." to stdout and exits 1, which
+        # parsed as a clean empty table (final check, R4-1, 2026-09-22).
+        # A genuine no-match exits 0 with its INFO line, so nothing that
+        # really means "nothing is running" is lost here.
         return None
     stdout = result.stdout or ""
     if not stdout.strip():
@@ -340,34 +347,32 @@ def powerpnt_count() -> int:
     return -1 if pids is None else len(pids)
 
 
-# POWERPNT.EXE pids this server LAUNCHED, keyed by spawning thread. The
-# timeout kill-switch terminates exactly these. An entry exists only when
-# _powerpoint() READ the process table, found no PowerPoint running,
-# started one itself, and read the table again to name the new pid; when we
-# attached to the user's instance, or when the table could not be read at
-# either end, this dict stays empty for that thread and the kill-switch is
-# therefore disarmed. On a singleton COM server that distinction is the
-# difference between cleaning up after ourselves and killing the user's
-# PowerPoint out from under them, and an unreadable table is not a
-# distinction at all (G2b).
+# POWERPNT.EXE pids this server LAUNCHED, keyed by spawning thread.
+# EVIDENCE, not a target list: nothing in this package terminates a
+# process, and a timed-out operation only NAMES these in its refusal. An
+# entry exists only when _powerpoint() READ the process table, found no
+# PowerPoint running, started one itself, read the table again to name the
+# one new pid, and found that instance in the state of a just-created
+# automation server. When we attached, when the table could not be read at
+# either end, or when the application did not look freshly created, this
+# dict stays empty for that thread (G2b; final check R4-1).
 _SELF_LAUNCHED_PIDS: dict[int, set] = {}
 
 
-def _kill_self_launched_for_thread(tid) -> bool:
-    """Terminate the POWERPNT instance(s) the given worker thread launched.
-    Returns False when nothing was recorded for that thread, which is the
-    normal case whenever we attached to the user's PowerPoint."""
-    pids = _SELF_LAUNCHED_PIDS.get(tid) or set()
-    killed = False
-    for pid in pids:
-        with contextlib.suppress(Exception):
-            subprocess.run(
-                ["taskkill", "/PID", str(pid), "/F"],
-                capture_output=True,
-                timeout=15,
-            )
-            killed = True
-    return killed
+def _self_launched_pids_for_thread(tid) -> set:
+    """The POWERPNT pids the given worker thread is known, ON POSITIVE
+    EVIDENCE, to have launched. Empty whenever we attached to a PowerPoint
+    we did not start, which is the normal case.
+
+    EVIDENCE ONLY. This used to terminate them when a COM operation timed
+    out, and 1.3.1 removes that: the timeout path cannot revalidate a hung
+    apartment, so a token taken minutes earlier is not proof that the
+    process is still only ours. Another session can attach to the hidden
+    instance and open work in it while our operation hangs, and a kill
+    would destroy that work. Nothing in this package ends a PowerPoint
+    process now; the refusal names the pid and says it was left running
+    (final check, R4-1 amended, 2026-09-22)."""
+    return set(_SELF_LAUNCHED_PIDS.get(tid) or set())
 
 
 @contextlib.contextmanager
@@ -460,7 +465,7 @@ def _run_bounded(name: str, timeout: float, fn):
             f"({running} is still running); retry when it finishes. "
             "powerpoint_status reports the running operation."
         )
-    killed = _kill_self_launched_for_thread(
+    ours = _self_launched_pids_for_thread(
         worker_tid[0] if worker_tid else None
     )
     done.wait(10.0)
@@ -469,12 +474,17 @@ def _run_bounded(name: str, timeout: float, fn):
         from . import dialogs as _dialogs
 
         dialogs_seen = _dialogs.pending_dialogs()
-    detail = (
-        " (the PowerPoint instance it launched was terminated)"
-        if killed
-        else " (it was working against a PowerPoint this server did not "
-        "launch, so no process was touched)"
-    )
+    if ours:
+        pids = ", ".join(str(p) for p in sorted(ours))
+        detail = (
+            f" (the PowerPoint this call started, pid {pids}, was left "
+            "running; end it from Task Manager if it stays unresponsive)"
+        )
+    else:
+        detail = (
+            " (it was working against a PowerPoint this server did not "
+            "launch, so no process was touched)"
+        )
     if dialogs_seen:
         titles = ", ".join(
             d.get("title") or d.get("class", "?") for d in dialogs_seen[:3]
@@ -527,6 +537,58 @@ class _PowerPointSession:
         self.opened: list = []
 
 
+def _acquisition_token(app, before_pids) -> set | None:
+    """The pids this call may claim to own, or None when it may not.
+
+    ALL of these must hold, and a read that fails is a no:
+
+    - the entry snapshot was READ and was empty, so nothing was up;
+    - the table read now names EXACTLY ONE new pid, so there is one
+      candidate rather than a crowd;
+    - the application itself looks like a just-created automation
+      instance: not visible, no presentations, no windows.
+
+    The last part is the only one a concurrent launch cannot fake. A
+    PowerPoint the user started is visible and, as soon as they open
+    anything, has a presentation and a window; a fresh DispatchEx instance
+    reports Visible 0, Presentations.Count 0 and Windows.Count 0 (measured
+    on PowerPoint 16, 2026-09-22). Doubt means NOT ours, and not ours
+    means this session behaves as an attach: nothing quit, nothing killed.
+    """
+    if before_pids is None or before_pids:
+        return None
+    after = powerpnt_pids()
+    if after is None:
+        return None
+    created = after - before_pids
+    if len(created) != 1:
+        return None
+    try:
+        if int(app.Visible) != 0:
+            return None
+        if int(app.Presentations.Count) != 0:
+            return None
+        if int(app.Windows.Count) != 0:
+            return None
+    except Exception:
+        return None
+    return created
+
+
+def _still_ours(app) -> bool:
+    """Whether the instance may still be quit, re-read AT RELEASE and after
+    this call's own presentations have been closed.
+
+    The user can arrive during the call: they open a deck in the instance
+    we started, or make it visible. Either way it is no longer ours to end,
+    so this call closes what it opened and leaves the application running.
+    """
+    try:
+        return int(app.Visible) == 0 and int(app.Presentations.Count) == 0
+    except Exception:
+        return False
+
+
 @contextlib.contextmanager
 def _powerpoint():
     """Singleton-safe PowerPoint context.
@@ -541,9 +603,9 @@ def _powerpoint():
     v1.1: the whole session runs under the process-wide COM lock, so callers
     that enter here directly (the com_gates scripts) are serialized without
     having to remember to be. When this call LAUNCHES PowerPoint its pid is
-    recorded for the timeout kill-switch; when it attaches to the user's
-    instance nothing is recorded, and the user's DisplayAlerts setting is
-    restored on the way out instead of being left suppressed.
+    recorded as evidence for a timeout refusal; when it attaches to the
+    user's instance nothing is recorded, and the user's DisplayAlerts
+    setting is restored on the way out instead of being left suppressed.
     """
     with _serial.com_operation("powerpoint_session"):
         yield from _powerpoint_locked()
@@ -650,22 +712,17 @@ def _powerpoint_locked():
     started_one = before_pids is not None and not before_pids
     pre_count = len(before_pids) if before_pids is not None else 0
     app, _appeared = _start_powerpoint(win32client, pythoncom, before_pids)
-    if started_one:
-        # Arm the kill-switch for exactly the process WE just started, and
-        # only when the table can still name it. An unreadable table leaves
-        # the switch disarmed rather than pointed at a guess.
-        after = powerpnt_pids()
-        created = (after - before_pids) if after is not None else set()
-        if created:
-            _SELF_LAUNCHED_PIDS[tid] = created
-    # Two different permissions, and only the first was ever checked.
-    # Quitting is a request to an application object this call created,
-    # which `started_one` establishes: the table was READ, and it was
-    # empty. Killing is taskkill /F on a pid, which needs that pid. An
-    # unreadable table gives neither, so the session behaves as an attach:
-    # nothing is quit, nothing is killed, and the user's instance is left
-    # exactly as it was found (G2b).
-    launched = started_one
+    # OWNERSHIP IS A TOKEN READ OFF THE APPLICATION, not a difference of
+    # two process-table readings. PowerPoint is a single-instance
+    # automation server, so a user who starts it between the snapshot and
+    # DispatchEx is handed to us as if we had started it ourselves; the
+    # before/after difference then names THEIR pid and the cleanup quits
+    # THEIR PowerPoint (final check, R4-1, 2026-09-22).
+    created = _acquisition_token(app, before_pids)
+    if created:
+        # Record exactly the process we can show is ours, as evidence.
+        _SELF_LAUNCHED_PIDS[tid] = created
+    launched = created is not None
     session = _PowerPointSession(app, launched)
     completed = False
     try:
@@ -692,7 +749,11 @@ def _powerpoint_locked():
         with contextlib.suppress(NameError):
             del pres  # the loop variable is itself a COM reference
         zombie = False
-        if launched:
+        # Ownership is re-checked HERE, with this call's presentations
+        # already closed. If the user opened something in the instance we
+        # started, or made it visible, it is theirs now: we leave it
+        # running rather than quitting it out from under them.
+        if launched and _still_ours(app):
             # PowerPoint will not exit while external COM references are
             # outstanding: drop ours (ops del their locals before this
             # cleanup runs; see _release note in open_presentation) and
@@ -1078,10 +1139,17 @@ def _opens_clean_failure(exc: FullLoadFailed) -> dict:
 
 def _slide_id_of(slide) -> int | None:
     """A slide's SlideID, or None when even that cannot be read (which is
-    itself a symptom, and must not mask the real failure)."""
+    itself a symptom, and must not mask the real failure).
+
+    A COM fault meaning the APPLICATION is busy or gone is classified and
+    re-raised first. Swallowing every exception here let a modal dialog or
+    a dead proxy pass as "this slide has no readable id", and the walk then
+    carried on and produced a verdict about the FILE (final check, R4-4,
+    2026-09-22). Only an ordinary read failure returns None."""
     try:
         return int(slide.SlideID)
-    except Exception:
+    except Exception as exc:
+        _reraise_environment(exc)
         return None
 
 
