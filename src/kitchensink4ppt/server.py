@@ -521,7 +521,9 @@ def apply_edits(
     (graphics pack), delete_shape (graphics pack). Every location is
     resolved BEFORE anything mutates; any stale anchor refuses the whole
     batch listing every failed index, and result.changed maps op index to
-    outcome. These ops EDIT existing content; nothing here inserts shapes,
+    outcome. format_text's vertical anchor rides here as "text_anchor",
+    since "anchor" already addresses the shape.
+    These ops EDIT existing content; nothing here inserts shapes,
     tables, or slides. Creation tools live in the packs (enable_tools).
     atomic must stay True: v1 has no partial-apply mode. Saves atomically
     with two-slot backup; backup=False skips rotation. Use this when a
@@ -1564,21 +1566,24 @@ def format_text(
     color: str | None = None,
     align: str | None = None,
     line_spacing: float | None = None,
+    anchor: str | None = None,
+    wrap: bool | None = None,
     backup: bool = True,
     live: str = "auto",
 ) -> dict:
-    """Format existing text in one shape: whole shape, one paragraph
-    (paragraph index), or a character range (start/end offsets, file-mode
-    only, as find_text reports them). Handles fragmented runs without
-    bleed. Table cell text goes through set_table_cells. shape: id or
-    unique name. Saves atomically with two-slot backup; backup=False
-    skips rotation. live='auto' edits the open PowerPoint copy of a locked
-    file; 'force' targets the open session; 'off' refuses locked files.
-    Batches: apply_edits."""
+    """Format existing text in one shape: whole shape, one paragraph, or a
+    character range (start/end from find_text, file-mode only).
+    Handles fragmented runs without bleed. anchor (top|middle|bottom) and
+    wrap set the whole text frame in place. Table cells go through
+    set_table_cells. shape: id or unique name. Saves atomically with
+    two-slot backup; backup=False skips rotation. live='auto' edits the
+    open PowerPoint copy of a locked file; 'force' targets the open
+    session; 'off' refuses locked files. Batches: apply_edits."""
 
     def _live() -> dict:
         _live_refuse(
             start=start, end=end, line_spacing=line_spacing,
+            anchor=anchor, wrap=wrap,
             underline_style=underline if isinstance(underline, str) else None,
         )
         return _live_envelope(
@@ -1598,7 +1603,7 @@ def format_text(
                 pkg, slide, shape, paragraph=paragraph, start=start, end=end,
                 font=font, size_pt=size_pt, bold=bold, italic=italic,
                 underline=underline, color=color, align=align,
-                line_spacing=line_spacing,
+                line_spacing=line_spacing, anchor=anchor, wrap=wrap,
             ),
             backup=backup,
         ),
@@ -2164,7 +2169,7 @@ def insert_table_cols(
     """Insert count empty columns before 0-based column `at`. widths:
     'shift' (new columns copy the neighbor width and the table widens,
     PowerPoint's behavior) or 'fit' (existing columns compress so total
-    width holds). Inserting inside a merged span refuses; spans covering
+    width holds; alias 'rescale'). Inserting inside a merged span refuses; spans covering
     the seam grow. A structural op no other file-based PowerPoint server
     has. Saves atomically with two-slot backup; backup=False skips
     rotation."""
@@ -2189,7 +2194,8 @@ def delete_table_cols(
 ) -> dict:
     """Delete count columns starting at 0-based column `at`. widths:
     'shift' (table narrows) or 'fit' (survivors stretch to keep total
-    width). Merge handling mirrors row deletion: fully-covered regions go,
+    width; alias 'rescale'). Merge handling mirrors row deletion:
+    fully-covered regions go,
     tail loss shrinks the span, deleting an origin column with survivors
     refuses (unmerge first). The last column cannot be deleted. Saves
     atomically with two-slot backup; backup=False skips rotation."""
@@ -2470,19 +2476,24 @@ def get_chart_data(file_path: str, slide: Any, chart: Any = None) -> dict:
 
 @_tool("design")
 def create_presentation(
-    path: str, template: str | None = None, keep_slides: bool = False
+    path: str,
+    template: str | None = None,
+    keep_slides: bool = False,
+    slide_size: str | None = None,
 ) -> dict:
     """Create a NEW .pptx. With template: a byte-copy of that deck so its
     theme colors, fonts, layouts, masters, and slide size all carry over,
     which is how brand-correct decks start; keep_slides=False (default)
     then strips the template's slides, keeping only the design machinery.
-    Without template: a minimal blank 16:9 deck. Refuses to overwrite an
-    existing path; the template file is never modified. Follow with
-    insert_slide + set_placeholder_text."""
+    Without template: a blank 16:9 deck, or slide_size (4:3, 16:10, a4,
+    letter) with the layouts fitted to it. The result states the canvas.
+    Refuses to overwrite an existing path. Follow with insert_slide +
+    set_placeholder_text."""
     result = _sl.create_presentation(
         check_path(path, "create presentation"),
         template=check_path(template, "read template") if template else None,
         keep_slides=keep_slides,
+        slide_size=slide_size,
     )
     return {"ok": True, **result}
 
@@ -3199,14 +3210,21 @@ def validate(file_path: str) -> dict:
 
 
 @_tool("assembly-export")
-def extract_text(file_path: str) -> dict:
+def extract_text(
+    file_path: str, limit: int | None = None, offset: int = 0
+) -> dict:
     """Everything textual in one call: all slides in reading order PLUS
     every slide's speaker notes (equivalent to get_text with
     include_notes=True over the whole deck). The full-content dump for
     indexing, review, or migrating deck content into a document. For
     slide-scoped or notes-free reads, get_text with a scope is cheaper;
-    for editing addresses use get_presentation_view instead."""
-    return _rd.get_text(_load(file_path), None, include_notes=True)
+    for editing addresses use get_presentation_view instead. A deck past
+    the output budget pages rather than cutting: `page` leads the answer
+    with the total, what came back, and the next_offset to continue.
+    limit and offset count SLIDES."""
+    return _rd.get_text(
+        _load(file_path), None, include_notes=True, limit=limit, offset=offset
+    )
 
 
 @_tool("assembly-export")

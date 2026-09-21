@@ -40,9 +40,14 @@ _OPS: dict[str, tuple[set[str], set[str]]] = {
          "fill", "line", "effect", "text", "text_style", "name"},
         set(),
     ),
+    # format_text's `anchor` (vertical text anchor) rides here as
+    # `text_anchor`: a bare "anchor" key in an edit is already the view
+    # anchor that ADDRESSES the shape, and one word cannot mean both the
+    # location and a property being written.
     "format_text": (
         {"paragraph", "start", "end", "font", "size_pt", "bold", "italic",
-         "underline", "color", "align", "line_spacing"},
+         "underline", "color", "align", "line_spacing", "text_anchor",
+         "wrap"},
         set(),
     ),
     "delete_shape": (set(), set()),
@@ -56,6 +61,9 @@ _OPS: dict[str, tuple[set[str], set[str]]] = {
     ),
 }
 _LOCATION_KEYS = {"anchor", "slide", "shape", "table"}
+#: format_text's vertical-anchor vocabulary. Seeing one of these under the
+#: `anchor` key means the caller wanted text_anchor, not a view address.
+_TEXT_ANCHOR_WORDS = {"top", "middle", "center", "bottom"}
 # ops that address one shape (anchor or slide+shape)
 _SHAPE_OPS = {"set_text", "set_shape", "format_text", "delete_shape"}
 
@@ -104,6 +112,20 @@ def _resolve_one(pkg: PptxPackage, edit: dict) -> dict:
 
     # Shape- and table-addressed ops: anchor or explicit keys.
     if "anchor" in edit:
+        # An agent reads format_text(anchor="middle") and writes it here,
+        # where `anchor` already means the view anchor that ADDRESSES the
+        # shape. It refused correctly, with a message about anchor grammar
+        # that named no way forward.
+        if op == "format_text" and isinstance(edit["anchor"], str) and (
+            edit["anchor"].strip().lower() in _TEXT_ANCHOR_WORDS
+        ):
+            raise PptMcpError(
+                f'op \'format_text\' got anchor={edit["anchor"]!r}, which '
+                'reads as the VIEW anchor that addresses a shape. The '
+                'vertical text anchor rides as "text_anchor" here: '
+                f'{{"op": "format_text", ..., "text_anchor": '
+                f'{edit["anchor"]!r}}}'
+            )
         info = _view.resolve_anchor(pkg, edit["anchor"])
         if info["kind"] == "slide":
             raise PptMcpError(
@@ -196,6 +218,8 @@ def _apply_one(pkg: PptxPackage, edit: dict, target: dict) -> dict:
     if op == "set_shape":
         return _shapes.set_shape(pkg, slide, target["shape_id"], **params)
     if op == "format_text":
+        if "text_anchor" in params:
+            params["anchor"] = params.pop("text_anchor")
         return _text.format_text(pkg, slide, target["shape_id"], **params)
     if op == "delete_shape":
         return _shapes.delete_shape(pkg, slide, target["shape_id"])

@@ -906,15 +906,15 @@ def insert_table_cols(
     appends). New cells copy the formatting of the column at the insertion
     point (last column when appending), empty text, no merge flags.
     Inserting INSIDE a horizontal merge span refuses. widths: "shift" (new
-    columns add their width; the table and frame grow) or "rescale" (every
-    column shrinks proportionally; total table width unchanged).
+    columns add their width; the table and frame grow) or "fit" (every
+    column shrinks proportionally; total table width unchanged). "rescale"
+    is accepted as an alias for "fit".
     """
     rec = resolve_table(pkg, slide, table)
     tbl = rec["tbl"]
     nrows, ncols = _dims(tbl)
     _check_count(count)
-    if widths not in ("shift", "rescale"):
-        raise PptMcpError(f'widths must be "shift" or "rescale", got {widths!r}')
+    widths = _normalize_widths(widths)
     if not 0 <= at <= ncols:
         raise TargetNotFound(
             f"column index {at} out of range; the table has {ncols} columns "
@@ -948,7 +948,7 @@ def insert_table_cols(
                 cells[at].addprevious(tc)
             else:
                 tr.append(tc)
-    if widths == "rescale":
+    if widths == "fit":
         new_cols = _grid_cols(tbl)
         raw_total = sum(int(c.get("w", "0")) for c in new_cols)
         _rescale_cols(new_cols, old_total, raw_total)
@@ -971,14 +971,14 @@ def delete_table_cols(
     mirrors delete_table_rows: fully covered regions go, a surviving origin
     shrinks its gridSpan, a deleted origin with surviving continuations
     refuses. widths: "shift" (table and frame narrow by the removed widths)
-    or "rescale" (remaining columns grow proportionally; total width kept).
+    or "fit" (remaining columns grow proportionally; total width kept).
+    "rescale" is accepted as an alias for "fit".
     """
     rec = resolve_table(pkg, slide, table)
     tbl = rec["tbl"]
     nrows, ncols = _dims(tbl)
     _check_count(count)
-    if widths not in ("shift", "rescale"):
-        raise PptMcpError(f'widths must be "shift" or "rescale", got {widths!r}')
+    widths = _normalize_widths(widths)
     if not (0 <= at < ncols and at + count <= ncols):
         raise TargetNotFound(
             f"columns {at}..{at + count - 1} out of range; the table has "
@@ -1030,7 +1030,7 @@ def delete_table_cols(
     for tr in _rows_of(tbl):
         for tc in _cells_of(tr)[at:end]:
             tr.remove(tc)
-    if widths == "rescale":
+    if widths == "fit":
         remaining = _grid_cols(tbl)
         raw_total = sum(int(c.get("w", "0")) for c in remaining)
         _rescale_cols(remaining, old_total, raw_total)
@@ -1038,6 +1038,24 @@ def delete_table_cols(
         _grow_frame(rec["frame"], dcx=-removed_w)
     pkg.mark_dirty(rec["part"])
     return _surgery_result(rec, tbl, deleted_cols=count, at=at, widths=widths)
+
+
+#: How a structural column op distributes width. "fit" is the word both
+#: column tools' docstrings have always used and the word insert_table_cols
+#: documents; "rescale" was the only value the code accepted, so a caller
+#: following the documentation got a refusal (punchlist #876). "fit" is the
+#: canonical spelling now and "rescale" keeps working.
+_WIDTH_MODES = {"shift": "shift", "fit": "fit", "rescale": "fit"}
+
+
+def _normalize_widths(widths: str) -> str:
+    mode = _WIDTH_MODES.get(widths)
+    if mode is None:
+        raise PptMcpError(
+            f'widths must be "shift" or "fit" (alias "rescale"), got '
+            f"{widths!r}"
+        )
+    return mode
 
 
 def _check_count(count: int) -> None:

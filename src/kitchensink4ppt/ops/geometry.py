@@ -285,6 +285,35 @@ def gradient_fill(stops: list[dict], angle: float = 0.0, *, radial: bool = False
     return fill
 
 
+def check_spec_keys(spec: dict, allowed, what: str) -> None:
+    """Refuse a spec key nobody will honor.
+
+    A dropped key writes a shape that is not the one asked for, and the
+    caller finds out at a render if at all: `line={"end_arrow": ...}`
+    produced an unarrowed line that looked designed, and
+    `line={"type": "none"}` produced an empty a:ln that left the themed
+    outline painted. Both were silent. So an unknown key refuses, the way
+    set_shape's text_style already does.
+    """
+    unknown = sorted(k for k in spec if k not in allowed)
+    if unknown:
+        raise PptMcpError(
+            f"unknown {what} key(s): {', '.join(unknown)}; accepted here: "
+            f"{', '.join(sorted(allowed))}. Refusing rather than dropping "
+            "them, since a dropped key writes a shape that is not the one "
+            "asked for and says nothing about it."
+        )
+
+
+#: Keys each fill type accepts. Refusing outside these is what turns a
+#: typo into a refusal instead of a wrong-looking shape.
+_FILL_KEYS = {
+    "none": frozenset({"type"}),
+    "solid": frozenset({"type", "color", "alpha"}),
+    "gradient": frozenset({"type", "stops", "angle", "radial"}),
+}
+
+
 def fill_element(spec) -> etree._Element | None:
     """Build a fill element from a user spec, or None when spec is None
     (inherit from p:style / theme).
@@ -294,6 +323,7 @@ def fill_element(spec) -> etree._Element | None:
     {"type": "gradient", "stops": [...], "angle": deg, "radial": bool}.
     Gradient stop pos is percent 0..100; a stops list whose every pos lies
     in 0.0..1.0 is read as fractions and scaled (see gradient_fill).
+    Unknown keys refuse.
     """
     if spec is None:
         return None
@@ -303,19 +333,22 @@ def fill_element(spec) -> etree._Element | None:
         return solid_fill(spec)
     if isinstance(spec, dict):
         kind = spec.get("type", "solid")
+        if kind not in _FILL_KEYS:
+            raise PptMcpError(
+                f"unknown fill type {kind!r}; one of: none, solid, gradient"
+            )
+        check_spec_keys(spec, _FILL_KEYS[kind], f"{kind} fill")
         if kind == "none":
             return no_fill()
         if kind == "solid":
             if "color" not in spec:
                 raise PptMcpError('solid fill spec needs a "color" key')
             return solid_fill(spec["color"], spec.get("alpha"))
-        if kind == "gradient":
-            return gradient_fill(
-                spec.get("stops", []),
-                float(spec.get("angle", 0.0)),
-                radial=bool(spec.get("radial", False)),
-            )
-        raise PptMcpError(f"unknown fill type {kind!r}; one of: none, solid, gradient")
+        return gradient_fill(
+            spec.get("stops", []),
+            float(spec.get("angle", 0.0)),
+            radial=bool(spec.get("radial", False)),
+        )
     raise PptMcpError(f"invalid fill spec {spec!r}")
 
 
@@ -341,14 +374,61 @@ def _arrow_spec(spec) -> dict:
     return out
 
 
+#: The two ends of a line, and every name a caller reaches for. `head` and
+#: `tail` are the DrawingML words; `start_arrow` / `end_arrow` are what a
+#: caller writes when thinking about the arrow rather than the schema, and
+#: dropping those in silence produced unarrowed connectors that survived a
+#: render review because an unarrowed line looks like a designed line.
+_LINE_ARROW_ALIASES = {
+    "head": "head", "head_end": "head", "start_arrow": "head",
+    "tail": "tail", "tail_end": "tail", "end_arrow": "tail",
+}
+
+_LINE_KEYS = frozenset(
+    {"type", "width", "color", "alpha", "dash", "cap", "join"}
+) | frozenset(_LINE_ARROW_ALIASES)
+
+#: Keys each line type accepts. "none" paints nothing, so a width or a
+#: colour alongside it is a contradiction the caller should hear about,
+#: exactly as _FILL_KEYS treats a colour on a none fill.
+_LINE_TYPE_KEYS = {
+    "none": frozenset({"type"}),
+    "solid": _LINE_KEYS,
+}
+
+
+def _line_arrows(spec: dict) -> dict:
+    """Collect the head and tail arrow specs under whichever alias the
+    caller used. Two aliases for the same end refuse rather than letting
+    one quietly win."""
+    arrows: dict[str, tuple[str, object]] = {}
+    for key in _LINE_ARROW_ALIASES:
+        if spec.get(key) is None:
+            continue
+        slot = _LINE_ARROW_ALIASES[key]
+        if slot in arrows:
+            raise PptMcpError(
+                f"line spec names the {slot} arrowhead twice, as "
+                f"{arrows[slot][0]!r} and {key!r}; pass one of them"
+            )
+        arrows[slot] = (key, spec[key])
+    return {slot: value for slot, (_alias, value) in arrows.items()}
+
+
 def line_element(spec) -> etree._Element | None:
     """Build a:ln from a user spec, or None when spec is None (inherit).
 
-    Accepted: "none" | {"width": pt, "color": ..., "alpha": 0..1,
+    Accepted: "none" | {"type": "none"|"solid", "width": pt,
+    "color": ..., "alpha": 0..1,
     "dash": preset | [[dash, space], ...] in stroke-width multiples,
     "cap": flat|round|square, "join": miter|round|bevel,
-    "head": arrow spec, "tail": arrow spec}. Arrow spec: "triangle" or
-    {"type": ..., "w": sm|med|lg, "len": sm|med|lg}.
+    "head": arrow spec, "tail": arrow spec}. head/tail also answer to
+    head_end/tail_end and start_arrow/end_arrow. Arrow spec: "triangle" or
+    {"type": ..., "w": sm|med|lg, "len": sm|med|lg}. Unknown keys refuse.
+
+    type="none" writes a:noFill INSIDE the a:ln, which is what actually
+    suppresses an outline; a bare empty a:ln suppresses nothing and the
+    p:style lnRef still paints the themed border.
     """
     if spec is None:
         return None
@@ -358,6 +438,18 @@ def line_element(spec) -> etree._Element | None:
         return ln
     if not isinstance(spec, dict):
         raise PptMcpError(f'invalid line spec {spec!r}; use a dict or "none"')
+    kind = spec.get("type", "solid")
+    if kind not in _LINE_TYPE_KEYS:
+        raise PptMcpError(f"unknown line type {kind!r}; one of: none, solid")
+    # Per-type key sets, the way fill_element already did it. The none
+    # branch used to return before reading any other key, so
+    # line={"type":"none","width":4} dropped the width in silence: the
+    # same asymmetry the unknown-key refusal was added to remove, one
+    # branch over.
+    check_spec_keys(spec, _LINE_TYPE_KEYS[kind], f"{kind} line")
+    if kind == "none":
+        ln.append(no_fill())
+        return ln
     if "width" in spec:
         width = float(spec["width"])
         if not 0 < width <= 120:
@@ -402,9 +494,10 @@ def line_element(spec) -> etree._Element | None:
             etree.SubElement(ln, qn("a:bevel"))
         else:
             raise PptMcpError(f"unknown line join {join!r}; one of: miter, round, bevel")
+    arrows = _line_arrows(spec)
     for key, tag in (("head", "a:headEnd"), ("tail", "a:tailEnd")):
-        if key in spec and spec[key] is not None:
-            arrow = _arrow_spec(spec[key])
+        if key in arrows:
+            arrow = _arrow_spec(arrows[key])
             el = etree.SubElement(ln, qn(tag))
             el.set("type", arrow["type"])
             if "w" in arrow:
@@ -631,8 +724,10 @@ def txbody(text: str, style: dict | None = None) -> etree._Element:
             f"unknown text anchor {style.get('anchor')!r}; one of: top, middle, bottom"
         )
     bodypr.set("anchor", anchor)
-    if style.get("wrap") is False:
-        bodypr.set("wrap", "none")
+    # Same rule as the run toggles: a named wrap states itself rather than
+    # relying on the absence of an attribute to mean the default.
+    if "wrap" in style:
+        bodypr.set("wrap", "square" if style["wrap"] else "none")
     etree.SubElement(body, qn("a:lstStyle"))
     align = _ALIGN.get(style.get("align", "center"))
     if align is None:
@@ -665,17 +760,26 @@ def _apply_rpr(rpr: etree._Element, style: dict) -> None:
         if not 1 <= size <= 400:
             raise PptMcpError(f"font size must be 1..400 pt, got {size}")
         rpr.set("sz", str(round(size * 100)))
-    if style.get("bold"):
-        rpr.set("b", "1")
-    if style.get("italic"):
-        rpr.set("i", "1")
+    # A toggle that is PRESENT AND FALSE writes the explicit off attribute.
+    # Testing truthiness instead made `bold: False` a silent no-op: no
+    # attribute was written, so nothing overrode a bold carried from the
+    # previous run or inherited from the placeholder, and the named key
+    # lost. "Absent" and "present and false" are different instructions.
+    for key, attr in (("bold", "b"), ("italic", "i")):
+        if key in style:
+            rpr.set(attr, "1" if style[key] else "0")
     rpr.set("dirty", "0")
     # rPr child order: fills first, then latin/ea/cs.
     if "color" in style:
         rpr.append(solid_fill(style["color"]))
     if "font" in style:
-        latin = etree.SubElement(rpr, qn("a:latin"))
-        latin.set("typeface", str(style["font"]))
+        # CJK glyphs render through a:ea and complex scripts through a:cs,
+        # so a latin-only write hands those runs to the theme's minor font
+        # while claiming the typeface was set. ops/text.py's rPr writer
+        # already mirrors all three; this one did not.
+        for tag in ("a:latin", "a:ea", "a:cs"):
+            el = etree.SubElement(rpr, qn(tag))
+            el.set("typeface", str(style["font"]))
 
 
 # ------------------------------------------------------------ style + order

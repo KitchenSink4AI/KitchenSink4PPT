@@ -928,22 +928,138 @@ def set_slide_hidden(pkg: PptxPackage, slide, hidden: bool) -> dict:
 # --------------------------------------------------- create_presentation
 
 
+#: The 16:9 canvas, and the 4:3 canvas python-pptx's bundled default uses.
+_WIDESCREEN = (12192000, 6858000)
+_PPTX_DEFAULT = (9144000, 6858000)
+
+
+def _fit_default_to(pkg: PptxPackage, preset: str) -> None:
+    """Rescale the bundled 4:3 default template to another canvas.
+
+    The masters and layouts are authored for 10 x 7.5in, so changing only
+    p:sldSz would leave the whole design stranded in a corner of the new
+    canvas: that is exactly the trap set_slide_size documents when it
+    refuses to rescale content. Every master and layout geometry is scaled
+    by the ratio of the new canvas to the old one, per axis, including the
+    child-space offsets and extents groups use. Slides are not touched
+    because this only runs on a deck that has none.
+
+    4:3 is the template's own size, so asking for it scales by 1 and the
+    bytes come through untouched.
+    """
+    from .furniture import _SIZE_PRESETS
+
+    cx, cy, sz_type = _SIZE_PRESETS[preset]
+    sx = cx / _PPTX_DEFAULT[0]
+    sy = cy / _PPTX_DEFAULT[1]
+
+    def _scale(el: etree._Element, pairs) -> None:
+        for attr, factor in pairs:
+            raw = el.get(attr)
+            if raw is None:
+                continue
+            try:
+                el.set(attr, str(round(int(raw) * factor)))
+            except ValueError:
+                pass
+
+    if (sx, sy) != (1.0, 1.0):
+        parts = _masters(pkg) + [p for p, _name in _layouts(pkg)]
+        for part in parts:
+            root = pkg.root(part)
+            for xfrm in root.iter(qn("a:xfrm")):
+                for tag, pairs in (
+                    ("a:off", (("x", sx), ("y", sy))),
+                    ("a:ext", (("cx", sx), ("cy", sy))),
+                    ("a:chOff", (("x", sx), ("y", sy))),
+                    ("a:chExt", (("cx", sx), ("cy", sy))),
+                ):
+                    el = xfrm.find(qn(tag))
+                    if el is not None:
+                        _scale(el, pairs)
+            pkg.mark_dirty(part)
+
+    pres = pkg.presentation()
+    sldsz = pres.find(qn("p:sldSz"))
+    if sldsz is None:
+        sldsz = etree.Element(qn("p:sldSz"))
+        pkg._insert_presentation_child(sldsz)
+    sldsz.set("cx", str(cx))
+    sldsz.set("cy", str(cy))
+    if sz_type:
+        sldsz.set("type", sz_type)
+    else:
+        sldsz.attrib.pop("type", None)  # 16:9 has no ST_SlideSizeType token
+    pkg.mark_dirty(PRESENTATION_PART)
+
+
+def slide_size_of(pkg: PptxPackage) -> dict:
+    """{"cx","cy","w_in","h_in","type"} for the deck's canvas."""
+    sldsz = pkg.presentation().find(qn("p:sldSz"))
+    if sldsz is None:
+        cx, cy = _PPTX_DEFAULT
+        sz_type = None
+    else:
+        cx = int(sldsz.get("cx", _PPTX_DEFAULT[0]))
+        cy = int(sldsz.get("cy", _PPTX_DEFAULT[1]))
+        sz_type = sldsz.get("type")
+    return {
+        "cx": cx,
+        "cy": cy,
+        "w_in": round(cx / 914400, 3),
+        "h_in": round(cy / 914400, 3),
+        "type": sz_type,
+    }
+
+
 def create_presentation(
     path: str | Path,
     template: str | Path | None = None,
     *,
     keep_slides: bool = False,
+    slide_size: str | None = None,
 ) -> dict:
     """Create a NEW .pptx at `path` from a template (.pptx or .potx). The
     template's bytes are copied, a .potx/.ppsx main content type is restamped
     to the presentation type, and with keep_slides=False (the default) every
     slide is removed through the delete machinery, leaving masters, layouts,
-    and themes intact. The template source file is never modified. With
-    template=None a blank 4:3 deck is built from python-pptx's bundled
-    default template bytes (16:9 blank creation is a Phase 7 item).
+    and themes intact. The template source file is never modified.
+
+    With template=None the deck is 16:9 by default, which is what the
+    tool has always promised and what a from-scratch build needs, since
+    this is the first call in one and every coordinate after it is
+    computed against the canvas. slide_size names another preset ("4:3",
+    "16:10", "a4", "letter"); the bundled python-pptx default IS 4:3, so
+    asking for that scales by 1 and hands the template through untouched.
+    Any other canvas rescales the masters and layouts to match it (see
+    _fit_default_to), rather than moving p:sldSz and leaving the design
+    stranded in a corner. A deck built FROM a template keeps that
+    template's own size, so slide_size refuses there rather than quietly
+    losing to it: change it afterwards with set_slide_size.
 
     This is the one ops function that writes to disk: byte copy, then a
     PptxPackage edit and an atomic validated save on the NEW file only."""
+    from .furniture import _SIZE_PRESETS
+
+    # None is "not given", which is what lets an EXPLICIT slide_size="16:9"
+    # beside a template refuse like every other explicit value. While the
+    # default was the string "16:9" the function could not tell the two
+    # apart, so that one combination lost without a word.
+    if template is not None and slide_size is not None:
+        raise PptMcpError(
+            "slide_size applies to a from-scratch deck; a deck built from "
+            "a template keeps the template's own canvas. Create it, then "
+            "set_slide_size(preset=...) if it really has to change."
+        )
+    if slide_size is None:
+        slide_size = "16:9"
+    # An unhashable value would blow up the membership test with a raw
+    # TypeError instead of the refusal every other bad value gets.
+    if not isinstance(slide_size, str) or slide_size not in _SIZE_PRESETS:
+        raise PptMcpError(
+            f"unknown slide_size {slide_size!r}; one of: "
+            f"{', '.join(_SIZE_PRESETS)}"
+        )
     dest = Path(path)
     check_path(dest, "create presentation")
     if dest.suffix.lower() != ".pptx":
@@ -995,6 +1111,9 @@ def create_presentation(
                 res = _delete_slide_impl(pkg, i, allow_last=True)
                 removed.append(res["deleted_part"])
                 gc_total.extend(res["gc_parts"])
+        if template is None:
+            _fit_default_to(pkg, slide_size)
+        size = slide_size_of(pkg)
         pkg.save(do_backup=False)
     except BaseException:
         dest.unlink(missing_ok=True)  # never leave a half-built file behind
@@ -1006,6 +1125,10 @@ def create_presentation(
         "slides_removed": len(removed),
         "gc_parts": gc_total,
         "slides_kept": len(pkg.slide_parts()),
+        # The canvas every later coordinate is computed against. Stating it
+        # here is what lets a caller catch a mismatch without a follow-up
+        # get_presentation_info.
+        "slide_size": size,
     }
 
 

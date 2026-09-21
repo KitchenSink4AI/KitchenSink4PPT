@@ -17,8 +17,10 @@ from kitchensink4ppt.ops import generators, shapes, slides, text
 
 CORPUS = Path(__file__).resolve().parents[1] / "corpus"
 
-#: default python-pptx template: 10 x 7.5 in slide.
-SLIDE_W, SLIDE_H = 10.0, 7.5
+#: create_presentation with no template: 13.333 x 7.5 in, the 16:9 canvas
+#: its docstring has always promised (punchlist #872; it used to hand back
+#: the stock python-pptx 4:3 default and these constants said 10 x 7.5).
+SLIDE_W, SLIDE_H = 13.333, 7.5
 
 
 @pytest.fixture()
@@ -102,7 +104,9 @@ def test_overlap_tolerance_option(blank_deck):
 
 
 def test_off_slide_full_and_partial(blank_deck):
-    gone = shapes.insert_shape(blank_deck, 0, "rectangle", 11, 1, 2, 1, text="x")
+    gone = shapes.insert_shape(
+        blank_deck, 0, "rectangle", SLIDE_W + 1, 1, 2, 1, text="x"
+    )
     hang = shapes.insert_shape(
         blank_deck, 0, "rectangle", SLIDE_W - 1, 1, 2, 1, text="y"
     )

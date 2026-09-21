@@ -29,6 +29,8 @@ into this math; edits under a rotated group carry a warning.
 
 from __future__ import annotations
 
+import copy as _copy
+
 from lxml import etree
 
 from ..core.errors import PptMcpError, TargetNotFound, UnsupportedStructure
@@ -86,6 +88,245 @@ def _split_text_style(style: dict | None) -> tuple[dict | None, dict]:
     base = {k: v for k, v in folded.items() if k in _TXBODY_STYLE_KEYS}
     extra = {k: v for k, v in folded.items() if k in _TXBODY_EXTRA_KEYS}
     return base, extra
+
+
+#: Bullet children of a:pPr, plus the marker that switches bullets OFF.
+#: Carrying these is what keeps set_bullets(style="none") from being undone
+#: by a later retext.
+_BULLET_TAGS = ("a:buNone", "a:buAutoNum", "a:buChar", "a:buBlip", "a:buFont")
+
+
+def _merge_rpr(old_rpr: etree._Element, new_rpr: etree._Element):
+    """Old run properties, with everything the caller just named laid on
+    top. Returns (merged, carried) where carried names the categories that
+    came from the old run.
+
+    The freshly built a:rPr states exactly what text_style asked for, plus
+    lang and dirty, so overlaying it onto a copy of the old one preserves
+    colour, typeface, size, bold and italic that nobody asked to change.
+    """
+    from ._runmap import FILL_CHOICE_TAGS, RPR_ORDER, rank_insert, remove_children
+
+    merged = _copy.deepcopy(old_rpr)
+    merged.tag = new_rpr.tag
+    carried: set[str] = set()
+    if merged.get("sz"):
+        carried.add("size")
+    for attr, value in new_rpr.attrib.items():
+        if attr == "lang" and merged.get("lang"):
+            continue
+        if attr in ("sz", "b", "i", "u"):
+            carried.discard({"sz": "size"}.get(attr, attr))
+        merged.set(attr, value)
+    if merged.find(qn("a:solidFill")) is not None or merged.find(
+        qn("a:gradFill")
+    ) is not None:
+        carried.add("run_color")
+    if merged.find(qn("a:latin")) is not None:
+        carried.add("font")
+    for child in new_rpr:
+        tag = etree.QName(child).localname
+        if f"a:{tag}" in FILL_CHOICE_TAGS:
+            remove_children(merged, FILL_CHOICE_TAGS)
+            carried.discard("run_color")
+        elif tag in ("latin", "ea", "cs"):
+            remove_children(merged, ("a:latin", "a:ea", "a:cs"))
+            carried.discard("font")
+        else:
+            remove_children(merged, (f"a:{tag}",))
+        rank_insert(merged, _copy.deepcopy(child), RPR_ORDER)
+    return merged, carried
+
+
+#: a:bodyPr autofit children. The ELEMENT is the mode and gets carried;
+#: the attributes on it are PowerPoint's cache of how far it had to shrink
+#: the OLD text, and carrying those onto new text is a rendering defect.
+_AUTOFIT_TAGS = ("a:normAutofit", "a:spAutoFit", "a:noAutofit")
+_AUTOFIT_CACHE_ATTRS = ("fontScale", "lnSpcReduction")
+
+
+#: What clearing the cache actually costs the caller, stated in the
+#: result. PowerPoint does NOT recompute on open (measured: a cleared
+#: normAutofit stays cleared through an open-and-save round trip), which
+#: is what ops/text.py's _AUTOFIT_CAVEAT has said all along. So the frame
+#: renders at 100% and its fit is genuinely unknown until something
+#: re-fits it.
+_AUTOFIT_RESET_NOTE = (
+    "the cached shrink belonged to the old text and was cleared; "
+    "PowerPoint does not recompute it on open, so this frame now renders "
+    "at full size and its fit is unknown. Re-fit with fit_text, or check "
+    'with check_layout(checks=["overflow"]).'
+)
+
+
+def _reset_autofit_cache(bodypr: etree._Element) -> bool:
+    """Drop the cached autofit numbers, keep the mode. Returns whether
+    anything was actually dropped.
+
+    PowerPoint renders from `normAutofit@fontScale` until the frame is
+    next edited in the app, so a box that once overflowed kept shrinking
+    text that now fits: a placeholder retexted from a paragraph to three
+    words still rendered at 40%. Clearing the element instead of the
+    numbers would change the shape's autofit BEHAVIOUR, which nobody
+    asked for.
+
+    Clearing does NOT re-fit anything. PowerPoint recomputes the cache
+    only when the frame is edited in the application, so a replacement
+    LONGER than the original will now overflow visibly rather than shrink
+    to a scale computed for text that is no longer there. Both are wrong
+    renderings of the new text; an overflow is at least the honest one,
+    and check_layout's overflow check sees it. The caller is told, and
+    fit_text is the remedy: doing it here would silently rewrite every
+    run's size on an edit that only asked to change the words.
+    """
+    dropped = False
+    for tag in _AUTOFIT_TAGS:
+        el = bodypr.find(qn(tag))
+        if el is None:
+            continue
+        for attr in _AUTOFIT_CACHE_ATTRS:
+            if el.get(attr) is not None:
+                el.attrib.pop(attr)
+                dropped = True
+    return dropped
+
+
+def _carry_text_properties(
+    old: etree._Element, new: etree._Element, named: set
+) -> tuple[list[str], dict]:
+    """Carry the previous text body's properties onto its replacement, for
+    everything the caller did not name.
+
+    A single-style replace used to build a brand-new body from defaults, so
+    replacing a body's text re-centred paragraphs that were left-aligned,
+    put bullet glyphs back on paragraphs where set_bullets(style="none")
+    had removed them, reset the vertical anchor, and dropped explicit run
+    colour. None of that was requested and none of it was reported;
+    `changed: ["text"]` was all the caller got back. Text replacement now
+    touches text, and touches formatting only where the caller named it.
+
+    Returns (carried categories, facts). `facts` reports what the carry
+    could NOT preserve, because a `preserved` list that only ever says
+    what survived is a half-truth on a body whose runs disagreed.
+    """
+    carried: set[str] = set()
+    facts: dict = {}
+
+    old_bodypr = old.find(qn("a:bodyPr"))
+    new_bodypr = new.find(qn("a:bodyPr"))
+    if old_bodypr is not None and new_bodypr is not None:
+        kept_anchor = new_bodypr.get("anchor")
+        kept_wrap = new_bodypr.get("wrap")
+        replacement = _copy.deepcopy(old_bodypr)
+        if _reset_autofit_cache(replacement):
+            facts["autofit_scale_reset"] = _AUTOFIT_RESET_NOTE
+        if replacement.find(qn("a:normAutofit")) is not None or (
+            replacement.find(qn("a:spAutoFit")) is not None
+        ):
+            carried.add("autofit_mode")
+        if "anchor" in named:
+            if kept_anchor is None:
+                replacement.attrib.pop("anchor", None)
+            else:
+                replacement.set("anchor", kept_anchor)
+        elif replacement.get("anchor") != kept_anchor:
+            carried.add("anchor")
+        if "wrap" in named:
+            if kept_wrap is None:
+                replacement.attrib.pop("wrap", None)
+            else:
+                replacement.set("wrap", kept_wrap)
+        new.replace(new_bodypr, replacement)
+
+    old_lst = old.find(qn("a:lstStyle"))
+    new_lst = new.find(qn("a:lstStyle"))
+    if old_lst is not None and len(old_lst) and new_lst is not None:
+        new.replace(new_lst, _copy.deepcopy(old_lst))
+        carried.add("list_style")
+
+    old_paras = old.findall(qn("a:p"))
+    if not old_paras:
+        return sorted(carried), facts
+
+    # A paragraph whose runs disagreed about their formatting cannot be
+    # carried: the replacement is one run, so it can only take ONE run's
+    # properties, and it takes the first. That loss predates this carry
+    # (a full rebuild lost it too), but reporting `preserved` over it
+    # without saying so would be the carry claiming credit for a wreck.
+    if any(_runs_disagree(p) for p in old_paras):
+        facts["runs_collapsed_to_first"] = True
+
+    for i, para in enumerate(new.findall(qn("a:p"))):
+        # A replacement with MORE paragraphs than the original takes the
+        # last one's shape, which is what pressing Enter in PowerPoint does.
+        source = old_paras[min(i, len(old_paras) - 1)]
+
+        old_ppr = source.find(qn("a:pPr"))
+        new_ppr = para.find(qn("a:pPr"))
+        if new_ppr is not None:
+            kept_align = new_ppr.get("algn")
+            if old_ppr is None:
+                # The original inherited everything. Preserve that rather
+                # than pinning the default alignment onto it.
+                if "align" not in named:
+                    para.remove(new_ppr)
+            else:
+                replacement = _copy.deepcopy(old_ppr)
+                if "align" in named:
+                    if kept_align is None:
+                        replacement.attrib.pop("algn", None)
+                    else:
+                        replacement.set("algn", kept_align)
+                elif replacement.get("algn") != kept_align:
+                    carried.add("alignment")
+                if any(
+                    replacement.find(qn(t)) is not None for t in _BULLET_TAGS
+                ):
+                    carried.add("bullets")
+                if replacement.get("lvl"):
+                    carried.add("level")
+                para.replace(new_ppr, replacement)
+
+        src_rpr = source.find(f"{qn('a:r')}/{qn('a:rPr')}")
+        if src_rpr is None:
+            src_rpr = source.find(qn("a:endParaRPr"))
+        if src_rpr is None:
+            continue
+        for tag in ("a:rPr", "a:endParaRPr"):
+            for rpr in para.findall(f"{qn('a:r')}/{qn(tag)}") + (
+                para.findall(qn(tag))
+            ):
+                merged, got = _merge_rpr(src_rpr, rpr)
+                rpr.getparent().replace(rpr, merged)
+                carried |= got
+    return sorted(carried), facts
+
+
+#: rPr attributes and child tags that make two runs visually different.
+_RUN_IDENTITY_ATTRS = ("sz", "b", "i", "u", "strike", "cap", "spc", "baseline")
+
+
+def _run_signature(run: etree._Element) -> tuple:
+    """What a run looks like, reduced to something comparable."""
+    rpr = run.find(qn("a:rPr"))
+    if rpr is None:
+        return ()
+    attrs = tuple(
+        (a, rpr.get(a)) for a in _RUN_IDENTITY_ATTRS if rpr.get(a) is not None
+    )
+    fill = rpr.find(qn("a:solidFill"))
+    color = ""
+    if fill is not None and len(fill):
+        child = fill[0]
+        color = f"{etree.QName(child).localname}:{child.get('val')}"
+    latin = rpr.find(qn("a:latin"))
+    return attrs + (color, latin.get("typeface") if latin is not None else "")
+
+
+def _runs_disagree(para: etree._Element) -> bool:
+    """True when a paragraph's runs are not all formatted alike."""
+    sigs = {_run_signature(r) for r in para.findall(qn("a:r"))}
+    return len(sigs) > 1
 
 
 def _apply_extra_run_props(body: etree._Element, extra: dict) -> None:
@@ -280,6 +521,30 @@ def _require_xfrm(elem: etree._Element) -> etree._Element:
             "first, or edit the placeholder through the text tools"
         )
     return xfrm
+
+
+def _seed_xfrm(
+    pkg: PptxPackage, part: str, elem: etree._Element
+) -> etree._Element | None:
+    """Give a layout-inheriting placeholder its FIRST explicit a:xfrm,
+    copied from whatever it currently renders with.
+
+    The old refusal was circular: it told the caller to set an absolute
+    position and size first, and set_shape is the tool that does that, so
+    a full x/y/w/h call could not get past it. The box a placeholder
+    renders with is one or two hops up the chain (ops/inherit.py), so the
+    honest move is to seed from there and let the caller's values land on
+    top. A shape whose chain has no box either still refuses.
+    """
+    from . import inherit as _inh
+
+    box = _inh.inherited_box(pkg, part, elem)
+    if box is None:
+        return None
+    x, y, cx, cy = box
+    sppr = _spPr_of(elem)
+    g.insert_spPr_child(sppr, g.xfrm_element(x, y, cx, cy))
+    return _xfrm_of(elem)
 
 
 # ------------------------------------------------------- coordinate algebra
@@ -819,11 +1084,20 @@ def set_shape(
     elem, chain = _find_shape(pkg, part, shape)
     changed: list[str] = []
     warnings: list[str] = []
+    preserved: list[str] = []
+    text_facts: dict = {}
 
     if (x is not None or y is not None) and (dx is not None or dy is not None):
         raise PptMcpError("use absolute x/y or delta dx/dy, not both")
 
     geo_change = any(v is not None for v in (x, y, dx, dy, w, h))
+    if geo_change and _xfrm_of(elem) is None:
+        seeded = _seed_xfrm(pkg, part, elem)
+        if seeded is not None:
+            warnings.append(
+                f"shape {shape} had no explicit geometry; seeded its xfrm "
+                "from the box it inherited before applying the change"
+            )
     if geo_change:
         xfrm = _require_xfrm(elem)
         ax, bx, ay, by, rotated = _chain_transform(chain)
@@ -905,11 +1179,18 @@ def set_shape(
         old = elem.find(qn("p:txBody"))
         base_style, extra_style = _split_text_style(text_style)
         new_body = g.txbody(text, base_style)
-        _apply_extra_run_props(new_body, extra_style)
         if old is not None:
+            named = set(base_style or {}) | set(extra_style)
+            carried, carry_facts = _carry_text_properties(
+                old, new_body, named
+            )
+            if carried:
+                preserved = carried
+            text_facts.update(carry_facts)
             elem.replace(old, new_body)
         else:
             elem.append(new_body)
+        _apply_extra_run_props(new_body, extra_style)
         changed.append("text")
     elif text_style is not None:
         raise PptMcpError(
@@ -945,6 +1226,11 @@ def set_shape(
         "slide_index": rec["index"],
         "slide_id": rec["slide_id"],
     }
+    if preserved:
+        result["preserved"] = preserved
+    # What the carry could NOT preserve, stated rather than left to be
+    # discovered in a render.
+    result.update(text_facts)
     if warnings:
         result["warnings"] = warnings
     return result
