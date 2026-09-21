@@ -613,8 +613,10 @@ def test_create_table_accepts_an_index_dict(tmp_path):
     tbl = pkg.root(part).find(f".//{qn('a:tbl')}")
     heights = [int(r.get("h")) for r in tbl.findall(qn("a:tr"))]
     assert heights[1] == g.in_to_emu(2.0)
-    # rows the dict did not name keep the even split
+    # rows the dict did not name split what is left of the box, so the
+    # table still fits the h it was given
     assert heights[0] == heights[2]
+    assert sum(heights) == g.in_to_emu(3)
 
 
 def test_create_table_refuses_a_wrong_length_list(tmp_path):

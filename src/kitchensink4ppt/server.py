@@ -2069,20 +2069,24 @@ def create_table(
     style: str | None = None,
     first_row: bool = True,
     band_rows: bool = True,
+    row_heights: Any = None,
+    col_widths: Any = None,
     backup: bool = True,
 ) -> dict:
     """Insert a native table at an inch box, optionally pre-filled row by
     row from data (short rows pad, long rows refuse). style: a built-in
     table style by name or GUID (apply_table_style lists the families);
-    first_row/band_rows set the header and banding flags PowerPoint styles
-    key off. Returns the table's shape id, the handle every other table
-    tool takes. import_table builds one from CSV/JSON instead. Saves
+    first_row/band_rows set the header and banding flags. row_heights
+    and col_widths size the grid at creation: a list of inches or an
+    {index: inches} dict, the rest splitting what is left.
+    Returns the shape id, the handle other table tools take. Saves
     atomically with two-slot backup; backup=False skips rotation."""
     return _edit(
         file_path,
         lambda pkg: _tb.create_table(
             pkg, slide, rows, cols, x, y, w, h, data, style=style,
             first_row=first_row, band_rows=band_rows,
+            row_heights=row_heights, col_widths=col_widths,
         ),
         backup=backup,
     )
