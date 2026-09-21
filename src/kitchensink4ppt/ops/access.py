@@ -104,7 +104,9 @@ def _top_level_records(pkg: PptxPackage, part: str) -> list[dict]:
                 "id": int(cnvpr.get("id")) if cnvpr is not None else None,
                 "name": cnvpr.get("name", "") if cnvpr is not None else "",
                 "hidden": bool(cnvpr is not None and cnvpr.get("hidden") == "1"),
-                "box": _gentle_box(elem, []),
+                # Reading order wants the box a placeholder RENDERS with,
+                # so the inherited one counts here too.
+                "box": _gentle_box(elem, [], pkg, part)[0],
             }
         )
     return out

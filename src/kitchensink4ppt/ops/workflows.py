@@ -113,11 +113,13 @@ WORKFLOWS: dict[str, dict] = {
             "The verification loop: render slides to images, inspect, fix, "
             "re-render; finish with a full-deck validation and PDF."
         ),
-        "packs": ["assembly-export", "design"],
+        "packs": ["assembly-export", "design", "graphics", "tables-charts"],
         "steps": [
             {"tool": "enable_tools",
-             "why": "packs=['assembly-export','design'] turns on export, "
-                    "validation, and the autofit report"},
+             "why": "packs=['assembly-export','design','graphics',"
+                    "'tables-charts'] turns on export, validation and the "
+                    "autofit report, plus the shape, text and table tools "
+                    "that fix what the render shows"},
             {"tool": "get_export_engines",
              "why": "confirm which render engine exists here (PowerPoint COM "
                     "is ground truth; LibreOffice drifts on themes/fonts)"},
@@ -136,6 +138,56 @@ WORKFLOWS: dict[str, dict] = {
         "notes": [
             "set_notes (same pack) writes the speaker notes reviewers read "
             "alongside the rendered slides.",
+            "set_shape and format_text (graphics) are how you fix what the "
+            "render shows; table repairs need tables-charts.",
+        ],
+    },
+    "refresh-an-existing-deck": {
+        "summary": (
+            "Inherit a deck somebody else built and fix it: copy, triage, "
+            "render the flagged slides, repair, re-render, validate."
+        ),
+        "packs": ["assembly-export", "design", "graphics", "tables-charts"],
+        "steps": [
+            {"tool": "enable_tools",
+             "why": "packs=['assembly-export','design','graphics',"
+                    "'tables-charts'] covers the triage battery, the render "
+                    "loop, and every repair tool"},
+            {"tool": "copy_presentation",
+             "why": "work on a copy under a new name; the original stays "
+                    "recoverable however the pass goes"},
+            {"tool": "get_presentation_view",
+             "why": "the cheap read of what is actually there, with the "
+                    "anchors apply_edits takes"},
+            {"tool": "check_layout",
+             "why": "overlap, off-slide, tiny or overflowing text, contrast; "
+                    "findings carry shape ids and a fix call"},
+            {"tool": "audit_accessibility", "optional": True,
+             "why": "alt text, reading order, and title coverage, which the "
+                    "layout checks do not cover"},
+            {"tool": "get_autofit_state", "optional": True,
+             "why": "names the shapes already shrinking their text, the "
+                    "classic crowded-slide signal"},
+            {"tool": "export_slide_image",
+             "why": "render the FLAGGED slides only and look; a heuristic "
+                    "finding is a place to look, not a verdict"},
+            {"tool": "apply_edits",
+             "why": "batch the repairs in one atomic save; set_shape, "
+                    "format_text and set_table_cells all ride here"},
+            {"tool": "validate",
+             "why": "payload check plus a real invisible-PowerPoint open "
+                    "before the deck goes anywhere"},
+            {"tool": "export_pdf", "optional": True,
+             "why": "the shareable artifact once the deck passes"},
+        ],
+        "notes": [
+            "Render the slides check_layout flagged, not the whole deck: "
+            "that is the difference between a fast pass and an afternoon.",
+            "check_layout resolves inherited font size and inherited "
+            "placeholder geometry, so findings name the layout or master "
+            "when that is where the fix belongs.",
+            "Re-run get_presentation_view after a batch that deletes or "
+            "reorders shapes; anchors from the earlier read go stale.",
         ],
     },
     "one-call-diagram": {

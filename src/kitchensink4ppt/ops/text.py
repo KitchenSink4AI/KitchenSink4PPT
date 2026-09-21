@@ -157,6 +157,10 @@ _ALIGN_VALUES = {
     "thaiDist": "thaiDist",
 }
 
+#: a:bodyPr @anchor, in the words the rest of the surface uses (the same
+#: vocabulary geometry.txbody's text_style takes).
+_ANCHOR_VALUES = {"top": "t", "middle": "ctr", "center": "ctr", "bottom": "b"}
+
 _UNDERLINE_VALUES = {
     "none",
     "sng",
@@ -723,6 +727,8 @@ def format_text(
     color: str | None = None,
     align: str | None = None,
     line_spacing: float | None = None,
+    anchor: str | None = None,
+    wrap: bool | None = None,
 ) -> dict:
     """Run-level formatting over a whole shape, one paragraph, or a
     character range within one paragraph (start/end require `paragraph`;
@@ -731,7 +737,14 @@ def format_text(
     bleeds outside the range. `color` accepts hex ('1F4E79') or a theme
     token ('accent1', which stays theme-linked as schemeClr). align and
     line_spacing are paragraph properties and apply to the touched
-    paragraphs. rPr children are written in schema order."""
+    paragraphs. rPr children are written in schema order.
+
+    anchor (top|middle|bottom) and wrap are a:bodyPr properties of the
+    SHAPE, so they apply to the whole text frame whatever paragraph or
+    range is selected. They live here because the only other route to them
+    was set_shape's text_style, which replaces the whole body with one flat
+    string and so flattens bullet levels, per-paragraph alignment and
+    per-run formatting to change one attribute."""
     run_props = {
         k: v
         for k, v in (
@@ -744,10 +757,21 @@ def format_text(
         )
         if v is not None
     }
-    if not run_props and align is None and line_spacing is None:
+    if (
+        not run_props
+        and align is None
+        and line_spacing is None
+        and anchor is None
+        and wrap is None
+    ):
         raise PptMcpError(
             "nothing to do: pass at least one of font, size_pt, bold, "
-            "italic, underline, color, align, line_spacing"
+            "italic, underline, color, align, line_spacing, anchor, wrap"
+        )
+    if anchor is not None and anchor not in _ANCHOR_VALUES:
+        raise PptMcpError(
+            f"anchor must be one of {', '.join(sorted(_ANCHOR_VALUES))}; "
+            f"got {anchor!r}"
         )
     if (start is None) != (end is None):
         raise PptMcpError("start and end must be given together")
@@ -805,14 +829,30 @@ def format_text(
                     runs_formatted += 1
         _apply_paragraph_props(p, align=align, line_spacing=line_spacing)
 
+    frame_changed: list[str] = []
+    if anchor is not None or wrap is not None:
+        bodypr = body.find(qn("a:bodyPr"))
+        if bodypr is None:
+            bodypr = etree.Element(qn("a:bodyPr"))
+            body.insert(0, bodypr)
+        if anchor is not None:
+            bodypr.set("anchor", _ANCHOR_VALUES[anchor])
+            frame_changed.append("anchor")
+        if wrap is not None:
+            bodypr.set("wrap", "square" if wrap else "none")
+            frame_changed.append("wrap")
+
     pkg.mark_dirty(rec["part"])
-    return {
+    out = {
         "slide_index": rec["index"],
         "slide_id": rec["slide_id"],
         "shape_id": _shape_id(elem),
         "paragraphs": len(targets),
         "runs_formatted": runs_formatted,
     }
+    if frame_changed:
+        out["frame_changed"] = frame_changed
+    return out
 
 
 def set_bullets(
@@ -1157,13 +1197,23 @@ def _overflow_heuristic(
     bodypr: etree._Element | None,
     font_scale_pct: float,
     lnspc_reduction_pct: float,
+    box: tuple[float, float, float, float] | None = None,
+    size_pt: float | None = None,
 ) -> dict | None:
     """Rough fit estimate: average glyph width model against the frame's
     inner box. Labeled heuristic because it uses no real font metrics; the
-    honest fit authority is PowerPoint's own renderer."""
+    honest fit authority is PowerPoint's own renderer.
+
+    `box` supplies (x, y, cx, cy) for a shape with no a:xfrm of its own,
+    and `size_pt` a font size resolved through the layout/master chain.
+    Callers that can resolve those pass them; without them a placeholder
+    inheriting its geometry cannot be estimated at all and an unsized run
+    falls back to a flat guess."""
     xfrm = elem.find(f"{qn('p:spPr')}/{qn('a:xfrm')}")
     ext = xfrm.find(qn("a:ext")) if xfrm is not None else None
-    if ext is None:
+    if ext is None and box is not None:
+        cx, cy = int(box[2]), int(box[3])
+    elif ext is None:
         return {
             "heuristic": True,
             "likely_overflow": None,
@@ -1172,7 +1222,8 @@ def _overflow_heuristic(
                 "layout placeholder); fit cannot be estimated here"
             ),
         }
-    cx, cy = int(ext.get("cx")), int(ext.get("cy"))
+    else:
+        cx, cy = int(ext.get("cx")), int(ext.get("cy"))
     inner_w = cx - _ins(bodypr, "lIns", 91440) - _ins(bodypr, "rIns", 91440)
     inner_h = cy - _ins(bodypr, "tIns", 45720) - _ins(bodypr, "bIns", 45720)
     if inner_w <= 0 or inner_h <= 0:
@@ -1181,8 +1232,14 @@ def _overflow_heuristic(
             "likely_overflow": True,
             "note": "frame insets consume the whole shape",
         }
-    sz = _first_run_size(body) or 1800  # centipoints; 18pt default guess
-    pt = sz / 100.0 * (font_scale_pct / 100.0)
+    raw = _first_run_size(body)
+    if raw is not None:
+        base_pt = raw / 100.0
+    elif size_pt is not None:
+        base_pt = size_pt
+    else:
+        base_pt = 18.0  # last-resort guess when nothing resolves
+    pt = base_pt * (font_scale_pct / 100.0)
     char_w = 0.5 * pt * EMU_PER_POINT  # average glyph width model
     line_h = 1.2 * pt * EMU_PER_POINT * (1.0 - lnspc_reduction_pct / 100.0)
     lines = 0
