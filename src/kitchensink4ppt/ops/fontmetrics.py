@@ -16,10 +16,15 @@ Contract:
   `unitsPerEm`. No kerning, no ligatures, no justification, no shaping.
 - The raw sum is NARROWER than what PowerPoint lays out, and narrow is the
   unsafe direction for an overflow check, so the raw sum is never what a fit
-  decision sees. `text_width_pt` multiplies by WIDTH_SAFETY_FACTOR before
-  anyone can act on it; `raw_text_width_pt` is the uncalibrated model, kept
-  public so the calibration stays measurable. See WIDTH_SAFETY_FACTOR for
-  the derivation.
+  decision sees. The calibration is ADDITIVE and applied ONCE PER LINE:
+  WIDTH_SAFETY_PAD_PT, added by `calibrated_line_pt` and taken off the
+  usable width by `wrap_styled`. `text_width_pt` and `raw_text_width_pt`
+  are the uncalibrated per-token measure the wrapper works in and carry
+  none of it, because a per-line pad added to every token would over-count
+  a line by the number of words on it. See WIDTH_SAFETY_PAD_PT for the
+  derivation.
+- Character spacing (a:rPr/@spc) rides on StyledRun as `spc_pt` and is
+  added per character inside the wrap, which is where PowerPoint adds it.
 - A face is a FILE PLUS AN INDEX. A .ttc/.otc collection holds several
   unrelated families (cambria.ttc is Cambria at 0 and Cambria Math at 1),
   the order is not a contract, and every face is indexed and cached by its
@@ -100,12 +105,16 @@ _STYLE_WORDS = (
 
 _FONT_SUFFIXES = (".ttf", ".otf", ".ttc", ".otc")
 
-#: (family_casefold, bold, italic) -> Path. Built once per process.
-_INDEX: dict[tuple[str, bool, bool], Path] | None = None
-#: Path -> measurement table, or None when the file could not be read.
-_TABLES: dict[str, dict | None] = {}
-#: (family, bold, italic) -> resolved Path or None, including misses.
-_RESOLVED: dict[tuple[str, bool, bool], Path | None] = {}
+#: (family_casefold, bold, italic) -> FontFace. Built once per process.
+_INDEX: dict[tuple[str, bool, bool], "FontFace"] | None = None
+#: (str(path), face index) -> measurement table, or None when the face
+#: could not be read. Keyed by the index too: two faces of one collection
+#: are different fonts, and caching them under the shared path served the
+#: second one the first one's widths.
+_TABLES: dict[tuple[str, int], dict | None] = {}
+#: (family_casefold, bold, italic) -> resolved FontFace or None, including
+#: misses, so a family with no face on this machine is looked up once.
+_RESOLVED: dict[tuple[str, bool, bool], "FontFace | None"] = {}
 
 _PAREN_TAIL = re.compile(r"\s*\((?:[^)]*)\)\s*$")
 

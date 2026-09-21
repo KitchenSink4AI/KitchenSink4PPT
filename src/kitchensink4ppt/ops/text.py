@@ -1678,10 +1678,10 @@ def _measured_overflow(
         "estimated_lines": lines,
         "wrap": wrap,
         "note": (
-            "every run measured against its own installed font, plus a "
-            f"{_fm.WIDTH_SAFETY_PAD_PT:g}pt per-line allowance measured "
-            "against PowerPoint's own layout so the model errs wide rather "
-            "than narrow; no kerning and no justification, so PowerPoint's "
+            "every run measured against its own installed font; a "
+            f"{_fm.WIDTH_SAFETY_PAD_PT:g} pt allowance, calibrated on "
+            "tested PowerPoint layouts, is added to each line, so a line "
+            "that only just fits may be reported as wrapping; PowerPoint's "
             "rendering is still the final authority"
         ),
     }
