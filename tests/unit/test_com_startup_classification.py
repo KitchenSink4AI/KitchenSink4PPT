@@ -185,7 +185,14 @@ def test_start_powerpoint_retries_once_on_notinitialized(bridge, monkeypatch):
     assert fake_py.calls == 1, "the apartment is re-armed before the retry"
 
 
-def test_start_powerpoint_gives_up_after_the_one_retry(bridge):
+def test_start_powerpoint_gives_up_after_the_one_retry(bridge, monkeypatch):
+    # The real process table is off limits here for the same reason as
+    # above, and since round 3 it also DECIDES this assertion: an empty
+    # before_pids arms the look for a process that appeared, and any
+    # PowerPoint running on the machine would stop the retry after one
+    # attempt. Stubbed, this asserts the retry; unstubbed it asserted
+    # whether the developer had PowerPoint open.
+    monkeypatch.setattr(bridge, "powerpnt_pids", set)
     fake_py = _FakePythoncom()
     win32 = _FakeWin32(
         [_com_error(bridge.CO_E_NOTINITIALIZED)] * 2
@@ -195,8 +202,23 @@ def test_start_powerpoint_gives_up_after_the_one_retry(bridge):
     assert win32.calls == 2, "no unbounded retry loop"
 
 
-def test_start_powerpoint_does_not_retry_an_unregistered_class(bridge):
+def test_start_powerpoint_skips_the_retry_when_a_process_appeared(
+    bridge, monkeypatch
+):
+    """The sibling case, and the reason the test above must be isolated: a
+    PowerPoint that appears across the failed attempt stops the retry."""
+    monkeypatch.setattr(bridge, "powerpnt_pids", lambda: {6060})
+    fake_py = _FakePythoncom()
+    win32 = _FakeWin32([_com_error(bridge.CO_E_NOTINITIALIZED)] * 2)
+    with pytest.raises(PowerPointNotRunning) as exc_info:
+        bridge._start_powerpoint(win32, fake_py, set())
+    assert win32.calls == 1, "a process appeared, so the retry must stop"
+    assert "6060" in str(exc_info.value)
+
+
+def test_start_powerpoint_does_not_retry_an_unregistered_class(bridge, monkeypatch):
     """A second attempt cannot register a class that is not registered."""
+    monkeypatch.setattr(bridge, "powerpnt_pids", set)
     fake_py = _FakePythoncom()
     win32 = _FakeWin32([_com_error(bridge.REGDB_E_CLASSNOTREG)] * 2)
     with pytest.raises(PowerPointNotRunning):
@@ -204,7 +226,8 @@ def test_start_powerpoint_does_not_retry_an_unregistered_class(bridge):
     assert win32.calls == 1
 
 
-def test_start_powerpoint_does_not_retry_a_busy_instance(bridge):
+def test_start_powerpoint_does_not_retry_a_busy_instance(bridge, monkeypatch):
+    monkeypatch.setattr(bridge, "powerpnt_pids", set)
     from kitchensink4ppt.core.errors import PowerPointBusy
 
     fake_py = _FakePythoncom()

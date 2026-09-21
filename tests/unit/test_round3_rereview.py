@@ -614,22 +614,41 @@ def test_a_genuine_no_match_is_still_an_empty_set(monkeypatch):
     assert bridge.powerpnt_count() == 0
 
 
-class _FakeApp:
-    """Enough of PowerPoint.Application to run a session to its cleanup."""
+class _Collection:
+    """A COM collection stub: what Presentations and Windows need to be."""
 
-    def __init__(self):
+    def __init__(self, count=0):
+        self.Count = count
+
+
+class _FakeApp:
+    """Enough of PowerPoint.Application to run a session to its cleanup.
+
+    Since round 4 that includes the acquisition token: a just-created
+    automation instance is not visible and holds no presentations and no
+    windows, and that is the only part of ownership a concurrent launch
+    cannot fake.
+    """
+
+    def __init__(self, visible=0, presentations=0, windows=0):
         self.quit_calls = 0
         self.DisplayAlerts = None
-        self.Presentations = []
+        self.Visible = visible
+        self.Presentations = _Collection(presentations)
+        self.Windows = _Collection(windows)
 
     def Quit(self):  # noqa: N802 - COM spelling
         self.quit_calls += 1
 
 
-def _run_session(monkeypatch, bridge, table):
+def _run_session(monkeypatch, bridge, table, app=None, during=None):
     """Enter and leave one _powerpoint() session against a fake table and a
-    fake DispatchEx, and hand back (app, session.launched)."""
-    app = _FakeApp()
+    fake DispatchEx, and hand back (app, session.launched).
+
+    `during` runs INSIDE the session, which is how a test represents the
+    user or another client arriving while the operation is in flight.
+    """
+    app = app if app is not None else _FakeApp()
     monkeypatch.setattr(bridge, "powerpnt_pids", table)
     monkeypatch.setattr(
         bridge, "_com_modules", lambda: (_Pythoncom(), _Win32(app))
@@ -639,6 +658,8 @@ def _run_session(monkeypatch, bridge, table):
     seen = {}
     with bridge._powerpoint() as session:
         seen["launched"] = session.launched
+        if during is not None:
+            during()
     return app, seen["launched"]
 
 
@@ -670,9 +691,9 @@ def test_an_unreadable_table_leaves_the_kill_switch_disarmed(monkeypatch):
     import threading
 
     _app, _launched = _run_session(monkeypatch, bridge, lambda: None)
-    assert bridge._kill_self_launched_for_thread(
+    assert bridge._self_launched_pids_for_thread(
         threading.get_ident()
-    ) is False
+    ) == set()
 
 
 @pytestmark_win
@@ -734,3 +755,346 @@ def test_the_metrics_note_states_a_bounded_allowance_not_a_direction():
     assert "calibrated on tested PowerPoint layouts" in note
     assert "may be reported as wrapping" in note
     assert note.endswith("PowerPoint's rendering is still the final authority")
+
+
+# ================================================================ ROUND 4
+
+
+# ------------------------------------------------------------ R4-1
+
+
+@pytestmark_win
+def test_a_nonzero_tasklist_with_stdout_text_is_unknown(monkeypatch):
+    """tasklist prints 'ERROR: Access is denied.' on STDOUT and exits 1.
+    Only the empty-stdout case was treated as unknown, so an access error
+    parsed as a clean empty table."""
+    from kitchensink4ppt.com import bridge
+
+    class Result:
+        stdout = "ERROR: Access is denied.\n"
+        stderr = ""
+        returncode = 1
+
+    monkeypatch.setattr(bridge.subprocess, "run", lambda *a, **k: Result())
+    assert bridge.powerpnt_pids() is None
+
+
+@pytestmark_win
+def test_the_users_instance_handed_to_us_by_dispatch_is_never_ours(
+    monkeypatch,
+):
+    """R4-1, the blocker. PowerPoint is a single-instance automation
+    server: a user who starts it between the empty snapshot and DispatchEx
+    is handed to US, and the before/after pid difference names THEIR
+    process. The reviewer's probe, adapted."""
+    import threading
+
+    from kitchensink4ppt.com import bridge
+
+    snapshots = iter((set(), {4242}, set(), set()))
+    # Their PowerPoint: visible, with the deck they were working on.
+    theirs = _FakeApp(visible=-1, presentations=1, windows=1)
+    app, launched = _run_session(
+        monkeypatch, bridge, lambda: next(snapshots), app=theirs
+    )
+    assert launched is False, "a user's instance was classified as ours"
+    assert app.quit_calls == 0, "the user's PowerPoint was quit"
+    assert threading.get_ident() not in bridge._SELF_LAUNCHED_PIDS
+
+
+@pytestmark_win
+def test_an_instance_that_is_not_freshly_created_is_never_ours(monkeypatch):
+    """The same race one step subtler: the user launched it but has not
+    opened anything yet, so only Visible gives them away."""
+    from kitchensink4ppt.com import bridge
+
+    snapshots = iter((set(), {4242}, set(), set()))
+    app, launched = _run_session(
+        monkeypatch, bridge, lambda: next(snapshots),
+        app=_FakeApp(visible=-1),
+    )
+    assert launched is False
+    assert app.quit_calls == 0
+
+
+@pytestmark_win
+def test_more_than_one_new_pid_is_not_a_single_candidate(monkeypatch):
+    from kitchensink4ppt.com import bridge
+
+    snapshots = iter((set(), {1111, 2222}, set(), set()))
+    app, launched = _run_session(monkeypatch, bridge, lambda: next(snapshots))
+    assert launched is False
+    assert app.quit_calls == 0
+
+
+@pytestmark_win
+def test_a_presentation_opened_by_someone_else_stops_the_quit(monkeypatch):
+    """Another client attaches to our hidden instance and opens work in it
+    while we run. At release its Presentations.Count is not zero, so the
+    application is left running and only what we opened was closed."""
+    from kitchensink4ppt.com import bridge
+
+    calls = {"n": 0}
+
+    def table():
+        calls["n"] += 1
+        return set() if calls["n"] == 1 else {9191}
+
+    app = _FakeApp()
+
+    def arrive():
+        app.Presentations.Count = 1  # their deck, opened mid-call
+
+    _app, launched = _run_session(
+        monkeypatch, bridge, table, app=app, during=arrive
+    )
+    assert launched is True, "acquisition was legitimate"
+    assert app.quit_calls == 0, "someone else's work was in that instance"
+
+
+@pytestmark_win
+def test_the_user_making_it_visible_stops_the_quit(monkeypatch):
+    from kitchensink4ppt.com import bridge
+
+    calls = {"n": 0}
+
+    def table():
+        calls["n"] += 1
+        return set() if calls["n"] == 1 else {9191}
+
+    app = _FakeApp()
+    _app, launched = _run_session(
+        monkeypatch, bridge, table, app=app,
+        during=lambda: setattr(app, "Visible", -1),
+    )
+    assert launched is True
+    assert app.quit_calls == 0
+
+
+@pytestmark_win
+def test_nothing_in_the_com_package_can_end_a_powerpoint_process():
+    """1.3.1 removes force-kill from the timeout path, and there is no
+    other place in the package that ends a process. A source guard,
+    because this is easy to reintroduce and expensive to notice."""
+    import pathlib
+
+    from kitchensink4ppt.com import bridge
+
+    root = pathlib.Path(bridge.__file__).parent
+    offenders = []
+    for path in sorted(root.glob("*.py")):
+        body = path.read_text(encoding="utf-8")
+        for forbidden in ("taskkill", "TerminateProcess", ".Terminate("):
+            if forbidden in body:
+                offenders.append(path.name + " contains " + forbidden)
+    assert not offenders, "; ".join(offenders)
+
+
+@pytestmark_win
+def test_a_timed_out_operation_reports_the_pid_and_leaves_it_running(
+    monkeypatch,
+):
+    """It used to terminate that process. A timeout cannot revalidate a
+    hung apartment, so the refusal reports and the process stays."""
+    import threading
+    import time
+
+    from kitchensink4ppt.com import bridge
+    from kitchensink4ppt.core.errors import PowerPointBlocked
+
+    recorded = {}
+
+    def stuck():
+        recorded["tid"] = threading.get_ident()
+        bridge._SELF_LAUNCHED_PIDS[recorded["tid"]] = {5150}
+        time.sleep(3)
+        return {}
+
+    real_run = bridge.subprocess.run
+
+    def no_kill(cmd, **kwargs):
+        # Reading the process table is fine; ENDING one is what is gone.
+        if cmd and cmd[0] == "taskkill":
+            pytest.fail("the timeout path tried to end a process")
+        return real_run(cmd, **kwargs)
+
+    monkeypatch.setattr(bridge.subprocess, "run", no_kill)
+    try:
+        with pytest.raises(PowerPointBlocked) as exc_info:
+            bridge._run_bounded("stuck-op", 0.3, stuck)
+    finally:
+        bridge._SELF_LAUNCHED_PIDS.pop(recorded.get("tid"), None)
+    message = str(exc_info.value)
+    assert "5150" in message
+    assert "left running" in message
+    assert "terminated" not in message
+
+
+# ------------------------------------------------------------ R4-2
+
+
+@metrics
+def test_the_inherited_face_comes_from_the_runs_own_level():
+    """R4-2: _body_typeface took the first a:defRPr anywhere in the shape's
+    lstStyle, so a level-two run was measured in level one's face."""
+    sp, body, p = _metrics_shape([("Inherited face", "Calibri", 1200)])
+    lst = body.find(qn("a:lstStyle"))
+    # Level one names a face; level two, where this paragraph actually
+    # sits, names none. A level-one face must not reach a level-two run.
+    lvl1 = etree.SubElement(lst, qn("a:lvl1pPr"))
+    defrpr = etree.SubElement(lvl1, qn("a:defRPr"))
+    etree.SubElement(defrpr, qn("a:latin")).set(
+        "typeface", "NoSuchFontFamilyAnywhere"
+    )
+    etree.SubElement(
+        etree.SubElement(lst, qn("a:lvl2pPr")), qn("a:defRPr")
+    )
+    p.find(qn("a:pPr")).set("lvl", "1")  # the SECOND outline level
+    rpr = p.find(qn("a:r") + "/" + qn("a:rPr"))
+    rpr.remove(rpr.find(qn("a:latin")))  # it has to inherit a face
+    rec = _overflow(sp, body)
+    reason = rec.get("method_reason") or ""
+    assert rec.get("typeface") != "NoSuchFontFamilyAnywhere"
+    assert "NoSuchFontFamilyAnywhere" not in reason, (
+        "the run inherited a face from another outline level"
+    )
+
+
+@metrics
+@pytest.mark.parametrize("name, value", [
+    ("marL", "not-a-number"),
+    ("indent", "12.5"),
+    ("marL", "99999999999"),
+])
+def test_a_malformed_indent_is_unmeasurable_not_zero(name, value):
+    """R4-2: a malformed explicit marL/indent became zero, which measures
+    a frame nobody has."""
+    sp, body, p = _metrics_shape([("Some text", "Calibri", 1200)])
+    p.find(qn("a:pPr")).set(name, value)
+    rec = _overflow(sp, body)
+    assert rec["method"] == "estimate"
+    assert name in rec["method_reason"]
+
+
+# ------------------------------------------------------------ R4-3
+
+
+@pytest.mark.parametrize("hover_tag", ["a:hlinkMouseOver", "a:hlinkHover"])
+@pytest.mark.parametrize("kind", ["url", "slide"])
+def test_setting_a_link_replaces_an_existing_run_hover_link(
+    make_deck, hover_tag, kind
+):
+    """R4-3: _set_run_hlink removed only a:hlinkClick, so the old hover
+    element and its relationship survived beside the new link."""
+    from kitchensink4ppt.core.package import PptxPackage
+    from kitchensink4ppt.ops import links
+    from kitchensink4ppt.ops import read as _read
+    from kitchensink4ppt.ops import shapes as _shapes
+    from kitchensink4ppt.ops import text as _text
+
+    rid_attr = "{" + NSMAP["r"] + "}id"
+    pkg = PptxPackage(make_deck("hover_replace.pptx", extra_slides=2))
+    box = _text.insert_textbox(pkg, 0, "Click here for details", 1, 1, 4, 1)
+    target = {"shape_id": box["shape_id"], "paragraph": 0}
+    links.set_hyperlink(pkg, 0, target, url="https://old.example.com/")
+
+    part = _read.slide_table(pkg)[0]["part"]
+    elem, _chain = _shapes._find_shape(pkg, part, box["shape_id"])
+    old_rid = None
+    for rpr in elem.iter(qn("a:rPr")):
+        for el in list(rpr):
+            if el.tag == qn("a:hlinkClick"):
+                old_rid = el.get(rid_attr)
+                el.tag = qn(hover_tag)
+    pkg.mark_dirty(part)
+    assert old_rid
+
+    if kind == "url":
+        links.set_hyperlink(pkg, 0, target, url="https://new.example.com/")
+    else:
+        links.set_hyperlink(pkg, 0, target, to_slide=2)
+
+    elem, _chain = _shapes._find_shape(pkg, part, box["shape_id"])
+    assert not list(elem.iter(qn(hover_tag))), (
+        "the old hover link survived the replacement"
+    )
+    rids = {rel.get("Id") for rel in pkg.rels_for(part).getroot()}
+    assert old_rid not in rids, "the replaced link's relationship was kept"
+
+
+@pytest.mark.parametrize("kind", ["url", "slide"])
+def test_setting_a_link_replaces_an_existing_shape_hover_link(make_deck, kind):
+    """The shape-level equivalent: a:hlinkHover inside p:cNvPr is the
+    correct element there, and _set_cnvpr_hlink left it behind."""
+    from kitchensink4ppt.core.package import PptxPackage
+    from kitchensink4ppt.ops import links
+    from kitchensink4ppt.ops import read as _read
+    from kitchensink4ppt.ops import shapes as _shapes
+    from kitchensink4ppt.ops import text as _text
+
+    rid_attr = "{" + NSMAP["r"] + "}id"
+    pkg = PptxPackage(make_deck("hover_shape.pptx", extra_slides=2))
+    box = _text.insert_textbox(pkg, 0, "A box", 1, 1, 4, 1)
+    links.set_hyperlink(pkg, 0, box["shape_id"], url="https://old.example/")
+
+    part = _read.slide_table(pkg)[0]["part"]
+    elem, _chain = _shapes._find_shape(pkg, part, box["shape_id"])
+    cnvpr = elem.find(qn("p:nvSpPr") + "/" + qn("p:cNvPr"))
+    old_rid = None
+    for el in list(cnvpr):
+        if el.tag == qn("a:hlinkClick"):
+            old_rid = el.get(rid_attr)
+            el.tag = qn("a:hlinkHover")
+    pkg.mark_dirty(part)
+    assert old_rid
+
+    if kind == "url":
+        links.set_hyperlink(pkg, 0, box["shape_id"], url="https://new.example/")
+    else:
+        links.set_hyperlink(pkg, 0, box["shape_id"], to_slide=2)
+
+    elem, _chain = _shapes._find_shape(pkg, part, box["shape_id"])
+    cnvpr = elem.find(qn("p:nvSpPr") + "/" + qn("p:cNvPr"))
+    assert cnvpr.find(qn("a:hlinkHover")) is None, (
+        "the old shape-level hover link survived the replacement"
+    )
+    rids = {rel.get("Id") for rel in pkg.rels_for(part).getroot()}
+    assert old_rid not in rids
+
+
+# ------------------------------------------------------------ R4-4
+
+
+@pytestmark_win
+@pytest.mark.parametrize("hresult_name, error_name", [
+    ("RPC_E_CALL_REJECTED", "PowerPointBusy"),
+    ("RPC_E_DISCONNECTED", "PowerPointDisconnected"),
+])
+def test_a_busy_or_gone_powerpoint_at_slide_id_is_not_swallowed(
+    hresult_name, error_name
+):
+    """R4-4: _slide_id_of caught EVERY exception and returned None, so a
+    busy or disconnected application never reached the classifier and the
+    walk carried on to a verdict about the file."""
+    from kitchensink4ppt.com import bridge
+    from kitchensink4ppt.core import errors
+
+    class _Slide:
+        @property
+        def SlideID(self):  # noqa: N802 - COM spelling
+            raise _com_error(getattr(bridge, hresult_name))
+
+    with pytest.raises(getattr(errors, error_name)):
+        bridge._slide_id_of(_Slide())
+
+
+@pytestmark_win
+def test_an_ordinary_slide_id_read_failure_is_still_just_none():
+    from kitchensink4ppt.com import bridge
+
+    class _Slide:
+        @property
+        def SlideID(self):  # noqa: N802 - COM spelling
+            raise ValueError("not a number")
+
+    assert bridge._slide_id_of(_Slide()) is None
