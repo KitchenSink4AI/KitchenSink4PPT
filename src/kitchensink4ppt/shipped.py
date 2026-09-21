@@ -20,4 +20,4 @@ Re-stamp with::
 from __future__ import annotations
 
 #: Tests collected by ``pytest tests/ --collect-only -q``.
-TESTS = 1596
+TESTS = 1618
