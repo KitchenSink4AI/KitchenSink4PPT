@@ -470,13 +470,19 @@ def font_file_name(family: str, *, bold: bool = False,
 class StyledRun(NamedTuple):
     """A stretch of text in ONE resolved format. A paragraph is a sequence
     of these; measuring the whole paragraph in the first run's format is
-    what review finding M1 was about."""
+    what review finding M1 was about.
+
+    `spc_pt` is PowerPoint's character spacing (a:rPr/@spc, hundredths of a
+    point) in points, added once per character. Ignoring it measured an
+    expanded label at its unexpanded width and called the overflow a fit
+    (second review, G1, 2026-09-22)."""
 
     text: str
     family: str
     size_pt: float
     bold: bool = False
     italic: bool = False
+    spc_pt: float = 0.0
 
 
 class Line(NamedTuple):
@@ -505,7 +511,10 @@ def _chunk_width(chunk: list[tuple[str, StyledRun]]) -> float | None:
         )
         if w is None:
             return None
-        total += w
+        # Character spacing is an advance PowerPoint adds per character, so
+        # it belongs here with the advances and nowhere else: every width
+        # the wrapper works in comes through this function.
+        total += w + style.spc_pt * len(text)
         i = j
     return total
 
