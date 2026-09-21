@@ -3172,11 +3172,14 @@ def get_export_engines() -> dict:
 def validate(file_path: str) -> dict:
     """The two-layer soundness check. Layer 1 (always): the package
     payload is re-validated (zip integrity, required parts, relationship
-    targets). Layer 2 (when PowerPoint COM exists): a REAL open in an
-    invisible PowerPoint with a forced full content load; a repair prompt
-    or load failure means not clean, and that verdict is authoritative.
-    Read-only, never mutates the file. Run after big generated changes
-    and before handing a deck to a human."""
+    targets, and every text body carrying at least one paragraph). Layer 2
+    (when PowerPoint COM exists): a REAL open in an invisible PowerPoint
+    with a forced full content load; a repair prompt or load failure means
+    not clean, and that verdict is authoritative. A layer 2 failure names
+    where it happened: failed_slide_index, failed_slide_id,
+    failed_shape_index, failed_shape_name. Read-only, never mutates the
+    file. Run after big generated changes and before handing a deck to a
+    human."""
     from pathlib import Path
 
     fp = check_path(file_path, "validate presentation")

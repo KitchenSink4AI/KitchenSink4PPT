@@ -530,9 +530,13 @@ def test_copy_presentation_overwrite_rotates_the_previous_content(tmp_path):
     assert out["ok"] is True
     assert out["overwrote_existing"] is True
     assert dest.read_bytes() == src.read_bytes()
-    prev = dest.parent / ".ks4p-backups" / "dest" / "prev.pptx"
-    assert prev.is_file(), "the overwritten content was not kept"
-    assert prev.read_bytes() == before
+    from kitchensink4ppt.core import safesave
+
+    prev = safesave.slot_dir(dest) / safesave.PREV_SLOT
+    anchor = safesave.slot_dir(dest) / safesave.ANCHOR_SLOT
+    kept = [p for p in (prev, anchor) if p.is_file()]
+    assert kept, "the overwritten content was not kept in any backup slot"
+    assert any(p.read_bytes() == before for p in kept)
 
 
 def test_copy_presentation_missing_parent_says_so(tmp_path):
