@@ -176,17 +176,18 @@ CHECKS: dict[str, tuple[dict, str]] = {
         "not resolve anywhere instead of passing them",
     ),
     "overflow": (
-        {"min_fill_ratio": 1.4, "min_fill_ratio_metrics": 1.05},
+        {"min_fill_ratio": 1.4, "min_fill_ratio_metrics": 1.0},
         "two models, and every finding names the one that produced it. "
-        "With the optional metrics extra installed and the run's font file "
-        "present on this machine, the text is measured against that font's "
-        "own advance widths and wrapped by word, and the suppression "
-        "threshold is min_fill_ratio_metrics. Otherwise it is the original "
-        "text-length-vs-frame-area estimate with no real font metrics, "
-        "suppressed under the wider min_fill_ratio because the model error "
-        "is wider. Shapes with spAutoFit are skipped because their frame "
-        "grows with the text; confirm with export_slide_images before "
-        "acting",
+        "With the optional metrics extra installed and each run's font file "
+        "present, every run is measured against its own font and the wrap "
+        "carries a per-line allowance calibrated against PowerPoint, so "
+        "that model needs no extra margin here and min_fill_ratio_metrics "
+        "is 1.0. Otherwise it is the original text-length-vs-frame-area "
+        "estimate with no real font metrics, suppressed under the wider "
+        "min_fill_ratio because that model's error is wider and "
+        "uncalibrated. Shapes with spAutoFit are skipped because their "
+        "frame grows with the text; confirm with export_slide_images "
+        "before acting",
     ),
     "empty_placeholder": (
         {},

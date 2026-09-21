@@ -87,3 +87,45 @@ def test_diagnose_carries_the_remedy_and_stays_paste_safe(monkeypatch):
     assert export_ops.PDFTOPPM_REMEDY.strip() in note
     assert chr(0x2014) not in note  # the repo bans em dashes in runtime text
     assert "/opt/libreoffice" not in note  # paste-safe: no install locations
+
+
+# ------------------------------------------------- round 2, finding N4
+
+
+def test_a_directory_named_pdftoppm_is_not_a_renderer(monkeypatch, tmp_path):
+    """Path.exists() accepted a directory, which is reported as an
+    available renderer and then fails at subprocess launch."""
+    d = tmp_path / "pdftoppm"
+    d.mkdir()
+    monkeypatch.setenv("KS4P_PDFTOPPM", str(d))
+    monkeypatch.setattr(export_ops.shutil, "which", lambda _n: None)
+    monkeypatch.setattr(export_ops, "PDFTOPPM_WELL_KNOWN", ())
+    assert export_ops._find_pdftoppm() is None
+
+
+def test_a_well_known_path_that_is_a_directory_is_skipped(monkeypatch, tmp_path):
+    monkeypatch.delenv("KS4P_PDFTOPPM", raising=False)
+    monkeypatch.setattr(export_ops.shutil, "which", lambda _n: None)
+    d = tmp_path / "poppler_dir"
+    d.mkdir()
+    good = tmp_path / "pdftoppm.exe"
+    good.write_bytes(b"")
+    monkeypatch.setattr(export_ops, "PDFTOPPM_WELL_KNOWN", (d, good))
+    assert export_ops._find_pdftoppm() == good
+
+
+def test_a_non_executable_file_is_refused_on_posix(monkeypatch, tmp_path):
+    """On POSIX a file we may not execute is not a renderer either."""
+    f = tmp_path / "pdftoppm"
+    f.write_bytes(b"")
+    monkeypatch.setattr(export_ops.os, "name", "posix")
+    monkeypatch.setattr(
+        export_ops.os, "access", lambda _p, _mode: False
+    )
+    assert export_ops._runnable(f) is False
+    monkeypatch.setattr(export_ops.os, "access", lambda _p, _mode: True)
+    assert export_ops._runnable(f) is True
+
+
+def test_a_missing_path_is_refused(tmp_path):
+    assert export_ops._runnable(tmp_path / "nope") is False

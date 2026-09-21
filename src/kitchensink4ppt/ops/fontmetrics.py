@@ -13,13 +13,17 @@ Contract:
   is lazy and inside a try; without it `available()` is False and the caller
   keeps the old estimate, saying so.
 - Advance widths only: the sum of each glyph's `hmtx` advance, scaled by
-  `unitsPerEm`. No kerning, no ligatures, no justification, no shaping. That
-  is deliberate, and the residual was measured rather than assumed: against
-  PowerPoint's own TextRange.BoundWidth on ten cases, these widths run
-  between 1.9% and 6.1% NARROW, mean 3.5%. Narrow is the UNSAFE direction
-  for an overflow check, which is why the caller's suppression threshold for
-  this path sits at 1.05 rather than 1.0. Line counts were exact on all
-  twelve cases measured. PowerPoint's renderer remains the authority.
+  `unitsPerEm`. No kerning, no ligatures, no justification, no shaping.
+- The raw sum is NARROWER than what PowerPoint lays out, and narrow is the
+  unsafe direction for an overflow check, so the raw sum is never what a fit
+  decision sees. `text_width_pt` multiplies by WIDTH_SAFETY_FACTOR before
+  anyone can act on it; `raw_text_width_pt` is the uncalibrated model, kept
+  public so the calibration stays measurable. See WIDTH_SAFETY_FACTOR for
+  the derivation.
+- A face is a FILE PLUS AN INDEX. A .ttc/.otc collection holds several
+  unrelated families (cambria.ttc is Cambria at 0 and Cambria Math at 1),
+  the order is not a contract, and every face is indexed and cached by its
+  own name table. PowerPoint's renderer remains the authority.
 - Font lookup is by family plus bold/italic, through the OS font directories
   and, on Windows, the registry Fonts keys. Everything is cached per process.
 - Nothing here raises for a missing font or an unreadable file: the caller
@@ -37,10 +41,49 @@ one extra do two unrelated things.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import sys
 from pathlib import Path
+from typing import NamedTuple
+
+
+class FontFace(NamedTuple):
+    """One measurable face: a font file plus the index inside it. The index
+    is 0 for an ordinary .ttf/.otf and is load-bearing for a collection."""
+
+    path: Path
+    index: int = 0
+
+
+#: Conservative calibration, applied ONCE PER LINE before any fit decision
+#: is made. DERIVED FROM MEASUREMENT, not chosen.
+#:
+#: On 2026-09-22 the raw advance sum was compared against PowerPoint's own
+#: TextRange.BoundWidth for twelve single-line cases, ten of them built to
+#: land in the 0.96 to 1.15 band around the frame edge. The raw sum was
+#: narrow in every case, but the shortfall was NOT proportional: it sat
+#: between 1.23 and 3.35 POINTS regardless of string length (0.78 in to
+#: 1.91 in of text), which is a constant trailing allowance in PowerPoint's
+#: layout rather than a scale error in the advance widths. Expressed as a
+#: ratio the same data reads 1.011x to 1.055x, and correcting it as a ratio
+#: therefore over-corrects long strings: a 1.05 factor produced a false
+#: positive on a label at 98.7% of its frame while an additive 3.5 pt did
+#: not. A sweep of pads 0 to 5 pt against multipliers 1.00 to 1.02 gives
+#: 3.5 pt with NO multiplier as the only setting with zero false negatives
+#: AND zero false positives across all twelve.
+#:
+#: 3.5 pt covers the worst observed shortfall (3.35 pt) with margin.
+#:
+#: Why the calibration lives HERE and not in a downstream threshold: the
+#: overflow boolean is decided by comparing a ratio to 1.0 deep inside the
+#: fit model, so a threshold applied later cannot rescue a case already
+#: called "fits" (review finding B1, 2026-09-22). Calibrating the
+#: measurement makes every decision inherit the margin, including the WRAP
+#: decision, where a narrow measurement silently drops a line PowerPoint
+#: renders.
+WIDTH_SAFETY_PAD_PT = 3.5
 
 #: Trailing style words in a font's face name, longest first so "Bold Italic"
 #: is consumed before "Bold".
@@ -156,11 +199,67 @@ def _registry_entries() -> list[tuple[str, str]]:
     return out
 
 
-def _add(index: dict, family: str, bold: bool, italic: bool, path: Path) -> None:
+def _add(index: dict, family: str, bold: bool, italic: bool,
+         face: FontFace) -> None:
     if not family:
         return
     key = (family.casefold(), bold, italic)
-    index.setdefault(key, path)
+    index.setdefault(key, face)
+
+
+def _is_collection(path: Path) -> bool:
+    return path.suffix.lower() in (".ttc", ".otc")
+
+
+def _face_identity(font) -> tuple[str, bool, bool] | None:
+    """(family, bold, italic) read from a face's OWN name table.
+
+    A collection's faces are not interchangeable and their order is not a
+    contract: `cambria.ttc` carries Cambria at index 0 and Cambria Math at
+    index 1, and picking index 0 for both is how Cambria Math silently gets
+    measured as Cambria (review finding M2, 2026-09-22)."""
+    try:
+        names = font["name"]
+        family = names.getBestFamilyName()
+        subfamily = names.getBestSubFamilyName() or "Regular"
+    except Exception:
+        return None
+    if not family:
+        return None
+    low = str(subfamily).casefold()
+    bold = "bold" in low
+    italic = "italic" in low or "oblique" in low
+    try:  # fsSelection is the authoritative answer where the name is vague
+        selection = font["OS/2"].fsSelection
+        bold = bold or bool(selection & 0x20)
+        italic = italic or bool(selection & 0x01)
+    except Exception:
+        pass
+    return str(family), bold, italic
+
+
+def _index_collection(index: dict, path: Path) -> bool:
+    """Index every face in a .ttc/.otc by its own name table. Returns False
+    when the collection could not be read, so the caller can fall back."""
+    try:
+        from fontTools.ttLib import TTCollection
+
+        coll = TTCollection(str(path), lazy=True)
+    except Exception:
+        return False
+    found = False
+    try:
+        for i, font in enumerate(coll.fonts):
+            ident = _face_identity(font)
+            if ident is None:
+                continue
+            family, bold, italic = ident
+            _add(index, family, bold, italic, FontFace(path, i))
+            found = True
+    finally:
+        with contextlib.suppress(Exception):
+            coll.close()
+    return found
 
 
 def _index_registry(index: dict) -> None:
@@ -169,14 +268,18 @@ def _index_registry(index: dict) -> None:
         p = Path(value)
         if not p.is_absolute():
             p = win / value
-        if not p.exists():
+        if not p.is_file():
             continue
-        # "Cambria & Cambria Math (TrueType)" registers two families on one
-        # file; the ampersand form is how Windows records a collection.
+        if _is_collection(p):
+            # The registry records a collection as
+            # "Cambria & Cambria Math (TrueType)", but the ampersand order is
+            # not a promise about face order. Read the faces themselves.
+            if _index_collection(index, p):
+                continue
         base = _PAREN_TAIL.sub("", face).strip()
         for part in base.split("&"):
             family, bold, italic = _split_style(part.strip())
-            _add(index, family, bold, italic, p)
+            _add(index, family, bold, italic, FontFace(p, 0))
 
 
 def _index_directories(index: dict) -> None:
@@ -188,16 +291,18 @@ def _index_directories(index: dict) -> None:
         for p in entries:
             if p.suffix.lower() not in _FONT_SUFFIXES or not p.is_file():
                 continue
+            if _is_collection(p) and _index_collection(index, p):
+                continue
             stem = p.stem
             # "DejaVuSans-BoldOblique" / "NotoSans_Bold" / "Calibri Bold"
             spaced = re.sub(r"[-_]+", " ", stem)
             spaced = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", spaced)
             family, bold, italic = _split_style(spaced)
-            _add(index, family, bold, italic, p)
+            _add(index, family, bold, italic, FontFace(p, 0))
 
 
 def _build_index() -> dict:
-    index: dict[tuple[str, bool, bool], Path] = {}
+    index: dict[tuple[str, bool, bool], FontFace] = {}
     _index_registry(index)
     _index_directories(index)
     return index
@@ -213,10 +318,12 @@ def _index() -> dict:
     return _INDEX
 
 
-def find_font_file(family: str, *, bold: bool = False,
-                   italic: bool = False) -> Path | None:
-    """The font file for a family and style, or None. Bold/italic fall back
-    to the nearest available face rather than failing outright."""
+def find_font_face(family: str, *, bold: bool = False,
+                   italic: bool = False) -> FontFace | None:
+    """The FACE for a family and style, or None. A face is a file plus an
+    index inside it, because a collection holds several unrelated families
+    and the index is part of the identity. Bold/italic fall back to the
+    nearest available face rather than failing outright."""
     if not family:
         return None
     key = (family.casefold(), bool(bold), bool(italic))
@@ -238,24 +345,37 @@ def find_font_file(family: str, *, bold: bool = False,
     return hit
 
 
+def find_font_file(family: str, *, bold: bool = False,
+                   italic: bool = False) -> Path | None:
+    """The font FILE for a family and style, or None. Prefer
+    find_font_face: inside a collection the file alone is ambiguous."""
+    face = find_font_face(family, bold=bold, italic=italic)
+    return face.path if face is not None else None
+
+
 # ------------------------------------------------------------- measurement
 
 
-def _load_table(path: Path) -> dict | None:
+def _load_table(face: FontFace) -> dict | None:
     """{'upem': int, 'widths': {codepoint: advance}, 'default': advance} or
-    None when the file cannot be read as a font."""
-    key = str(path)
-    if key in _TABLES:  # a cached None is a file we already failed to read
+    None when the face cannot be read.
+
+    Keyed by (path, index): two faces of one collection are different fonts
+    and caching them under the shared path served the second one the first
+    one's widths."""
+    key = (str(face.path), face.index)
+    if key in _TABLES:  # a cached None is a face we already failed to read
         return _TABLES[key]
+    path = face.path
     table = None
     try:
         from fontTools.ttLib import TTCollection, TTFont
 
-        if path.suffix.lower() in (".ttc", ".otc"):
+        if _is_collection(path):
             coll = TTCollection(str(path), lazy=True)
-            font = coll.fonts[0]
+            font = coll.fonts[face.index]
         else:
-            font = TTFont(str(path), fontNumber=0, lazy=True)
+            font = TTFont(str(path), fontNumber=face.index, lazy=True)
         upem = int(font["head"].unitsPerEm) or 1000
         cmap = font.getBestCmap() or {}
         hmtx = font["hmtx"]
@@ -279,16 +399,18 @@ def _load_table(path: Path) -> dict | None:
     return table
 
 
-def text_width_pt(text: str, family: str, size_pt: float, *,
-                  bold: bool = False, italic: bool = False) -> float | None:
-    """Advance width of `text` in points, or None when it cannot be
-    measured. Sum of per-glyph advances; no kerning."""
+def raw_text_width_pt(text: str, family: str, size_pt: float, *,
+                      bold: bool = False, italic: bool = False) -> float | None:
+    """The UNCALIBRATED advance sum in points, or None when it cannot be
+    measured. This is the raw model; callers making a fit decision want
+    text_width_pt, which carries the safety factor. Kept public because
+    the calibration itself has to be measurable against it."""
     if not available():
         return None
-    path = find_font_file(family, bold=bold, italic=italic)
-    if path is None:
+    face = find_font_face(family, bold=bold, italic=italic)
+    if face is None:
         return None
-    table = _load_table(path)
+    table = _load_table(face)
     if table is None:
         return None
     if not text:
@@ -301,10 +423,206 @@ def text_width_pt(text: str, family: str, size_pt: float, *,
     return total / table["upem"] * float(size_pt)
 
 
+def text_width_pt(text: str, family: str, size_pt: float, *,
+                  bold: bool = False, italic: bool = False) -> float | None:
+    """Advance width of a STRETCH of text in points, uncalibrated.
+
+    This is the per-token measure the wrapper works in, so it must NOT
+    carry the calibration: the pad is a per-LINE allowance, and adding it to
+    every token would over-count a line by the number of words on it. A fit
+    decision uses `calibrated_line_pt` (or `wrap_styled`, which already
+    accounts for it)."""
+    return raw_text_width_pt(text, family, size_pt, bold=bold, italic=italic)
+
+
+def calibrated_line_pt(raw_line_pt: float) -> float:
+    """One laid-out line's width as PowerPoint will render it: the advance
+    sum plus the measured trailing allowance. This is the number a fit
+    decision is allowed to see."""
+    return raw_line_pt + WIDTH_SAFETY_PAD_PT
+
+
+def metrics_readable(family: str, *, bold: bool = False,
+                     italic: bool = False) -> bool | None:
+    """True when the face resolves AND its metrics parse, False when a file
+    was found but could not be read, None when nothing resolved. The three
+    outcomes are three different honest reasons to report."""
+    if not available():
+        return None
+    face = find_font_face(family, bold=bold, italic=italic)
+    if face is None:
+        return None
+    return _load_table(face) is not None
+
+
 def font_file_name(family: str, *, bold: bool = False,
                    italic: bool = False) -> str | None:
-    path = find_font_file(family, bold=bold, italic=italic)
-    return path.name if path is not None else None
+    """The face's display name: the file, plus the index inside it when the
+    file is a collection, because "cambria.ttc" alone names two fonts."""
+    face = find_font_face(family, bold=bold, italic=italic)
+    if face is None:
+        return None
+    if _is_collection(face.path):
+        return f"{face.path.name}#{face.index}"
+    return face.path.name
+
+
+class StyledRun(NamedTuple):
+    """A stretch of text in ONE resolved format. A paragraph is a sequence
+    of these; measuring the whole paragraph in the first run's format is
+    what review finding M1 was about."""
+
+    text: str
+    family: str
+    size_pt: float
+    bold: bool = False
+    italic: bool = False
+
+
+class Line(NamedTuple):
+    """One laid-out line: how wide it came out, and the largest point size
+    on it (which is what sets its height)."""
+
+    width_pt: float
+    max_size_pt: float
+
+
+def _chunk_width(chunk: list[tuple[str, StyledRun]]) -> float | None:
+    """Width of a run of (char, style) pairs, measured a STYLE AT A TIME so
+    a word split across a format change is still measured correctly."""
+    total = 0.0
+    i = 0
+    while i < len(chunk):
+        style = chunk[i][1]
+        j = i
+        text = []
+        while j < len(chunk) and chunk[j][1] is style:
+            text.append(chunk[j][0])
+            j += 1
+        w = text_width_pt(
+            "".join(text), style.family, style.size_pt,
+            bold=style.bold, italic=style.italic,
+        )
+        if w is None:
+            return None
+        total += w
+        i = j
+    return total
+
+
+def _max_size(chunk: list[tuple[str, StyledRun]], floor: float) -> float:
+    return max([floor] + [s.size_pt for _c, s in chunk])
+
+
+def wrap_styled(
+    runs: list[StyledRun], first_width_pt: float,
+    rest_width_pt: float | None = None,
+) -> list[Line] | None:
+    """Lay out a paragraph of mixed-format runs and report each line.
+
+    Greedy word wrap on measured widths, with a word wider than the line
+    broken inside itself the way PowerPoint breaks it. A "\\n" in a run's
+    text is a hard break. Returns None when anything could not be measured,
+    which is the caller's signal to fall back honestly.
+
+    The calibration is applied HERE, by taking WIDTH_SAFETY_PAD_PT off the
+    usable width once per line, which is where a constant trailing allowance
+    belongs. That makes the wrap itself conservative: a line that PowerPoint
+    would break one word earlier breaks one word earlier here too, instead
+    of silently costing the caller a line."""
+    if first_width_pt <= 0:
+        return None
+    if rest_width_pt is None or rest_width_pt <= 0:
+        rest_width_pt = first_width_pt
+    first_width_pt = max(1.0, first_width_pt - WIDTH_SAFETY_PAD_PT)
+    rest_width_pt = max(1.0, rest_width_pt - WIDTH_SAFETY_PAD_PT)
+
+    items: list[tuple[str, StyledRun]] = []
+    for run in runs:
+        for ch in run.text:
+            items.append((ch, run))
+    if not items:
+        return None
+
+    # Hard breaks first: each becomes its own laid-out block.
+    blocks: list[list[tuple[str, StyledRun]]] = [[]]
+    for ch, style in items:
+        if ch == "\n":
+            blocks.append([])
+        else:
+            blocks[-1].append((ch, style))
+
+    default_size = max(r.size_pt for r in runs)
+    out: list[Line] = []
+    for block in blocks:
+        tokens: list[list[tuple[str, StyledRun]]] = []
+        current: list[tuple[str, StyledRun]] = []
+        for ch, style in block:
+            if ch.isspace():
+                if current:
+                    tokens.append(current)
+                    current = []
+                tokens.append([(ch, style)])
+            else:
+                current.append((ch, style))
+        if current:
+            tokens.append(current)
+        if not tokens:
+            out.append(Line(0.0, default_size))
+            continue
+        laid = _wrap_tokens(
+            tokens, first_width_pt, rest_width_pt, default_size
+        )
+        if laid is None:
+            return None
+        out.extend(laid)
+    return out
+
+
+def _wrap_tokens(tokens, first_width_pt, rest_width_pt, default_size):
+    lines: list[Line] = []
+    limit = first_width_pt
+    used = 0.0
+    biggest = 0.0
+    pending_space = 0.0
+
+    def close_line():
+        nonlocal used, biggest, limit, pending_space
+        lines.append(Line(used, biggest or default_size))
+        used = 0.0
+        biggest = 0.0
+        pending_space = 0.0
+        limit = rest_width_pt
+
+    for token in tokens:
+        is_space = token[0][0].isspace()
+        width = _chunk_width(token)
+        if width is None:
+            return None
+        if is_space:
+            if used > 0:
+                pending_space += width
+                biggest = _max_size(token, biggest)
+            continue
+        if used > 0 and used + pending_space + width > limit:
+            close_line()
+        if used == 0 and width > limit:
+            # A single word wider than the line: PowerPoint breaks inside it
+            # rather than letting it run out of the frame.
+            for ch, style in token:
+                cw = _chunk_width([(ch, style)])
+                if cw is None:
+                    return None
+                if used > 0 and used + cw > limit:
+                    close_line()
+                used += cw
+                biggest = max(biggest, style.size_pt)
+            continue
+        used += pending_space + width
+        pending_space = 0.0
+        biggest = _max_size(token, biggest)
+    lines.append(Line(used, biggest or default_size))
+    return lines
 
 
 def _word_pieces(text: str) -> list[str]:

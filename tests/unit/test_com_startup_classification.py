@@ -173,10 +173,14 @@ class _FakeWin32:
 
 
 def test_start_powerpoint_retries_once_on_notinitialized(bridge, monkeypatch):
+    # The real process table is off limits here: this asserts the retry, and
+    # a PowerPoint another session owns must not be swept into it.
+    monkeypatch.setattr(bridge, "powerpnt_pids", set)
     fake_py = _FakePythoncom()
     win32 = _FakeWin32([_com_error(bridge.CO_E_NOTINITIALIZED)])
-    app = bridge._start_powerpoint(win32, fake_py)
+    app, ended = bridge._start_powerpoint(win32, fake_py, set())
     assert app == "app:PowerPoint.Application"
+    assert ended == set()
     assert win32.calls == 2, "the start must be retried exactly once"
     assert fake_py.calls == 1, "the apartment is re-armed before the retry"
 
@@ -187,7 +191,7 @@ def test_start_powerpoint_gives_up_after_the_one_retry(bridge):
         [_com_error(bridge.CO_E_NOTINITIALIZED)] * 2
     )
     with pytest.raises(PowerPointNotRunning):
-        bridge._start_powerpoint(win32, fake_py)
+        bridge._start_powerpoint(win32, fake_py, set())
     assert win32.calls == 2, "no unbounded retry loop"
 
 
@@ -196,7 +200,7 @@ def test_start_powerpoint_does_not_retry_an_unregistered_class(bridge):
     fake_py = _FakePythoncom()
     win32 = _FakeWin32([_com_error(bridge.REGDB_E_CLASSNOTREG)] * 2)
     with pytest.raises(PowerPointNotRunning):
-        bridge._start_powerpoint(win32, fake_py)
+        bridge._start_powerpoint(win32, fake_py, set())
     assert win32.calls == 1
 
 
@@ -206,7 +210,7 @@ def test_start_powerpoint_does_not_retry_a_busy_instance(bridge):
     fake_py = _FakePythoncom()
     win32 = _FakeWin32([_com_error(bridge.RPC_E_CALL_REJECTED)] * 2)
     with pytest.raises(PowerPointBusy):
-        bridge._start_powerpoint(win32, fake_py)
+        bridge._start_powerpoint(win32, fake_py, set())
     assert win32.calls == 1
 
 
@@ -236,19 +240,32 @@ def test_every_com_entry_point_uses_the_shared_apartment_helper():
     left anywhere in the COM tier means one entry point can still drift."""
     from pathlib import Path
 
+    import ast
+
     com_dir = Path(
         __file__
     ).resolve().parents[2] / "src" / "kitchensink4ppt" / "com"
+    # _ensure_apartment IS the shared helper, and its own body is where the
+    # fallback for a pywin32 without CoInitializeEx legitimately lives.
+    # Everywhere else has to go through it.
+    sanctioned = {"_ensure_apartment"}
     offenders = []
     for path in com_dir.glob("*.py"):
-        for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-            stripped = line.strip()
-            if stripped.startswith("#"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
-            if "pythoncom.CoInitialize(" in stripped:
-                offenders.append(f"{path.name}:{n}")
+            if node.name in sanctioned:
+                continue
+            for inner in ast.walk(node):
+                if (
+                    isinstance(inner, ast.Call)
+                    and isinstance(inner.func, ast.Attribute)
+                    and inner.func.attr == "CoInitialize"
+                ):
+                    offenders.append(f"{path.name}:{inner.lineno}")
     assert not offenders, (
-        "bare pythoncom.CoInitialize() calls left in the COM tier: "
-        f"{offenders}. Use _ensure_apartment so S_FALSE and "
+        "bare CoInitialize() calls left in the COM tier outside the shared "
+        f"helper: {offenders}. Use _ensure_apartment so S_FALSE and "
         "RPC_E_CHANGED_MODE are handled in one place."
     )
