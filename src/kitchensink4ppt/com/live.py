@@ -161,22 +161,32 @@ def _classify(exc):
             "PowerPoint is busy or has a dialog open (a dialog box, "
             "Backstage, or a running command). Close it and retry."
         )
-    return None
+    # The COM start-up family reaches the live layer too, and it is not a
+    # caller mistake there either; the bridge owns the one classification.
+    from .bridge import _classify as _bridge_classify
+
+    return _bridge_classify(exc)
 
 
-def _ensure_com(pythoncom):
+def _ensure_com(pythoncom) -> str:
     """COM apartment handling: initialize freely, NEVER uninitialize.
 
     pywin32's CoInitialize is a no-op on an already-initialized thread
     while CoUninitialize ALWAYS decrements, so a paired call on a
     host-initialized thread destroys the host's apartment and disconnects
     every COM proxy it holds (verified empirically on KS4W, 2026-08-28).
-    Calling CoInitialize unconditionally is safe (no-op when alive) and
-    self-heals an apartment some OTHER code tore down; skipping
-    CoUninitialize means this module can never be the one that kills the
-    thread's COM state. The apartment persists for the thread's lifetime —
-    intended."""
-    pythoncom.CoInitialize()
+    Initializing unconditionally is safe and self-heals an apartment some
+    OTHER code tore down; skipping CoUninitialize means this module can
+    never be the one that kills the thread's COM state. The apartment
+    persists for the thread's lifetime, which is intended.
+
+    The bridge owns the one implementation (CoInitializeEx, with S_FALSE
+    and RPC_E_CHANGED_MODE handled deliberately and the outcome recorded
+    per thread), so the live layer and the invisible-instance layer cannot
+    drift apart on the thing that broke in the field."""
+    from .bridge import _ensure_apartment
+
+    return _ensure_apartment(pythoncom)
 
 
 _UNSET = object()
@@ -396,7 +406,11 @@ def probe_with_timeout(timeout: float = 5.0, *, check_dialogs: bool = True) -> s
 
     def _worker():
         pythoncom, pywintypes, win32com = _com_modules()
-        pythoncom.CoInitialize()
+        # This thread is ours and nobody else's, so pairing is correct here.
+        # It is only paired when we were the ones who armed the apartment:
+        # on "already" or "changed-mode" the count belongs to someone else
+        # and decrementing it is the bug this module warns about elsewhere.
+        state = _ensure_com(pythoncom)
         try:
             app = win32com.GetActiveObject("PowerPoint.Application")
             _ = app.Name
@@ -412,8 +426,9 @@ def probe_with_timeout(timeout: float = 5.0, *, check_dialogs: bool = True) -> s
         except Exception:
             result["state"] = "not_running"
         finally:
-            with contextlib.suppress(Exception):
-                pythoncom.CoUninitialize()
+            if state == "initialized":
+                with contextlib.suppress(Exception):
+                    pythoncom.CoUninitialize()
 
     t = threading.Thread(target=_worker, daemon=True)
     t.start()

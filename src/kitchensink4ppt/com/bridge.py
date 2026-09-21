@@ -64,6 +64,7 @@ from ..core.errors import (
     PowerPointBlocked,
     PowerPointBusy,
     PowerPointDisconnected,
+    PowerPointNotRunning,
     PptMcpError,
 )
 from ..core.sandbox import check_path
@@ -86,6 +87,17 @@ CO_E_OBJNOTCONNECTED = -2147220995  # proxy no longer connected
 RPC_S_CALL_FAILED = -2147023170  # 0x800706BE, app killed mid-call
 RPC_S_SERVER_UNAVAILABLE = -2147023174  # 0x800706BA, RPC server gone
 
+# The COM START-UP family: the apartment, the registration and the launch.
+# None of these is a caller mistake, and mapping them to PptMcpError sent
+# them to the wire as BAD_PARAMS, which tells a caller to go and look at
+# its own arguments (2026-09-21 field report, P7).
+CO_E_NOTINITIALIZED = -2147221008  # 0x800401F0, CoInitialize not called
+CO_E_ALREADYINITIALIZED = -2147221007  # 0x800401F1, apartment already up
+RPC_E_CHANGED_MODE = -2147417850  # 0x80010106, thread is in the other model
+REGDB_E_CLASSNOTREG = -2147221164  # 0x80040154, PowerPoint not registered
+CO_E_SERVER_EXEC_FAILURE = -2146959355  # 0x80080005, the server failed to run
+S_FALSE = 1  # CoInitializeEx: already initialized in this same mode
+
 BUSY_HRESULTS = {RPC_E_CALL_REJECTED, RPC_E_SERVERCALL_RETRYLATER}
 GONE_HRESULTS = {
     RPC_E_DISCONNECTED,
@@ -93,6 +105,29 @@ GONE_HRESULTS = {
     RPC_S_CALL_FAILED,
     RPC_S_SERVER_UNAVAILABLE,
 }
+#: Start-up faults: PowerPoint never came up, so nothing is running.
+STARTUP_HRESULTS = {
+    CO_E_NOTINITIALIZED,
+    CO_E_ALREADYINITIALIZED,
+    RPC_E_CHANGED_MODE,
+    REGDB_E_CLASSNOTREG,
+    CO_E_SERVER_EXEC_FAILURE,
+}
+#: The subset worth one more try after re-arming this thread's apartment.
+#: A class that is not registered will not register itself on a retry.
+STARTUP_RETRY_HRESULTS = {
+    CO_E_NOTINITIALIZED,
+    CO_E_ALREADYINITIALIZED,
+    RPC_E_CHANGED_MODE,
+    CO_E_SERVER_EXEC_FAILURE,
+}
+STARTUP_RETRY_DELAY = 0.5  # seconds between the two start attempts
+
+#: What the last CoInitializeEx on each thread did, so a start-up failure
+#: can SAY what the apartment was instead of the caller guessing. Written
+#: by _ensure_apartment, read by the start-up error message and by
+#: powerpoint_status. Keyed by thread id.
+_APARTMENT_STATE: dict[int, str] = {}
 
 
 def _com_modules():
@@ -136,7 +171,83 @@ def _classify(exc):
             "PowerPoint is busy or has a dialog open (a dialog box, "
             "Backstage, or a running command). Close it and retry."
         )
+    if hrs & STARTUP_HRESULTS:
+        return PowerPointNotRunning(
+            "PowerPoint could not be started on this thread: "
+            + _startup_detail(hrs)
+            + " Nothing was opened and nothing was changed. The file-based "
+            "tools do not need PowerPoint; retry the COM call, and if it "
+            "keeps failing check that PowerPoint is installed and that no "
+            "install repair is in progress."
+        )
     return None
+
+
+def _startup_detail(hrs: set) -> str:
+    """The one sentence that names WHICH start-up fault this was, plus what
+    this thread's COM apartment was doing when it happened."""
+    if REGDB_E_CLASSNOTREG in hrs:
+        what = (
+            "PowerPoint.Application is not registered on this machine "
+            "(REGDB_E_CLASSNOTREG)."
+        )
+    elif CO_E_SERVER_EXEC_FAILURE in hrs:
+        what = (
+            "the PowerPoint COM server failed to launch "
+            "(CO_E_SERVER_EXEC_FAILURE)."
+        )
+    elif RPC_E_CHANGED_MODE in hrs:
+        what = (
+            "this thread's COM apartment is in the other threading model "
+            "(RPC_E_CHANGED_MODE)."
+        )
+    else:
+        what = (
+            "this thread's COM apartment was not initialized "
+            "(CO_E_NOTINITIALIZED)."
+        )
+    state = _APARTMENT_STATE.get(threading.get_ident())
+    if state:
+        what += f" The apartment on this thread reported: {state}."
+    return what
+
+
+def _ensure_apartment(pythoncom) -> str:
+    """Initialize THIS thread's COM apartment and say what happened.
+
+    CoInitializeEx rather than CoInitialize so the two benign outcomes are
+    handled deliberately instead of by luck: S_FALSE means the apartment was
+    already up in this same model (fine, and pywin32 does not raise for it),
+    and RPC_E_CHANGED_MODE means some other code already put this thread in
+    the other threading model. Fighting that would break whatever set it, so
+    it is recorded and the call proceeds; COM still marshals, it just
+    marshals differently.
+
+    CoUninitialize is never paired here, for the reason in the module
+    docstring. Returns one of "initialized", "already", "changed-mode", or
+    "failed: ...", and records it per thread so a later start-up failure can
+    quote it."""
+    tid = threading.get_ident()
+    try:
+        pythoncom.CoInitializeEx(pythoncom.COINIT_APARTMENTTHREADED)
+        state = "initialized"
+    except Exception as exc:
+        hrs = _hresults(exc)
+        if S_FALSE in hrs:
+            state = "already"
+        elif RPC_E_CHANGED_MODE in hrs or CO_E_ALREADYINITIALIZED in hrs:
+            state = "changed-mode"
+        else:
+            state = f"failed: {exc}"
+    _APARTMENT_STATE[tid] = state
+    return state
+
+
+def apartment_state(tid: int | None = None) -> str | None:
+    """What the last CoInitializeEx on a thread did (diagnostic)."""
+    return _APARTMENT_STATE.get(
+        threading.get_ident() if tid is None else tid
+    )
 
 
 def _raise_classified(exc, fallback_message: str):
@@ -240,12 +351,21 @@ def _run_bounded(name: str, timeout: float, fn):
     # COM calls afterwards started failing with "CoInitialize has not been
     # called" (caught by test_av's media scenario, 2026-09-04). Initialize
     # the caller's apartment too, so the contract survives the port.
-    with contextlib.suppress(Exception):
+    # The failure used to be swallowed by contextlib.suppress, which meant a
+    # caller thread whose apartment could not be armed produced no evidence
+    # at all: the next COM call two frames away failed with "CoInitialize
+    # has not been called" and the report said nothing about why. It is
+    # carried now, on the result and in _APARTMENT_STATE, so the error the
+    # caller finally sees can quote it.
+    caller_apartment = "no pythoncom"
+    try:
         import pythoncom
 
-        pythoncom.CoInitialize()
+        caller_apartment = _ensure_apartment(pythoncom)
+    except Exception as exc:  # noqa: BLE001 - recorded, never raised here
+        caller_apartment = f"failed: {exc}"
 
-    result: dict = {}
+    result: dict = {"caller_apartment": caller_apartment}
     lock_acquired = threading.Event()
     done = threading.Event()
     worker_tid: list = []
@@ -367,17 +487,41 @@ def _powerpoint():
         yield from _powerpoint_locked()
 
 
+def _start_powerpoint(win32client, pythoncom):
+    """DispatchEx with ONE bounded retry on a start-up fault.
+
+    The apartment is re-armed between the two attempts, which is the whole
+    point: a CO_E_NOTINITIALIZED on the first attempt means this thread's
+    apartment was not there when COM was asked, and the retry is what turns
+    that into a working call instead of a refusal. A class that is not
+    registered is not retried, because a second attempt cannot register it.
+    """
+    last = None
+    for attempt in (0, 1):
+        try:
+            return win32client.DispatchEx("PowerPoint.Application")
+        except Exception as exc:  # noqa: BLE001 - re-raised classified below
+            last = exc
+            if attempt == 1 or not (_hresults(exc) & STARTUP_RETRY_HRESULTS):
+                break
+            with contextlib.suppress(Exception):
+                _ensure_apartment(pythoncom)
+            time.sleep(STARTUP_RETRY_DELAY)
+    _raise_classified(last, "PowerPoint could not be started")
+
+
 def _powerpoint_locked():
     pythoncom, win32client = _com_modules()
-    pythoncom.CoInitialize()  # no-op when already initialized; never paired
+    # CoInitializeEx on the thread that is about to make the COM calls.
+    # Tolerant of "already initialized" (S_FALSE) and of a thread another
+    # library put in the other threading model (RPC_E_CHANGED_MODE), both
+    # handled in _ensure_apartment; never paired with CoUninitialize.
+    _ensure_apartment(pythoncom)
     tid = threading.get_ident()
     before_pids = powerpnt_pids()
     launched = not before_pids
     pre_count = len(before_pids)
-    try:
-        app = win32client.DispatchEx("PowerPoint.Application")
-    except Exception as exc:
-        _raise_classified(exc, "PowerPoint could not be started")
+    app = _start_powerpoint(win32client, pythoncom)
     if launched:
         # Arm the kill-switch for exactly the process WE just started.
         created = powerpnt_pids() - before_pids
@@ -843,7 +987,7 @@ def powerpoint_status() -> dict:
         except PptMcpError as exc:
             out["error"] = str(exc)
             return out
-        pythoncom.CoInitialize()
+        out["com_apartment"] = _ensure_apartment(pythoncom)
         with contextlib.suppress(Exception):
             rot = pythoncom.GetRunningObjectTable()
             for moniker in rot.EnumRunning():

@@ -50,6 +50,9 @@ dev = [
 optimize = [
     "Pillow",  # compress_deck image downsampling only; without it the purge half still works and recompression is refused honestly
 ]
+metrics = [
+    "fonttools>=4.0",  # real advance widths for the text-fit model only; without it the fit model falls back to its average-glyph estimate and says so. Never a runtime requirement, imported lazily.
+]
 
 [project.urls]
 Homepage = "https://kitchensink4.ai"
