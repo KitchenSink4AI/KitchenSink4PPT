@@ -275,7 +275,9 @@ def test_run_bounded_stuck_op_raises_powerpoint_blocked():
         return {}
 
     t0 = time.monotonic()
-    with pytest.raises(PowerPointBlocked, match="did not finish within"):
+    # R5-1: the refusal no longer says the operation was aborted, because
+    # nothing cancels it; it says PowerPoint did not answer in time.
+    with pytest.raises(PowerPointBlocked, match="did not answer within"):
         bridge._run_bounded("stuck-op", 0.3, stuck)
     assert time.monotonic() - t0 < 12
 

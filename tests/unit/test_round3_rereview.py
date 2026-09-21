@@ -1098,3 +1098,191 @@ def test_an_ordinary_slide_id_read_failure_is_still_just_none():
             raise ValueError("not a number")
 
     assert bridge._slide_id_of(_Slide()) is None
+
+
+# ================================================================ ROUND 5
+
+
+# ------------------------------------------------------------ R5-1
+
+
+@pytestmark_win
+def test_a_timed_out_worker_is_not_cancelled_and_the_refusal_says_so():
+    """R5-1, the reviewer's probe. Nothing cancels a timed-out COM
+    operation: the worker thread is still inside the call, finishes later,
+    and can still save. Telling the caller it "was aborted" invites a retry
+    on top of a live operation."""
+    import threading
+    import time
+
+    from kitchensink4ppt.com import bridge
+    from kitchensink4ppt.core.errors import PowerPointBlocked
+
+    finished = threading.Event()
+    effect = []
+
+    def resumes_after_deadline():
+        time.sleep(10.8)  # outlasts _run_bounded's post-deadline wait
+        effect.append("completed after caller received timeout")
+        finished.set()
+        return {"ok": True}
+
+    with pytest.raises(PowerPointBlocked) as exc_info:
+        bridge._run_bounded("late-effect", 0.1, resumes_after_deadline)
+    message = str(exc_info.value)
+
+    assert not effect, "the worker completed before the timeout response"
+    assert "was aborted" not in message
+    assert "The operation was NOT cancelled" in message
+    assert "may still finish and save its output" in message
+    assert "Do not retry yet" in message
+    assert "call powerpoint_status and wait until it reports no COM " \
+        "operation in progress" in message
+    assert "check the output file before repeating the call" in message
+
+    assert finished.wait(10.0), "the worker did not resume after the refusal"
+    assert effect == ["completed after caller received timeout"]
+
+
+@pytestmark_win
+def test_the_timeout_pid_clause_does_not_assert_ownership(monkeypatch):
+    """The acquisition token is an observation, so the refusal reports what
+    was observed and warns before anyone ends a process."""
+    import threading
+    import time
+
+    from kitchensink4ppt.com import bridge
+    from kitchensink4ppt.core.errors import PowerPointBlocked
+
+    recorded = {}
+
+    def stuck():
+        recorded["tid"] = threading.get_ident()
+        bridge._SELF_LAUNCHED_PIDS[recorded["tid"]] = {5150}
+        time.sleep(2)
+        return {}
+
+    try:
+        with pytest.raises(PowerPointBlocked) as exc_info:
+            bridge._run_bounded("stuck-op", 0.3, stuck)
+    finally:
+        bridge._SELF_LAUNCHED_PIDS.pop(recorded.get("tid"), None)
+    message = str(exc_info.value)
+    assert (
+        "a PowerPoint process that was not running when this call began, "
+        "pid 5150, was left running; before ending it from Task Manager, "
+        "make sure no person or other program is using it"
+    ) in message
+    assert "this call started" not in message
+
+
+@pytestmark_win
+def test_the_no_token_clause_states_what_was_seen_not_what_was_done():
+    """With nothing recorded the refusal says PowerPoint was already
+    running, rather than asserting the server did not launch it."""
+    import time
+
+    from kitchensink4ppt.com import bridge
+    from kitchensink4ppt.core.errors import PowerPointBlocked
+
+    with pytest.raises(PowerPointBlocked) as exc_info:
+        bridge._run_bounded("stuck-op", 0.3, lambda: time.sleep(2))
+    assert (
+        "PowerPoint was already running when this call began, so no "
+        "process was touched"
+    ) in str(exc_info.value)
+
+
+@pytestmark_win
+def test_a_partial_startup_process_is_not_said_to_be_ended():
+    """R5-1(c): _classify told the caller a half-started PowerPoint "is
+    ended by this call". Nothing is ended."""
+    from kitchensink4ppt.com import bridge
+
+    message = str(bridge._classify(_com_error(bridge.CO_E_SERVER_EXEC_FAILURE)))
+    assert "is ended by this call" not in message
+    assert (
+        "a PowerPoint process may have been started and was left running"
+    ) in message
+
+
+@pytestmark_win
+def test_no_string_in_the_com_package_claims_a_process_was_ended():
+    """R5-1(d): a source guard over the runtime strings, alongside the
+    round-4 guard that no code can end a process."""
+    import pathlib
+    import re
+
+    from kitchensink4ppt.com import bridge
+
+    banned = re.compile(
+        r"(was|is|were|are)\s+(aborted|ended|killed|terminated)"
+    )
+    negated = re.compile(r"\b(no|not|never|nothing|used to)\b", re.I)
+    offenders = []
+    root = pathlib.Path(bridge.__file__).parent
+    for path in sorted(root.glob("*.py")):
+        for n, line in enumerate(
+            path.read_text(encoding="utf-8").splitlines(), 1
+        ):
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue  # comments explaining the history are fine
+            hit = banned.search(line)
+            if hit and not negated.search(line[: hit.start()]):
+                offenders.append(f"{path.name}:{n}: {stripped}")
+    assert not offenders, "\n".join(offenders)
+
+
+# ------------------------------------------------------------ R5-2
+
+
+@metrics
+def test_a_negative_marl_is_unmeasurable():
+    """R5-2, the reviewer's probe. marL is ST_TextMargin, which is
+    NONNEGATIVE; the shared signed bound accepted marL="-1"."""
+    sp, body, p = _metrics_shape([("Some text", "Calibri", 1200)])
+    p.find(qn("a:pPr")).set("marL", "-1")
+    rec = _overflow(sp, body)
+    assert rec["method"] == "estimate"
+    assert "marL" in rec["method_reason"]
+    assert "outside the range DrawingML allows" in rec["method_reason"]
+
+
+@metrics
+def test_a_negative_marl_inherited_through_the_chain_is_unmeasurable():
+    """Stated or inherited makes no difference: it is invalid either way."""
+    sp, body, p = _metrics_shape([("Some text", "Calibri", 1200)])
+    lvl = etree.SubElement(body.find(qn("a:lstStyle")), qn("a:lvl1pPr"))
+    lvl.set("marL", "-342900")
+    rec = _overflow(sp, body)
+    assert rec["method"] == "estimate"
+    assert "marL" in rec["method_reason"]
+
+
+@metrics
+def test_a_hanging_indent_stays_measurable():
+    """The guard for the other half: indent is ST_TextIndent, signed,
+    because a negative indent is how every bulleted list is written."""
+    sp, body, p = _metrics_shape([("Some text", "Calibri", 1200)])
+    ppr = p.find(qn("a:pPr"))
+    ppr.set("marL", "342900")
+    ppr.set("indent", "-342900")
+    rec = _overflow(sp, body)
+    assert rec["method"] == "font-metrics", rec.get("method_reason")
+
+
+def test_para_margins_rejects_a_negative_marl_directly():
+    """The reviewer's probe as written: _para_margins itself must refuse."""
+    p = etree.Element(qn("a:p"))
+    etree.SubElement(p, qn("a:pPr")).set("marL", "-1")
+    with pytest.raises(tx._Unmeasurable):
+        tx._para_margins(p)
+
+
+def test_para_margins_keeps_a_negative_indent():
+    p = etree.Element(qn("a:p"))
+    ppr = etree.SubElement(p, qn("a:pPr"))
+    ppr.set("marL", "342900")
+    ppr.set("indent", "-342900")
+    assert tx._para_margins(p) == (342900, -342900)
