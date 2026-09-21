@@ -98,12 +98,18 @@ def test_the_unrecoverable_startup_faults_are_tried_once(bridge, name):
     assert win32.calls == 1
 
 
-def test_a_failed_attempt_that_started_powerpoint_is_cleaned_up(
+def test_a_failed_attempt_that_started_powerpoint_is_reported_not_ended(
     bridge, monkeypatch
 ):
-    """M3's concrete failure: attempt one starts POWERPNT.EXE and then
-    fails before a proxy reaches Python. Nothing else can reach that
-    process, so it must be ended before the retry rather than stranded."""
+    """M3's concrete failure, ruled on again in round 3 (G2).
+
+    Attempt one starts POWERPNT.EXE and then fails before a proxy reaches
+    Python. Round 2 ended that pid, reasoning that an empty entry snapshot
+    made it ours. An empty snapshot is not ownership: the user can launch
+    PowerPoint in that same window, and `tasklist` failing produces the
+    same empty set. So the pid is reported and left alone, and the retry
+    stops rather than launching a second process on top of it.
+    """
     world = {"pids": set()}
     killed: list[int] = []
 
@@ -125,20 +131,18 @@ def test_a_failed_attempt_that_started_powerpoint_is_cleaned_up(
     win32 = _FakeWin32(
         [
             # attempt 1: starts pid 4242, then fails with the one fault we
-            # do retry
+            # would otherwise retry
             (_com_error(bridge.CO_E_NOTINITIALIZED), (4242,)),
-            # attempt 2: succeeds and starts pid 4343
             (None, (4343,)),
         ],
         world,
     )
-    app, ended = bridge._start_powerpoint(win32, _FakePythoncom(), set())
-    assert app == "app:PowerPoint.Application"
-    assert killed == [4242], "the stranded first process must be ended"
-    assert ended == {4242}
-    assert world["pids"] == {4343}, (
-        "exactly one PowerPoint survives, and it is the one we hold"
-    )
+    with pytest.raises(PowerPointNotRunning) as exc_info:
+        bridge._start_powerpoint(win32, _FakePythoncom(), set())
+    assert killed == [], "nothing on this path may end a process"
+    assert win32.calls == 1, "a process appeared, so the retry must stop"
+    assert world["pids"] == {4242}, "the process that appeared survives"
+    assert "4242" in str(exc_info.value)
 
 
 def test_a_pre_existing_powerpoint_is_never_touched(bridge, monkeypatch):
@@ -168,6 +172,8 @@ def test_a_pre_existing_powerpoint_is_never_touched(bridge, monkeypatch):
 def test_a_stranded_process_is_reported_when_the_call_still_fails(
     bridge, monkeypatch
 ):
+    """Round 3 (G2): the refusal names the pid it saw and says it is still
+    running. It may not claim to have ended anything, because it does not."""
     world = {"pids": set()}
     monkeypatch.setattr(bridge, "powerpnt_pids", lambda: set(world["pids"]))
 
@@ -186,8 +192,10 @@ def test_a_stranded_process_is_reported_when_the_call_still_fails(
     )
     with pytest.raises(PowerPointNotRunning) as exc_info:
         bridge._start_powerpoint(win32, _FakePythoncom(), set())
-    assert "was ended" in str(exc_info.value)
-    assert world["pids"] == set(), "nothing may be left running"
+    message = str(exc_info.value)
+    assert "was ended" not in message
+    assert "7777" in message and "left running" in message
+    assert world["pids"] == {7777}, "the process is left exactly as found"
 
 
 def test_server_exec_failure_does_not_claim_nothing_was_opened(bridge):

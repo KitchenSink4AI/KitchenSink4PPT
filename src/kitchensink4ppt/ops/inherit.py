@@ -204,11 +204,18 @@ def inherited_box(
 # ------------------------------------------------------------- font size
 
 
-def _lvl_size(container: etree._Element | None, level: int) -> float | None:
-    """sz (in points) from a lstStyle-like container at one outline level."""
+def level_ppr(
+    container: etree._Element | None, level: int
+) -> etree._Element | None:
+    """The a:lvlNpPr of one outline level in a lstStyle-like container."""
     if container is None:
         return None
-    lvl = container.find(qn(f"a:lvl{min(max(level, 0), 8) + 1}pPr"))
+    return container.find(qn(f"a:lvl{min(max(level, 0), 8) + 1}pPr"))
+
+
+def _lvl_size(container: etree._Element | None, level: int) -> float | None:
+    """sz (in points) from a lstStyle-like container at one outline level."""
+    lvl = level_ppr(container, level)
     if lvl is None:
         return None
     defrpr = lvl.find(qn("a:defRPr"))
@@ -313,3 +320,72 @@ def resolve_run_size_pt(
     if size is not None:
         return size, "presentation default"
     return None, "unresolved"
+
+
+def presentation_default_size_pt(pkg, level: int = 0) -> float | None:
+    """sz at one outline level from the presentation's defaultTextStyle.
+
+    resolve_run_size_pt reaches this only for a PLACEHOLDER, because a
+    shape that is not one has no layout twin to walk through. An ordinary
+    text box still renders at the presentation default, so a caller that
+    needs a size it can stand behind asks for it separately."""
+    try:
+        default = pkg.presentation().find(qn("p:defaultTextStyle"))
+    except Exception:
+        return None
+    return _lvl_size(default, level)
+
+
+def level_ppr_chain(
+    pkg,
+    slide_part: str | None,
+    elem: etree._Element | None,
+    level: int = 0,
+) -> list[etree._Element]:
+    """Every a:lvlNpPr standing behind one paragraph at `level`, NEAREST
+    FIRST: the shape's own lstStyle, the layout twin's, the master twin's,
+    the master text style for the placeholder's family, and finally the
+    presentation's defaultTextStyle.
+
+    This is the same chain resolve_run_size_pt walks, returned whole so a
+    caller can resolve the other level-borne properties (marL, indent,
+    character spacing) per attribute instead of reading the paragraph's own
+    a:pPr and calling an absent attribute zero. A measurement that treats
+    an inherited one-inch marL as no indent thinks it has the whole frame
+    to lay text into (second review, G1, 2026-09-22).
+
+    Read-only, and it never guesses: a level nothing in the chain defines
+    simply contributes nothing, which leaves the DrawingML defaults.
+    """
+    out: list[etree._Element] = []
+
+    def add(container):
+        lvl = level_ppr(container, level)
+        if lvl is not None:
+            out.append(lvl)
+
+    def lst_of(shape):
+        if shape is None:
+            return None
+        body = shape.find(qn("p:txBody"))
+        return body.find(qn("a:lstStyle")) if body is not None else None
+
+    add(lst_of(elem))
+
+    key = placeholder_key(placeholder_of(elem)) if elem is not None else None
+    if key is not None and pkg is not None:
+        layout_part = layout_part_of(pkg, slide_part)
+        add(lst_of(layout_twin(pkg, layout_part, key)))
+        master_part = master_part_of(pkg, layout_part)
+        add(lst_of(master_twin(pkg, master_part, key)))
+        if master_part and pkg.has_part(master_part):
+            styles = pkg.root(master_part).find(qn("p:txStyles"))
+            if styles is not None:
+                add(styles.find(qn(_TX_STYLE[family_of(key[0])])))
+
+    if pkg is not None:
+        try:
+            add(pkg.presentation().find(qn("p:defaultTextStyle")))
+        except Exception:
+            pass
+    return out

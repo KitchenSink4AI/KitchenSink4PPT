@@ -286,10 +286,25 @@ def _raise_classified(exc, fallback_message: str):
     raise PptMcpError(f"{fallback_message}: {exc}") from exc
 
 
-def powerpnt_pids() -> set:
-    """POWERPNT.EXE process ids via the process table (never COM). PID
-    precision is what lets the timeout kill-switch terminate exactly the
-    instance this server launched and nothing else."""
+def powerpnt_pids() -> set | None:
+    """POWERPNT.EXE process ids via the process table (never COM), or None
+    when the table could not be READ. PID precision is what lets the
+    timeout kill-switch terminate exactly the instance this server
+    launched and nothing else.
+
+    NONE MEANS UNKNOWN AND NEVER MEANS "NOTHING WAS RUNNING". This used to
+    return an empty set for both, and every ownership decision in the
+    module then read a failed tasklist as an empty machine: a session
+    concluded it had LAUNCHED the PowerPoint it had merely attached to and
+    quit the owner's instance on the way out, unsaved work and all (second
+    review follow-up, G2b, 2026-09-22). Nothing that can end, quit or kill
+    a process may act on None.
+
+    A genuine no-match is NOT a failure: tasklist prints its INFO line and
+    the answer is an empty set. Unknown is the subprocess raising or timing
+    out, a non-zero exit with nothing on stdout, no output at all, or a row
+    naming POWERPNT.EXE whose pid column will not parse.
+    """
     try:
         result = subprocess.run(
             ["tasklist", "/FI", f"IMAGENAME eq {PROCESS_NAME}", "/FO", "CSV",
@@ -299,30 +314,42 @@ def powerpnt_pids() -> set:
             timeout=30,
         )
     except Exception:
-        return set()
+        return None
+    stdout = result.stdout or ""
+    if not stdout.strip():
+        return None
     pids = set()
-    for ln in result.stdout.splitlines():
+    for ln in stdout.splitlines():
         if PROCESS_NAME not in ln.upper():
             continue
         parts = ln.split('","')
-        if len(parts) >= 2:
-            with contextlib.suppress(ValueError):
-                pids.add(int(parts[1].strip('"')))
+        if len(parts) < 2:
+            return None
+        try:
+            pids.add(int(parts[1].strip('"')))
+        except ValueError:
+            return None
     return pids
 
 
 def powerpnt_count() -> int:
-    """POWERPNT.EXE process count via the process table (never COM)."""
-    return len(powerpnt_pids())
+    """POWERPNT.EXE process count via the process table (never COM), or -1
+    when the table could not be read. A diagnostic: every decision that can
+    end a process reads powerpnt_pids() itself and stops on None."""
+    pids = powerpnt_pids()
+    return -1 if pids is None else len(pids)
 
 
 # POWERPNT.EXE pids this server LAUNCHED, keyed by spawning thread. The
 # timeout kill-switch terminates exactly these. An entry exists only when
-# _powerpoint() found no PowerPoint running and started one itself; when we
-# attached to the user's instance this dict stays empty for that thread and
-# the kill-switch is therefore disarmed. On a singleton COM server that
-# distinction is the difference between cleaning up after ourselves and
-# killing the user's PowerPoint out from under them.
+# _powerpoint() READ the process table, found no PowerPoint running,
+# started one itself, and read the table again to name the new pid; when we
+# attached to the user's instance, or when the table could not be read at
+# either end, this dict stays empty for that thread and the kill-switch is
+# therefore disarmed. On a singleton COM server that distinction is the
+# difference between cleaning up after ourselves and killing the user's
+# PowerPoint out from under them, and an unreadable table is not a
+# distinction at all (G2b).
 _SELF_LAUNCHED_PIDS: dict[int, set] = {}
 
 
@@ -523,68 +550,79 @@ def _powerpoint():
 
 
 def _start_powerpoint(win32client, pythoncom, before_pids):
-    """DispatchEx with ONE bounded retry, and PID accounting around it.
+    """DispatchEx with ONE bounded retry. NOTHING HERE ENDS A PROCESS.
 
     The only action taken between the two attempts is re-arming this
     thread's apartment, so only the faults that action repairs are retried
-    (STARTUP_RETRY_HRESULTS). A failed attempt is nonetheless capable of
-    leaving a POWERPNT.EXE behind, so the process table is re-read after a
-    failed attempt and anything that appeared is ENDED before the next one.
-    That is the difference between a retry and a process leak (review
-    finding M3).
+    (STARTUP_RETRY_HRESULTS).
 
-    THE CLEANUP IS ARMED ONLY WHEN NO POWERPOINT WAS RUNNING AT ENTRY. That
-    is the same rule the timeout kill-switch uses and the same promise the
-    module docstring makes: nothing here ends a process it did not start.
-    If an instance was already running we attached to it, and a process
-    appearing mid-call is not ours to reason about.
+    The previous version read the process table after a failed attempt and
+    force-ended every POWERPNT.EXE that had appeared since entry, on the
+    reasoning that an empty entry snapshot made any new process ours. It is
+    not evidence of ownership: the user or another session can launch
+    PowerPoint between that snapshot and this call's failure, and that
+    instance was then killed with no save prompt. The snapshot can also be
+    empty because `tasklist` itself failed, which turns "unknown" into
+    "nothing was running" (second review, G2, 2026-09-22).
 
-    `before_pids` is REQUIRED, and it must be a true snapshot: a caller that
-    passed an empty set while PowerPoint was in fact running would turn this
-    into a killer of other people's processes. Caught by a test on a machine
-    where another session happened to have PowerPoint open, 2026-09-22.
+    So the difference is only LOOKED at, never acted on: a pid that appears
+    across a failed attempt is reported in the refusal as something left
+    running, and its appearance stops the retry, because launching again on
+    top of a state we cannot explain is how one unexplained process becomes
+    two.
 
-    Returns (app, pids_this_call_ended)."""
-    can_clean = not before_pids
-    ended: set = set()
+    `before_pids` is the entry snapshot, used only to tell an old process
+    from a new one in that report. When it is NON-empty an instance was
+    already up, we were attaching to it rather than starting one, and a
+    process appearing mid-call is not ours to reason about at all: the look
+    is skipped and the retry runs as before. When it is None the process
+    table could not be read, so "new" has no meaning and the look is
+    skipped for that reason instead (G2b).
+
+    Returns (app, pids_that_appeared)."""
+    watch = before_pids is not None and not before_pids
+    appeared: set = set()
     last = None
     for attempt in (0, 1):
         try:
-            return win32client.DispatchEx("PowerPoint.Application"), ended
+            return win32client.DispatchEx("PowerPoint.Application"), appeared
         except Exception as exc:  # noqa: BLE001 - re-raised classified below
             last = exc
-            if can_clean:
-                # Nothing was running when we started, so a process that
-                # exists now and never handed us a proxy is ours, is
-                # unreachable by anything else, and must not be left behind.
-                for pid in powerpnt_pids() - before_pids:
-                    with contextlib.suppress(Exception):
-                        subprocess.run(
-                            ["taskkill", "/PID", str(pid), "/F"],
-                            capture_output=True, timeout=15,
-                        )
-                        ended.add(pid)
-            if attempt == 1 or not (_hresults(exc) & STARTUP_RETRY_HRESULTS):
+            if watch:
+                with contextlib.suppress(Exception):
+                    now = powerpnt_pids()
+                    if now is not None:
+                        appeared |= now - before_pids
+            if (
+                attempt == 1
+                or appeared
+                or not (_hresults(exc) & STARTUP_RETRY_HRESULTS)
+            ):
                 break
             with contextlib.suppress(Exception):
                 _ensure_apartment(pythoncom)
             time.sleep(STARTUP_RETRY_DELAY)
-    _raise_startup(last, ended)
+    _raise_startup(last, appeared)
 
 
-def _raise_startup(exc, ended: set) -> None:
-    """Classify a start-up failure, saying honestly whether a partially
-    launched PowerPoint had to be ended."""
+def _raise_startup(exc, appeared: set) -> None:
+    """Classify a start-up failure and report, without acting on it, any
+    PowerPoint process that appeared while it was failing."""
+    note = ""
+    if appeared:
+        pids = ", ".join(str(p) for p in sorted(appeared))
+        note = (
+            " A PowerPoint process appeared during the failed start: "
+            f"pid {pids}; it was left running."
+        )
     typed = _classify(exc)
     if typed is not None:
-        if ended:
-            typed = type(typed)(
-                str(typed)
-                + f" A PowerPoint process this call started ({len(ended)}) "
-                "did not answer and was ended."
-            )
+        if note:
+            typed = type(typed)(str(typed) + note)
         raise typed from exc
-    raise PptMcpError(f"PowerPoint could not be started: {exc}") from exc
+    raise PptMcpError(
+        f"PowerPoint could not be started on this thread: {exc}{note}"
+    ) from exc
 
 
 def _powerpoint_locked():
@@ -605,14 +643,29 @@ def _powerpoint_locked():
         )
     tid = threading.get_ident()
     before_pids = powerpnt_pids()
-    launched = not before_pids
-    pre_count = len(before_pids)
-    app, _ended = _start_powerpoint(win32client, pythoncom, before_pids)
-    if launched:
-        # Arm the kill-switch for exactly the process WE just started.
-        created = powerpnt_pids() - before_pids
+    # OWNERSHIP NEEDS POSITIVE EVIDENCE, and an unreadable process table is
+    # not evidence of anything. before_pids is None when tasklist failed;
+    # treating that as "nothing was running" is what made a session quit
+    # the instance it had only attached to (G2b).
+    started_one = before_pids is not None and not before_pids
+    pre_count = len(before_pids) if before_pids is not None else 0
+    app, _appeared = _start_powerpoint(win32client, pythoncom, before_pids)
+    if started_one:
+        # Arm the kill-switch for exactly the process WE just started, and
+        # only when the table can still name it. An unreadable table leaves
+        # the switch disarmed rather than pointed at a guess.
+        after = powerpnt_pids()
+        created = (after - before_pids) if after is not None else set()
         if created:
             _SELF_LAUNCHED_PIDS[tid] = created
+    # Two different permissions, and only the first was ever checked.
+    # Quitting is a request to an application object this call created,
+    # which `started_one` establishes: the table was READ, and it was
+    # empty. Killing is taskkill /F on a pid, which needs that pid. An
+    # unreadable table gives neither, so the session behaves as an attach:
+    # nothing is quit, nothing is killed, and the user's instance is left
+    # exactly as it was found (G2b).
+    launched = started_one
     session = _PowerPointSession(app, launched)
     completed = False
     try:
@@ -655,7 +708,14 @@ def _powerpoint_locked():
             zombie = True
             while time.monotonic() < deadline:
                 with contextlib.suppress(Exception):
-                    if powerpnt_count() <= pre_count:
+                    now = powerpnt_pids()
+                    if now is None:
+                        # The table went unreadable mid-poll. Unknown is not
+                        # evidence of a zombie, and polling it again cannot
+                        # become evidence either (G2b).
+                        zombie = False
+                        break
+                    if len(now) <= pre_count:
                         zombie = False
                         break
                 time.sleep(1.0)
@@ -1094,7 +1154,19 @@ def _full_load(pres) -> dict:
     re-raised as itself rather than blamed on the file.
     """
     state = _WalkState()
-    slide_count = int(pres.Slides.Count)
+    try:
+        slide_count = int(pres.Slides.Count)
+    except Exception as exc:
+        # The FIRST access is a COM access like every other one in this
+        # walk, and it used to sit outside the classification: a busy or
+        # disconnected PowerPoint faulting here reached the generic
+        # validate catch and came back as opens_clean false on a deck
+        # nobody had looked at yet (second review, G5, 2026-09-22). No
+        # slide has been reached, so the refusal carries no coordinates.
+        _reraise_environment(exc)
+        raise FullLoadFailed(
+            f"the slide collection could not be read: {exc}"
+        ) from exc
     shapes_total = 0
     for i in range(1, slide_count + 1):
         slide_id = None
@@ -1273,6 +1345,12 @@ def powerpoint_status() -> dict:
         out["error"] = f"process table check failed: {exc}"
         out["com_serialization"] = _serial.lock_snapshot()
         return out
+    if pids is None:
+        # Unknown, which is not the same answer as "not running" and must
+        # not be dressed up as one (G2b).
+        out["error"] = "process table check failed: tasklist did not answer"
+        out["com_serialization"] = _serial.lock_snapshot()
+        return out
     out["powerpoint_running"] = bool(pids)
 
     # Window layer first: it works even when COM is wedged, so it is what
@@ -1333,5 +1411,6 @@ powerpoint_status._com_serialized = "powerpoint_status"
 
 
 def zombie_check() -> dict:
-    """Count POWERPNT.EXE processes (leak detection diagnostic)."""
+    """Count POWERPNT.EXE processes (leak detection diagnostic); -1 when
+    the process table could not be read."""
     return {"powerpnt_processes": powerpnt_count()}

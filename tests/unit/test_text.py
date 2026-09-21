@@ -191,7 +191,10 @@ def test_set_placeholder_text_fresh_slide_roundtrip(tmp_path):
     paras = txbody_paragraphs(body_elem)
     ppr = paras[1].find(qn("a:pPr"))
     assert ppr is not None and ppr.get("lvl") == "1"
-    assert paras[0].find(qn("a:pPr")) is None  # level 0 writes no pPr
+    # A line with no leading tab STATES level 0 since round 3 (G4), the
+    # same way a `level` key of 0 in paragraphs=[...] always did, so it
+    # writes lvl="0" instead of leaving the level to whatever was there.
+    assert paras[0].find(qn("a:pPr")).get("lvl") == "0"
 
 
 def test_set_placeholder_text_paragraph_dicts(tmp_path):

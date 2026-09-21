@@ -44,6 +44,7 @@ from ..core.errors import (
 )
 from ..core.package import PptxPackage, qn
 from . import _regex
+from . import inherit as _inh
 from ._runmap import (
     BULLET_CHOICE_TAGS,
     FILL_CHOICE_TAGS,
@@ -463,16 +464,19 @@ def _apply_paragraph_props(
 
 def _parse_text_paragraphs(text: str) -> list[dict]:
     """'\\n' separates paragraphs; leading tabs set the outline level
-    (one tab per level, 0..8)."""
+    (one tab per level, 0..8). No tab is a statement too: it is level 0."""
     out = []
     for line in text.split("\n"):
         level = 0
         while line.startswith("\t") and level < 8:
             level += 1
             line = line[1:]
-        # A tab wrote the level; a line without one said nothing about it,
-        # so a replacement keeps whatever level the old paragraph had.
-        out.append({"text": line, "level": level, "level_explicit": level > 0})
+        # EVERY line of this shorthand states its level, and a line with no
+        # tab states level 0. Treating "no tab" as "said nothing" let a
+        # replacement keep the nesting of the paragraph it replaced, so
+        # "Top level\n\tSecond level\nTop again" came back from PowerPoint
+        # at levels 1, 2, 2 (second review, G4, 2026-09-22).
+        out.append({"text": line, "level": level, "level_explicit": True})
     return out
 
 
@@ -1343,18 +1347,57 @@ def _latin_typeface(
     return face
 
 
-def _para_margins(p: etree._Element) -> tuple[int, int]:
-    """(marL, indent) in EMU for one paragraph; indent is negative for a
-    hanging indent, which is how a bulleted list is written."""
+class _Unmeasurable(Exception):
+    """A run the measured path cannot resolve WITH CERTAINTY.
+
+    The measured path is allowed to be unavailable; it is not allowed to
+    guess. Anything it cannot establish raises this, the whole body falls
+    back to the estimate, and `reason` becomes the method_reason the caller
+    reads, naming the run that forced it (second review, G1, 2026-09-22).
+    """
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+def _para_level(p: etree._Element) -> int:
+    """The paragraph's outline level, 0..8."""
     ppr = p.find(qn("a:pPr"))
     if ppr is None:
-        return 0, 0
+        return 0
+    try:
+        return min(max(int(ppr.get("lvl") or 0), 0), 8)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _para_margins(p: etree._Element, chain=()) -> tuple[int, int]:
+    """(marL, indent) in EMU for one paragraph; indent is negative for a
+    hanging indent, which is how a bulleted list is written.
+
+    Resolved PER ATTRIBUTE: the paragraph's own a:pPr first, then the
+    a:lvlNpPr elements behind it (`chain`, from inherit.level_ppr_chain).
+    Reading only the paragraph meant a bulleted body whose marL lives in
+    the master measured as if it had the whole frame. Nothing in the chain
+    defining an attribute leaves the DrawingML default of zero, which is
+    what PowerPoint uses too."""
+    containers = []
+    own = p.find(qn("a:pPr"))
+    if own is not None:
+        containers.append(own)
+    containers.extend(chain)
+
     def _int(name: str) -> int:
-        raw = ppr.get(name)
-        try:
-            return int(raw) if raw is not None else 0
-        except (TypeError, ValueError):
-            return 0
+        for container in containers:
+            raw = container.get(name)
+            if raw is None:
+                continue
+            try:
+                return int(raw)
+            except (TypeError, ValueError):
+                return 0
+        return 0
     return _int("marL"), _int("indent")
 
 
@@ -1376,43 +1419,83 @@ def _body_typeface(
     return _theme_font(pkg, part, "+mn-lt")
 
 
-def _rpr_chain(r: etree._Element, p: etree._Element):
-    """The rPr sources for one run, nearest first: its own, then the
-    paragraph's defRPr."""
+def _rpr_chain(r: etree._Element, p: etree._Element, chain=()):
+    """The rPr sources for one run, nearest first: its own, the paragraph's
+    defRPr, then the defRPr of each a:lvlNpPr standing behind the paragraph
+    (`chain`, from inherit.level_ppr_chain)."""
     out = [r.find(qn("a:rPr"))]
     ppr = p.find(qn("a:pPr"))
     out.append(ppr.find(qn("a:defRPr")) if ppr is not None else None)
+    for lvl in chain:
+        out.append(lvl.find(qn("a:defRPr")))
     return [el for el in out if el is not None]
+
+
+def _certain_size_pt(
+    rpr, p: etree._Element, body: etree._Element, elem, level: int,
+    pkg=None, part: str | None = None,
+) -> float | None:
+    """The run's size in points, or None when it cannot be ESTABLISHED.
+
+    One resolver, not two: this is inherit.resolve_run_size_pt, the same
+    chain check_layout's "text too small" check acts on, which walks the
+    run's sz, the paragraph's defRPr, the shape's own lstStyle at this
+    level, the layout twin, the master twin, the master text style and the
+    presentation default. It reaches that last step only for a
+    placeholder, so a plain text box asks for the presentation default
+    separately rather than falling back to the body's first run."""
+    if elem is None and body is not None:
+        elem = body.getparent()
+    if elem is None:
+        return _inh._sz_pt(rpr.get("sz")) if rpr is not None else None
+    size, _src = _inh.resolve_run_size_pt(
+        pkg, part if pkg is not None else None, elem, p, rpr, level
+    )
+    if size is None:
+        size = _inh.presentation_default_size_pt(pkg, level)
+    return size
 
 
 def _resolve_run(
     r: etree._Element, p: etree._Element, body: etree._Element,
     inherited_face: str | None, default_pt: float, pkg=None,
-    part: str | None = None,
+    part: str | None = None, elem=None, level: int = 0, chain=(),
 ):
-    """(family, size_pt, bold, italic) for ONE run, each property resolved
-    from that run's own chain rather than from the first run in the body."""
-    chain = _rpr_chain(r, p)
-    size = None
-    for el in chain:
-        raw = el.get("sz")
+    """(family, size_pt, bold, italic, spc_pt) for ONE run, each property
+    resolved from that run's own chain rather than from the first run in
+    the body. Raises _Unmeasurable when the size cannot be established: a
+    28pt run inherited from a level-one list style used to be measured at
+    the body default, which is large enough to reverse a verdict."""
+    rpr = r.find(qn("a:rPr"))
+    rpr_chain = _rpr_chain(r, p, chain)
+
+    size = _certain_size_pt(rpr, p, body, elem, level, pkg, part)
+    if size is None:
+        raise _Unmeasurable(
+            "the run's font size is inherited and could not be resolved"
+        )
+
+    spc_pt = 0.0
+    for el in rpr_chain:
+        raw = el.get("spc")
         if raw:
             try:
-                size = int(raw) / 100.0
-                break
-            except ValueError:
-                continue
-    if size is None:
-        size = default_pt
+                spc_pt = int(raw) / 100.0
+            except (TypeError, ValueError):
+                raise _Unmeasurable(
+                    "the run's character spacing (a:rPr/@spc) could not be "
+                    "read"
+                ) from None
+            break
 
     def flag(name: str) -> bool:
-        for el in chain:
+        for el in rpr_chain:
             if el.get(name) is not None:
                 return el.get(name) == "1"
         return False
 
     face = None
-    for el in chain:
+    for el in rpr_chain:
         latin = el.find(qn("a:latin"))
         if latin is not None and latin.get("typeface"):
             face = latin.get("typeface")
@@ -1421,7 +1504,7 @@ def _resolve_run(
         face = inherited_face
     elif face.startswith("+"):
         face = _theme_font(pkg, part, face)
-    return face, size, flag("b"), flag("i")
+    return face, size, flag("b"), flag("i"), spc_pt
 
 
 #: Run-level elements that carry text. a:fld (a slide number or date) holds
@@ -1431,13 +1514,21 @@ _TEXT_RUN_TAGS = ("a:r", "a:fld")
 
 def _paragraph_runs(
     p: etree._Element, body: etree._Element, inherited_face: str | None,
-    default_pt: float, pkg=None, part: str | None = None,
+    default_pt: float, pkg=None, part: str | None = None, elem=None,
+    chain=None,
 ):
-    """The paragraph as a list of fontmetrics.StyledRun, or None when any
-    run's typeface does not resolve. a:br becomes a hard newline carried on
-    the preceding run's style."""
+    """The paragraph as a list of fontmetrics.StyledRun. a:br becomes a
+    hard newline carried on the preceding run's style.
+
+    Raises _Unmeasurable for a run whose typeface or size cannot be
+    established, naming that run rather than the first one in the body."""
     from . import fontmetrics as _fm
 
+    level = _para_level(p)
+    if chain is None:
+        chain = _inh.level_ppr_chain(
+            pkg, part, elem if elem is not None else body.getparent(), level
+        )
     runs: list = []
     for child in p:
         tag = etree.QName(child).localname
@@ -1455,12 +1546,17 @@ def _paragraph_runs(
         text = t.text or "" if t is not None else ""
         if not text:
             continue
-        family, size, bold, italic = _resolve_run(
-            child, p, body, inherited_face, default_pt, pkg, part
+        family, size, bold, italic, spc_pt = _resolve_run(
+            child, p, body, inherited_face, default_pt, pkg, part,
+            elem, level, chain,
         )
         if not family:
-            return None
-        runs.append(_fm.StyledRun(text, family, size, bold, italic))
+            raise _Unmeasurable(
+                "a run's typeface does not resolve through the theme"
+            )
+        runs.append(
+            _fm.StyledRun(text, family, size, bold, italic, spc_pt)
+        )
     return runs
 
 
@@ -1475,19 +1571,24 @@ def _measured_overflow(
     part: str | None = None,
     lnspc_reduction_pct: float = 0.0,
     font_scale_pct: float = 100.0,
+    elem=None,
 ) -> dict | None:
     """Lines and widest line measured PER RUN against each run's own font.
 
-    Every run is resolved separately (its own face, size, bold and italic),
-    the wrap runs across run boundaries, and a line's height comes from the
-    largest point size ON THAT LINE. Returns None when any run cannot be
-    measured, which is the caller's signal to fall back to the estimate and
-    say so: a body measured in one run's format must never be labelled
-    font-metrics (review finding M1, 2026-09-22)."""
+    Every run is resolved separately (its own face, size, bold, italic and
+    character spacing), the wrap runs across run boundaries, and a line's
+    height comes from the largest point size ON THAT LINE. Returns None
+    when the metrics extra is not installed, and raises _Unmeasurable when
+    a run cannot be resolved with certainty; either way the caller falls
+    back to the estimate and says why. A body measured in one run's format,
+    or at a size nobody could establish, must never be labelled
+    font-metrics (review finding M1; second review G1, 2026-09-22)."""
     from . import fontmetrics as _fm
 
     if not _fm.available():
         return None
+    if elem is None:
+        elem = body.getparent()
     inherited = _body_typeface(body, pkg, part)
     wrap = (bodypr.get("wrap") if bodypr is not None else None) or "square"
     scale = font_scale_pct / 100.0
@@ -1497,24 +1598,38 @@ def _measured_overflow(
     lines = 0
     widest_pt = 0.0
     faces: dict[str, str] = {}
+    runs_measured = 0
     for p in body.findall(qn("a:p")):
+        level = _para_level(p)
+        chain = _inh.level_ppr_chain(pkg, part, elem, level)
         runs = _paragraph_runs(p, body, inherited, pt / scale if scale else pt,
-                               pkg, part)
-        if runs is None:
-            return None
+                               pkg, part, elem, chain)
         runs = [r._replace(size_pt=r.size_pt * scale) for r in runs]
+        runs_measured += len(runs)
         for run in runs:
+            # Readability first: metrics_readable is False only when a file
+            # WAS found and would not parse, which is a different errand for
+            # the reader than a font that is not installed (finding N3).
+            if _fm.metrics_readable(
+                run.family, bold=run.bold, italic=run.italic
+            ) is False:
+                raise _Unmeasurable(
+                    f"a font file for {run.family} was found but its metrics "
+                    "could not be read"
+                )
             name = _fm.font_file_name(
                 run.family, bold=run.bold, italic=run.italic
             )
             if name is None:
-                return None
+                raise _Unmeasurable(
+                    f"no font file for {run.family} was found on this machine"
+                )
             faces[run.family] = name
         if not runs:
             lines += 1
             total_h += pt * height_mult
             continue
-        mar_l, indent = _para_margins(p)
+        mar_l, indent = _para_margins(p, chain)
         first_w = (inner_w - mar_l - indent) / EMU_PER_POINT
         rest_w = (inner_w - mar_l) / EMU_PER_POINT
         if wrap == "none":
@@ -1524,7 +1639,9 @@ def _measured_overflow(
         else:
             laid = _fm.wrap_styled(runs, first_w, rest_w)
         if laid is None:
-            return None
+            raise _Unmeasurable(
+                "a paragraph could not be laid out against its fonts"
+            )
         for line in laid:
             lines += 1
             total_h += line.max_size_pt * height_mult
@@ -1553,10 +1670,7 @@ def _measured_overflow(
         "typeface": (
             sorted(faces)[0] if len(faces) == 1 else ", ".join(sorted(faces))
         ),
-        "runs_measured": sum(
-            len(_paragraph_runs(p, body, inherited, pt, pkg, part) or [])
-            for p in body.findall(qn("a:p"))
-        ),
+        "runs_measured": runs_measured,
         "likely_overflow": overflow,
         "fill_ratio": round(ratio, 2),
         "height_ratio": round(height_ratio, 2),
@@ -1564,10 +1678,10 @@ def _measured_overflow(
         "estimated_lines": lines,
         "wrap": wrap,
         "note": (
-            "every run measured against its own installed font, plus a "
-            f"{_fm.WIDTH_SAFETY_PAD_PT:g}pt per-line allowance measured "
-            "against PowerPoint's own layout so the model errs wide rather "
-            "than narrow; no kerning and no justification, so PowerPoint's "
+            "every run measured against its own installed font; a "
+            f"{_fm.WIDTH_SAFETY_PAD_PT:g} pt allowance, calibrated on "
+            "tested PowerPoint layouts, is added to each line, so a line "
+            "that only just fits may be reported as wrapping; PowerPoint's "
             "rendering is still the final authority"
         ),
     }
@@ -1639,12 +1753,17 @@ def _overflow_heuristic(
     line_h = 1.2 * pt * EMU_PER_POINT * (1.0 - lnspc_reduction_pct / 100.0)
 
     measured = None
+    unmeasurable = None
     try:
         measured = _measured_overflow(
             body, bodypr, inner_w, inner_h, pt, line_h, pkg, part,
             lnspc_reduction_pct=lnspc_reduction_pct,
             font_scale_pct=font_scale_pct,
+            elem=elem,
         )
+    except _Unmeasurable as exc:
+        # The measurement refused to guess, and it knows which run and why.
+        unmeasurable = exc.reason
     except Exception:
         measured = None  # measurement never becomes the thing that raises
     if measured is not None:
@@ -1660,7 +1779,7 @@ def _overflow_heuristic(
     return {
         "heuristic": True,
         "method": "estimate",
-        "method_reason": _estimate_reason(body, pkg, part),
+        "method_reason": unmeasurable or _estimate_reason(body, pkg, part),
         "likely_overflow": ratio > 1.0,
         "fill_ratio": round(ratio, 2),
         "estimated_lines": lines,
