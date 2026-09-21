@@ -88,6 +88,54 @@ SLIDE_ID_MAX = 2147483647
 #: cannot open such a deck, so payload_valid must never bless one.
 MAX_DRAWING_EMU = 2147483647
 
+#: The SmartArt cached-drawing namespace, whose dsp:txBody has the same
+#: content model as p:txBody and a:txBody (kept here so the payload check
+#: does not import ops/).
+_DSP_NS = "http://schemas.microsoft.com/office/drawing/2008/diagram"
+
+#: Every text-body element that must carry at least one a:p: p:txBody on
+#: slides, layouts, masters and notes; a:txBody in table cells; dsp:txBody
+#: in a diagram's cached drawing.
+_TXBODY_TAGS = (
+    f"{{{NSMAP['p']}}}txBody",
+    f"{{{NSMAP['a']}}}txBody",
+    f"{{{_DSP_NS}}}txBody",
+)
+
+#: Where to look for the name and id of the shape a text body belongs to,
+#: relative to the body's PARENT (p:sp, dsp:sp) or its grandparent.
+_CNVPR_PATHS = (
+    # p:sp/p:nvSpPr/p:cNvPr on a slide, layout, master or notes slide.
+    (f"{{{NSMAP['p']}}}nvSpPr", f"{{{NSMAP['p']}}}cNvPr"),
+    # dsp:sp/dsp:nvSpPr/a:cNvPr in a cached SmartArt drawing.
+    (f"{{{_DSP_NS}}}nvSpPr", f"{{{NSMAP['a']}}}cNvPr"),
+)
+
+
+def _txbody_owner(body: etree._Element) -> str:
+    """The shape a text body hangs off, named as well as the XML allows:
+    'shape 7 "Agenda Body"' for a p:sp, 'a table cell' for a:txBody, and
+    the bare parent tag when there is no cNvPr to read."""
+    parent = body.getparent()
+    if parent is None:
+        return "an unattached element"
+    local = etree.QName(parent).localname
+    if local == "tc":
+        return "a table cell"
+    for nv_tag, cnvpr_tag in _CNVPR_PATHS:
+        nv = parent.find(nv_tag)
+        if nv is None:
+            continue
+        cnvpr = nv.find(cnvpr_tag)
+        if cnvpr is None:
+            continue
+        name = cnvpr.get("name")
+        shape_id = cnvpr.get("id")
+        named = f' "{name}"' if name else ""
+        return f"shape {shape_id}{named}" if shape_id else f"a shape{named}"
+    return f"a {local} element"
+
+
 #: Schema-fixed order of p:presentation children. Inserting sldIdLst after
 #: sldSz corrupts the file, so new children go in by rank, never appended.
 _PRESENTATION_ORDER = (
@@ -630,6 +678,27 @@ class PptxPackage:
                                     f"{MAX_DRAWING_EMU} EMU limit; the deck "
                                     "would not open cleanly"
                                 )
+
+                # Every text body needs at least one a:p. A p:txBody with
+                # none is schema-clean and relationship-clean, so it sailed
+                # through every check here, and PowerPoint then refused the
+                # whole deck naming nothing: about 40 minutes of manual
+                # bisection on a 45-slide build (field report 2026-09-21,
+                # P6). The content model says a body HAS paragraphs, so a
+                # payload carrying an empty one is invalid.
+                for name, root in roots.items():
+                    if not name.startswith("ppt/") or name.endswith(".rels"):
+                        continue
+                    for body in root.iter(*_TXBODY_TAGS):
+                        if body.find(qn("a:p")) is not None:
+                            continue
+                        raise ValidationFailed(
+                            f"empty text body in {name}: "
+                            f"{etree.QName(body).localname} on "
+                            f"{_txbody_owner(body)} has no a:p paragraph; "
+                            "PowerPoint refuses to open a deck with one. "
+                            "Leave one empty paragraph instead."
+                        )
 
                 # Every internal relationship target must exist in the package.
                 rel_tag = f"{{{NSMAP['rel']}}}Relationship"

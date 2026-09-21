@@ -356,6 +356,12 @@ def _rebuild_body(
         if not spec["runs"]:
             endpr = etree.SubElement(p, qn("a:endParaRPr"))
             endpr.set("lang", "en-US")
+    if not specs:
+        # A text body with zero a:p makes PowerPoint refuse the whole deck
+        # (field report 2026-09-21, P6). An empty note is ONE empty
+        # paragraph, the way ops/masters.py builds a cleared body.
+        p = etree.SubElement(body, qn("a:p"))
+        etree.SubElement(p, qn("a:endParaRPr")).set("lang", "en-US")
 
 
 def _rel_target(src: str, dest: str) -> str:

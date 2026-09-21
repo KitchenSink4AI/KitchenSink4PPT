@@ -495,15 +495,19 @@ def create_table(
     first_row: bool = True,
     band_rows: bool = True,
     name: str | None = None,
+    row_heights=None,
+    col_widths=None,
 ) -> dict:
     """Create a native table graphicFrame at x, y sized w x h (inches).
 
-    Columns split w evenly; rows split h evenly (set_column_widths /
-    set_row_heights adjust afterwards). data: optional 2D list of cell texts
-    (row-major; shorter rows leave trailing cells empty). style: a named
-    built-in style or GUID (default Medium Style 2 - Accent 1, the
-    PowerPoint default); first_row/band_rows set the header and banding
-    flags PowerPoint turns on for new tables.
+    Columns split w evenly and rows split h evenly unless row_heights or
+    col_widths say otherwise: a full list of inches (one per row or
+    column) or an {index: inches} dict for selected ones, applied at
+    creation. Neither total may exceed h or w. Row heights are MINIMUMS;
+    PowerPoint grows a row to fit its text. data: optional 2D list of cell
+    texts (row-major; shorter rows leave trailing cells empty). style: a
+    named built-in style or GUID (default Medium Style 2 - Accent 1);
+    first_row/band_rows set the header and banding flags.
     """
     rec = resolve_slide(pkg, slide)
     part = rec["part"]
@@ -565,11 +569,11 @@ def create_table(
     styleid = etree.SubElement(tblpr, qn("a:tableStyleId"))
     styleid.text = guid
     grid = etree.SubElement(tbl, qn("a:tblGrid"))
-    col_w = _split_emu(g.in_to_emu(w), cols)
+    col_w = _sizes_at_creation(col_widths, cols, g.in_to_emu(w), "col_widths")
     for cw in col_w:
         gc = etree.SubElement(grid, qn("a:gridCol"))
         gc.set("w", str(cw))
-    row_h = _split_emu(g.in_to_emu(h), rows)
+    row_h = _sizes_at_creation(row_heights, rows, g.in_to_emu(h), "row_heights")
     for r in range(rows):
         tr = etree.SubElement(tbl, qn("a:tr"))
         tr.set("h", str(row_h[r]))
@@ -601,6 +605,49 @@ def _split_emu(total: int, n: int) -> list[int]:
     out = [base] * n
     out[-1] += total - base * n
     return out
+
+
+def _sizes_at_creation(sizes, n: int, total_emu: int, label: str) -> list[int]:
+    """The per-row or per-column EMU sizes for a brand-new table.
+
+    None keeps the even split. Otherwise the caller's inches are resolved
+    through the same _resolve_sizes that set_row_heights and
+    set_column_widths use (full list or {index: inches}), and whatever the
+    caller did not name keeps its even share. A 27-row reference table at
+    10 pt needed this at creation; the only route was a second call after
+    the fact (field report 2026-09-21, P8).
+    """
+    if sizes is None:
+        return _split_emu(total_emu, n)
+    kind = "row" if label == "row_heights" else "column"
+    try:
+        resolved = _resolve_sizes(sizes, n, kind)
+    except PptMcpError as exc:
+        raise PptMcpError(f"{label}: {exc}") from exc
+    named = [g.in_to_emu(v) if v is not None else None for v in resolved]
+    stated = sum(v for v in named if v is not None)
+    unnamed = [i for i, v in enumerate(named) if v is None]
+    axis = "h" if label == "row_heights" else "w"
+    box = g.emu_to_in(total_emu)
+    if stated > total_emu or (unnamed and stated >= total_emu):
+        raise PptMcpError(
+            f"{label} states {g.emu_to_in(stated):.3g} inches of a table "
+            f"box {axis}={box:.3g} inches"
+            + (
+                f", leaving nothing for the {len(unnamed)} unstated "
+                f"{kind}s" if unnamed else ""
+            )
+            + "; shrink the sizes or grow the box"
+        )
+    out = list(named)
+    if unnamed:
+        # Whatever the caller did not name splits what is left of the box,
+        # so an {index: inches} dict keeps the table inside the box it asked
+        # for instead of pushing past it.
+        share = _split_emu(total_emu - stated, len(unnamed))
+        for slot, value in zip(unnamed, share):
+            out[slot] = value
+    return [int(v) for v in out]
 
 
 # ---------------------------------------------------------------- cell edits

@@ -29,6 +29,7 @@ recomputes; edits overlapping a field refuse rather than rewrite the cache.
 
 from __future__ import annotations
 
+import copy as _copy
 import math
 import re as _stdlib_re
 
@@ -351,6 +352,10 @@ def _require_txbody(
         body = etree.SubElement(elem, qn("p:txBody"))  # txBody is last in p:sp
         etree.SubElement(body, qn("a:bodyPr"))
         etree.SubElement(body, qn("a:lstStyle"))
+        # A p:txBody with zero a:p violates the content model and makes
+        # PowerPoint refuse the whole deck, naming nothing (field report
+        # 2026-09-21, P6). Same shape ops/masters.py builds.
+        etree.SubElement(body, qn("a:p"))
     return body
 
 
@@ -465,7 +470,9 @@ def _parse_text_paragraphs(text: str) -> list[dict]:
         while line.startswith("\t") and level < 8:
             level += 1
             line = line[1:]
-        out.append({"text": line, "level": level})
+        # A tab wrote the level; a line without one said nothing about it,
+        # so a replacement keeps whatever level the old paragraph had.
+        out.append({"text": line, "level": level, "level_explicit": level > 0})
     return out
 
 
@@ -482,13 +489,19 @@ def _normalize_paragraphs(paragraphs) -> list[dict]:
             raise PptMcpError(
                 f"paragraphs[{i}] level must be an int 0..8, got {level!r}"
             )
-        out.append({"text": str(item["text"]), "level": level})
+        out.append({
+            "text": str(item["text"]),
+            "level": level,
+            # A stated level, including a stated 0, is an instruction and
+            # outranks the level carried from the paragraph it replaces.
+            "level_explicit": "level" in item,
+        })
     return out
 
 
 def _build_paragraph(spec: dict, run_props: dict | None = None) -> etree._Element:
     p = etree.Element(qn("a:p"))
-    if spec["level"]:
+    if spec["level"] or spec.get("level_explicit"):
         ppr = etree.SubElement(p, qn("a:pPr"))
         ppr.set("lvl", str(spec["level"]))
     if spec["text"]:
@@ -500,14 +513,80 @@ def _build_paragraph(spec: dict, run_props: dict | None = None) -> etree._Elemen
     return p
 
 
+def _landing_spots(body: etree._Element) -> None:
+    """Give every freshly built paragraph the empty a:pPr / a:rPr /
+    a:endParaRPr that the carry needs to write the old properties INTO.
+
+    _carry_text_properties only fills elements that already exist (it was
+    written against geometry.txbody, which always emits them). A bare
+    paragraph built here has none, so without this the carry silently did
+    nothing and paragraph formatting kept dying. Anything the carry leaves
+    empty is removed again by _strip_empty_props.
+    """
+    for p in body.findall(qn("a:p")):
+        if p.find(qn("a:pPr")) is None:
+            p.insert(0, etree.Element(qn("a:pPr")))
+        runs = p.findall(qn("a:r"))
+        for r in runs:
+            ensure_rPr(r)
+        if not runs and p.find(qn("a:endParaRPr")) is None:
+            # An empty line still has a height, and that lives on
+            # endParaRPr. endParaRPr is last in a:p.
+            p.append(etree.Element(qn("a:endParaRPr")))
+
+
+def _strip_empty_props(body: etree._Element) -> None:
+    """Drop the landing spots nothing was carried into, so a body that had
+    no formatting to keep comes out exactly as it used to."""
+    for p in body.findall(qn("a:p")):
+        for tag in ("a:pPr", "a:endParaRPr"):
+            el = p.find(qn(tag))
+            if el is not None and not len(el) and not el.attrib:
+                p.remove(el)
+        for r in p.findall(qn("a:r")):
+            rpr = r.find(qn("a:rPr"))
+            if rpr is not None and not len(rpr) and not rpr.attrib:
+                r.remove(rpr)
+
+
 def _replace_body_paragraphs(
-    body: etree._Element, specs: list[dict], run_props: dict | None = None
-) -> int:
+    body: etree._Element,
+    specs: list[dict],
+    run_props: dict | None = None,
+    *,
+    preserve: bool = True,
+) -> tuple[int, list[str], dict]:
+    """Replace the body's paragraphs with `specs`, carrying the formatting
+    of the paragraphs being replaced onto the new ones.
+
+    Returns (paragraph count, preserved categories, facts). The rebuild
+    used to emit bare a:p / a:r, which threw away marL, indent, spcAft,
+    the bullet definition, defRPr and every run's size, colour and
+    typeface: a body whose formatting lived at paragraph level came back
+    unstyled (field report 2026-09-21, P5). The carry is the one in
+    ops/shapes.py, so both text-writing routes preserve the same things
+    and report them the same way.
+    """
+    from .shapes import _carry_text_properties
+
+    old = _copy.deepcopy(body) if preserve else None
     for p in body.findall(qn("a:p")):
         body.remove(p)
     for spec in specs:
         body.append(_build_paragraph(spec, run_props))
-    return len(specs)
+    if not specs:
+        # A text body with zero a:p is exactly what PowerPoint refuses to
+        # open; an empty replacement leaves one empty paragraph instead.
+        body.append(etree.Element(qn("a:p")))
+    preserved: list[str] = []
+    facts: dict = {}
+    if old is not None and old.findall(qn("a:p")):
+        _landing_spots(body)
+        preserved, facts = _carry_text_properties(
+            old, body, set(run_props or {})
+        )
+        _strip_empty_props(body)
+    return len(specs), preserved, facts
 
 
 # ========================================================== public API
@@ -528,8 +607,11 @@ def set_placeholder_text(
     idx (int; a p:ph without idx counts as 0). Content: `text` with '\\n'
     paragraph breaks and leading tabs for bullet levels, or
     `paragraphs=[{"text": ..., "level": 0..8}, ...]`. Existing paragraphs
-    are fully replaced; bodyPr and lstStyle are untouched. Several
-    matching placeholders refuse, listing candidates for idx addressing."""
+    are fully replaced, but their formatting is carried onto the new text
+    (indents, spacing, bullet definition, run size, colour and typeface)
+    and reported as `preserved`; bodyPr and lstStyle are untouched. A
+    stated level wins over the carried one. Several matching placeholders
+    refuse, listing candidates for idx addressing."""
     if (text is None) == (paragraphs is None):
         raise PptMcpError(
             "pass exactly one of text (str) or paragraphs (list of dicts)"
@@ -586,9 +668,9 @@ def set_placeholder_text(
         else _normalize_paragraphs(paragraphs)
     )
     body = _require_txbody(elem, "placeholder", rec, create=True)
-    count = _replace_body_paragraphs(body, specs)
+    count, preserved, facts = _replace_body_paragraphs(body, specs)
     pkg.mark_dirty(rec["part"])
-    return {
+    out = {
         "slide_index": rec["index"],
         "slide_id": rec["slide_id"],
         "shape_id": _shape_id(elem),
@@ -597,6 +679,10 @@ def set_placeholder_text(
         "paragraphs": count,
         "characters": sum(len(s["text"]) for s in specs),
     }
+    if preserved:
+        out["preserved"] = preserved
+    out.update(facts)
+    return out
 
 
 def insert_textbox(

@@ -112,7 +112,9 @@ mcp = FastMCP(
         "every mutation; dual-mode tools with live='auto' edit decks open in "
         "the user's PowerPoint. Starts in lite mode; enable_tools switches "
         "on the graphics, tables-charts, design, assembly-export, "
-        "review-sweeps, and com packs mid-session. get_workflows has "
+        "review-sweeps, and com packs mid-session. "
+        + _packs.WORKER_PACK_SENTENCE
+        + " get_workflows has "
         "recipes; get_presentation_view + "
         "apply_edits is the cheap batch-editing loop."
     ),
@@ -259,6 +261,21 @@ def _declared_code(exc: BaseException) -> str | None:
     return code if isinstance(code, str) and code in CLOSED_CODES else None
 
 
+def _declared_hint(exc: BaseException) -> str | None:
+    """A remedy the raise site states for itself, which beats the blanket
+    per-code entry in _HINTS.
+
+    The per-code hint is a decent guess about a whole class of refusal and
+    a bad one about a specific failure inside it: copy_presentation to a
+    folder that does not exist refused NOT_FOUND and told the caller to
+    re-run get_presentation_view, which is neither the problem nor the fix
+    (field report 2026-09-21, P3). A raise site that knows better says so
+    through exc.hint, the same way it declares exc.hint_tools.
+    """
+    hint = getattr(exc, "hint", None)
+    return hint if isinstance(hint, str) and hint.strip() else None
+
+
 def _refusal(exc: BaseException) -> dict:
     code = _declared_code(exc) or _classify(exc)
     message = str(exc)
@@ -270,7 +287,7 @@ def _refusal(exc: BaseException) -> dict:
             "probably has the wrong shape (list where a dict belongs, or "
             "vice versa)"
         )
-    hint = _HINTS.get(code, "")
+    hint = _declared_hint(exc) or _HINTS.get(code, "")
     ph = _pack_hint(exc)
     if ph:
         hint = f"{hint} {ph}".strip()
@@ -952,6 +969,21 @@ def copy_presentation(
     if not Path(file_path).is_file():
         raise _err.DocumentNotFound(f"no presentation at {file_path}")
     dest = Path(dest_path)
+    parent = dest.parent
+    if not parent.is_dir():
+        # The folder is NOT created here. A typo in a path should refuse,
+        # not build a tree the caller then has to find and delete. The old
+        # refusal was the raw "[WinError 3] The system cannot find the path
+        # specified" plus a hint about re-reading the deck, and neither
+        # named the real problem (field report 2026-09-21, P3).
+        exc = _err.DocumentNotFound(
+            f"destination folder does not exist: {parent}"
+        )
+        exc.hint = (
+            "create the folder first, or pass a dest_path inside a folder "
+            "that exists; copy_presentation never creates directories"
+        )
+        raise exc
     overwrote = False
     if dest.exists():
         if not overwrite:
@@ -2039,20 +2071,24 @@ def create_table(
     style: str | None = None,
     first_row: bool = True,
     band_rows: bool = True,
+    row_heights: Any = None,
+    col_widths: Any = None,
     backup: bool = True,
 ) -> dict:
     """Insert a native table at an inch box, optionally pre-filled row by
     row from data (short rows pad, long rows refuse). style: a built-in
     table style by name or GUID (apply_table_style lists the families);
-    first_row/band_rows set the header and banding flags PowerPoint styles
-    key off. Returns the table's shape id, the handle every other table
-    tool takes. import_table builds one from CSV/JSON instead. Saves
+    first_row/band_rows set the header and banding flags. row_heights
+    and col_widths size the grid at creation: a list of inches or an
+    {index: inches} dict, the rest splitting what is left.
+    Returns the shape id, the handle other table tools take. Saves
     atomically with two-slot backup; backup=False skips rotation."""
     return _edit(
         file_path,
         lambda pkg: _tb.create_table(
             pkg, slide, rows, cols, x, y, w, h, data, style=style,
             first_row=first_row, band_rows=band_rows,
+            row_heights=row_heights, col_widths=col_widths,
         ),
         backup=backup,
     )
@@ -3172,11 +3208,14 @@ def get_export_engines() -> dict:
 def validate(file_path: str) -> dict:
     """The two-layer soundness check. Layer 1 (always): the package
     payload is re-validated (zip integrity, required parts, relationship
-    targets). Layer 2 (when PowerPoint COM exists): a REAL open in an
-    invisible PowerPoint with a forced full content load; a repair prompt
-    or load failure means not clean, and that verdict is authoritative.
-    Read-only, never mutates the file. Run after big generated changes
-    and before handing a deck to a human."""
+    targets, and every text body carrying at least one paragraph). Layer 2
+    (when PowerPoint COM exists): a REAL open in an invisible PowerPoint
+    with a forced full content load; a repair prompt or load failure means
+    not clean, and that verdict is authoritative. A layer 2 failure names
+    where it happened: failed_slide_index, failed_slide_id,
+    failed_shape_index, failed_shape_name. Read-only, never mutates the
+    file. Run after big generated changes and before handing a deck to a
+    human."""
     from pathlib import Path
 
     fp = check_path(file_path, "validate presentation")

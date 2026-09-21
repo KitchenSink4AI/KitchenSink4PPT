@@ -1004,6 +1004,11 @@ def _fill_agenda_body(
         body.remove(p)
     for entry in entries:
         body.append(_build_paragraph({"text": entry["label"], "level": 0}))
+    if not entries:
+        # A text body with zero a:p makes PowerPoint refuse the whole deck
+        # (field report 2026-09-21, P6). Both callers refuse an empty entry
+        # list, so this is the floor under them, not a behaviour change.
+        etree.SubElement(body, qn("a:p"))
     cnvpr = body_elem.find(f"{qn('p:nvSpPr')}/{qn('p:cNvPr')}")
     shape_id = int(cnvpr.get("id")) if cnvpr is not None else None
     rec = resolve_slide(pkg, slide_sel)

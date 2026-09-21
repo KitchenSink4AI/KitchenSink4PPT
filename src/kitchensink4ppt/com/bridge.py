@@ -874,6 +874,8 @@ def com_validate_opens_clean(path: str) -> dict:
                 # _full_load in its own frame so slide/shape proxies are
                 # released on return (outstanding proxies block app exit).
                 slide_count, shapes_total = _full_load(pres)
+            except FullLoadFailed as exc:
+                return _opens_clean_failure(exc)
             except Exception as exc:  # full-load failure = not clean
                 return {"opens_clean": False, "error": str(exc)}
         finally:
@@ -881,22 +883,102 @@ def com_validate_opens_clean(path: str) -> dict:
     return {"opens_clean": True, "slides": slide_count, "shapes": shapes_total}
 
 
+class FullLoadFailed(Exception):
+    """A full content load that failed on a KNOWN slide, and where the XML
+    allowed it, a known shape.
+
+    Before this, a refusal came back as one string with no coordinates, and
+    finding the bad shape in a 45-slide deck was about 40 minutes of manual
+    bisection (field report 2026-09-21, P6).
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        slide_index: int | None = None,
+        slide_id: int | None = None,
+        shape_index: int | None = None,
+        shape_name: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.slide_index = slide_index
+        self.slide_id = slide_id
+        self.shape_index = shape_index
+        self.shape_name = shape_name
+
+
+def _opens_clean_failure(exc: FullLoadFailed) -> dict:
+    """The not-clean verdict, carrying whatever identity the load knew.
+    The validate tool returns this dict as its `powerpoint` block."""
+    out: dict = {"opens_clean": False, "error": str(exc)}
+    for key, value in (
+        ("failed_slide_index", exc.slide_index),
+        ("failed_slide_id", exc.slide_id),
+        ("failed_shape_index", exc.shape_index),
+        ("failed_shape_name", exc.shape_name),
+    ):
+        if value is not None:
+            out[key] = value
+    return out
+
+
+def _slide_id_of(slide) -> int | None:
+    """A slide's SlideID, or None when even that cannot be read (which is
+    itself a symptom, and must not mask the real failure)."""
+    try:
+        return int(slide.SlideID)
+    except Exception:
+        return None
+
+
 def _full_load(pres) -> tuple[int, int]:
     """Force a full content load: Slides.Count, per-slide Shapes.Count, one
-    text read. Corruption surfaces on access, not on open."""
+    text read. Corruption surfaces on access, not on open.
+
+    Every slide and every shape is touched inside its own try/except, so a
+    refusal names WHERE it happened (1-based slide index, SlideID, 1-based
+    shape index, shape name) instead of handing back one anonymous string.
+    Naming the shape costs two extra property reads per shape; on the deck
+    that motivated this it is a second or so against the 40 minutes of
+    bisection it replaces.
+    """
     slide_count = int(pres.Slides.Count)
     shapes_total = 0
     text_read = False
     for i in range(1, slide_count + 1):
-        slide = pres.Slides.Item(i)
-        shapes_total += int(slide.Shapes.Count)
-        if not text_read:
-            for j in range(1, int(slide.Shapes.Count) + 1):
+        slide_id = None
+        try:
+            slide = pres.Slides.Item(i)
+            slide_id = _slide_id_of(slide)
+            shape_count = int(slide.Shapes.Count)
+        except Exception as exc:
+            raise FullLoadFailed(
+                f"slide {i} (id {slide_id}) failed to load: {exc}",
+                slide_index=i, slide_id=slide_id,
+            ) from exc
+        shapes_total += shape_count
+        for j in range(1, shape_count + 1):
+            shape_name = None
+            try:
                 shp = slide.Shapes.Item(j)
-                if shp.HasTextFrame and shp.TextFrame.HasText:
+                try:
+                    shape_name = str(shp.Name)
+                except Exception:
+                    shape_name = None
+                if not text_read and shp.HasTextFrame and (
+                    shp.TextFrame.HasText
+                ):
                     _ = shp.TextFrame.TextRange.Text
                     text_read = True
-                    break
+            except Exception as exc:
+                named = f" {shape_name!r}" if shape_name else ""
+                raise FullLoadFailed(
+                    f"slide {i} (id {slide_id}) shape {j}{named} failed to "
+                    f"load: {exc}",
+                    slide_index=i, slide_id=slide_id,
+                    shape_index=j, shape_name=shape_name,
+                ) from exc
     return slide_count, shapes_total
 
 

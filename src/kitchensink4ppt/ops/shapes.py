@@ -265,10 +265,15 @@ def _carry_text_properties(
         new_ppr = para.find(qn("a:pPr"))
         if new_ppr is not None:
             kept_align = new_ppr.get("algn")
+            # An outline level stated by the caller outranks the one on the
+            # paragraph being replaced, the same way a named alignment does.
+            # Nothing in the single-style replace path sets lvl, so this is
+            # inert there; the placeholder path uses it.
+            kept_lvl = new_ppr.get("lvl")
             if old_ppr is None:
                 # The original inherited everything. Preserve that rather
                 # than pinning the default alignment onto it.
-                if "align" not in named:
+                if "align" not in named and kept_lvl is None:
                     para.remove(new_ppr)
             else:
                 replacement = _copy.deepcopy(old_ppr)
@@ -285,6 +290,9 @@ def _carry_text_properties(
                     carried.add("bullets")
                 if replacement.get("lvl"):
                     carried.add("level")
+                if kept_lvl is not None:
+                    replacement.set("lvl", kept_lvl)
+                    carried.discard("level")
                 para.replace(new_ppr, replacement)
 
         src_rpr = source.find(f"{qn('a:r')}/{qn('a:rPr')}")
