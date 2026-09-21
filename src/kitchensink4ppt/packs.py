@@ -392,8 +392,19 @@ def _validate(packs: list[str]) -> list[str]:
 #: or subagent never gets: its tool list was fixed when it started, so it
 #: retried the same dead call instead of asking for the one thing that
 #: works everywhere, a start-up pack list (punch-list #887).
-LIST_CHANGED_NOTE = (
-    "tools/list_changed was sent. If the new tools are not in your tool "
+#:
+#: The note is a PREFIX plus the body. The prefix has to tell the truth
+#: about the notification: _sync only fires the visibility hook when a
+#: tool actually flipped, so saying "tools/list_changed was sent" after a
+#: no-op re-enable was a plain falsehood (review finding N1).
+LIST_CHANGED_PREFIX = "tools/list_changed was sent."
+
+NO_CHANGE_PREFIX = (
+    "These packs were already on, so no list change was sent."
+)
+
+PACK_NOTE_BODY = (
+    "If the new tools are not in your tool "
     "list, this client fixed its list when the session or worker started: "
     "do not retry here. What works in every client: ask the user to add "
     f"the packs to {ENV_MODE} (comma list) in this server's launch "
@@ -403,6 +414,13 @@ LIST_CHANGED_NOTE = (
     "enable_tools refuses a pack, an administrator locked the tool set: "
     "do not retry."
 )
+
+
+def pack_note(list_changed: bool) -> str:
+    """The enable_tools note, whose first sentence states what actually
+    happened to the tool list."""
+    prefix = LIST_CHANGED_PREFIX if list_changed else NO_CHANGE_PREFIX
+    return f"{prefix} {PACK_NOTE_BODY}"
 
 #: The same fact, said once where a client reads the surface: the server
 #: instructions and the get_workflows index.
@@ -449,8 +467,9 @@ def enable(packs: list[str]) -> dict:
         # On EVERY successful call, including a no-op re-enable: a caller
         # that cannot see the tools is exactly the caller whose second
         # attempt enables nothing new, and that was the attempt the old
-        # note stayed silent on.
-        "note": LIST_CHANGED_NOTE,
+        # note stayed silent on. `flipped` is what _sync acted on, so it
+        # is also what decides whether a notification really went out.
+        "note": pack_note(bool(flipped)),
         **surface_report(),
     }
 

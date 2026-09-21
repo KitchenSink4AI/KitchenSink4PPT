@@ -634,6 +634,9 @@ def test_create_table_refuses_a_wrong_length_list(tmp_path):
 
 
 def test_create_table_refuses_sizes_that_overflow_the_box(tmp_path):
+    """The refusal case is a PARTIAL dict that leaves the unstated columns
+    nothing. A COMPLETE list is the caller stating the whole grid, so it
+    resizes the frame instead of refusing (review finding M5)."""
     from kitchensink4ppt.core.errors import PptMcpError
     from kitchensink4ppt.ops import tables as tb
 
@@ -643,11 +646,9 @@ def test_create_table_refuses_sizes_that_overflow_the_box(tmp_path):
     prs.save(str(path))
     pkg = PptxPackage(str(path))
     with pytest.raises(PptMcpError) as excinfo:
-        tb.create_table(
-            pkg, 0, 2, 2, 1, 1, 6, 3, col_widths=[5.0, 5.0]
-        )
+        tb.create_table(pkg, 0, 2, 3, 1, 1, 6, 3, col_widths={0: 7.0})
     message = str(excinfo.value)
-    assert "col_widths" in message and "6" in message
+    assert "col_widths" in message and "unstated" in message
 
 
 def test_create_table_description_stays_in_budget():
@@ -664,8 +665,8 @@ def test_create_table_description_stays_in_budget():
 # ----------------------------------------------------------------- #887
 
 
-_NOTE = (
-    "tools/list_changed was sent. If the new tools are not in your tool "
+_BODY = (
+    "If the new tools are not in your tool "
     "list, this client fixed its list when the session or worker started: "
     "do not retry here. What works in every client: ask the user to add "
     "the packs to KS4P_MODE (comma list) in this server's launch "
@@ -674,6 +675,12 @@ _NOTE = (
     "enable_tools in the main session and then start a new worker. If "
     "enable_tools refuses a pack, an administrator locked the tool set: "
     "do not retry."
+)
+
+_NOTE = "tools/list_changed was sent. " + _BODY
+
+_NOOP_NOTE = (
+    "These packs were already on, so no list change was sent. " + _BODY
 )
 
 _WORKER_SENTENCE = (
@@ -713,7 +720,12 @@ def test_the_note_is_emitted_on_a_no_op_re_enable(pristine_packs):
     again = packs.enable(["graphics"])
     assert again["enabled"] == []
     assert again["already_enabled"] == ["graphics"]
-    assert again["note"] == _NOTE
+    # N1: _sync fires the visibility hook only when a tool actually
+    # flipped, so claiming a notification here was a plain falsehood.
+    assert again["note"] == _NOOP_NOTE
+    assert "tools/list_changed was sent" not in again["note"]
+    # the guidance itself is identical either way
+    assert _BODY in again["note"]
 
 
 def test_the_worker_sentence_is_in_the_instructions_and_the_index():
@@ -766,3 +778,795 @@ def test_the_accepted_pack_policies_still_work(monkeypatch):
     assert packs.resolve_lock() is False
     monkeypatch.setenv(packs.ENV_PACK_POLICY, "")
     assert packs.resolve_lock() is False
+
+
+# ============================================================ ROUND 2
+# Findings from the second review of PR #32 (2026-09-22). The test bodies
+# for B1 and B2 are the reviewer's, adopted as written where they fit.
+
+
+def _bare_body():
+    body = etree.Element(qn("p:txBody"))
+    etree.SubElement(body, qn("a:bodyPr"))
+    etree.SubElement(body, qn("a:lstStyle"))
+    return body
+
+
+def _spec(text, level=0, explicit=False):
+    return {"text": text, "level": level, "level_explicit": explicit}
+
+
+def test_placeholder_retext_uses_field_character_properties():
+    """B1: a placeholder holding nothing but a slide-number field lost its
+    size, colour and East Asian font the moment the text was replaced, and
+    reported no loss. a:fld carries a real a:rPr."""
+    from kitchensink4ppt.ops.text import _replace_body_paragraphs
+
+    body = _bare_body()
+    p = etree.SubElement(body, qn("a:p"))
+    fld = etree.SubElement(p, qn("a:fld"))
+    rpr = etree.SubElement(fld, qn("a:rPr"))
+    rpr.set("sz", "2400")
+    etree.SubElement(rpr, qn("a:ea")).set("typeface", "Malgun Gothic")
+    etree.SubElement(fld, qn("a:t")).text = "1"
+
+    _replace_body_paragraphs(body, [_spec("Literal")])
+    new = body.find(f"{qn('a:p')}/{qn('a:r')}/{qn('a:rPr')}")
+    assert new is not None and new.get("sz") == "2400"
+    assert new.find(qn("a:ea")).get("typeface") == "Malgun Gothic"
+
+
+def test_placeholder_retext_uses_break_character_properties():
+    """B1: the same for a paragraph whose only property carrier is a:br."""
+    from kitchensink4ppt.ops.text import _replace_body_paragraphs
+
+    body = _bare_body()
+    p = etree.SubElement(body, qn("a:p"))
+    br = etree.SubElement(p, qn("a:br"))
+    rpr = etree.SubElement(br, qn("a:rPr"))
+    rpr.set("sz", "1600")
+    etree.SubElement(rpr, qn("a:latin")).set("typeface", "Consolas")
+
+    _replace_body_paragraphs(body, [_spec("Literal")])
+    new = body.find(f"{qn('a:p')}/{qn('a:r')}/{qn('a:rPr')}")
+    assert new is not None and new.get("sz") == "1600"
+    assert new.find(qn("a:latin")).get("typeface") == "Consolas"
+
+
+def test_a_field_in_the_replacement_gets_the_properties_too():
+    """B1: a:fld and a:br are landing spots as well as sources."""
+    from kitchensink4ppt.ops import shapes as _shp
+
+    old = _bare_body()
+    p = etree.SubElement(old, qn("a:p"))
+    r = etree.SubElement(p, qn("a:r"))
+    etree.SubElement(r, qn("a:rPr")).set("sz", "2800")
+    etree.SubElement(r, qn("a:t")).text = "old"
+
+    new = _bare_body()
+    np_ = etree.SubElement(new, qn("a:p"))
+    fld = etree.SubElement(np_, qn("a:fld"))
+    etree.SubElement(fld, qn("a:rPr"))
+    etree.SubElement(fld, qn("a:t")).text = "3"
+
+    _shp._carry_text_properties(old, new, set())
+    assert new.find(
+        f"{qn('a:p')}/{qn('a:fld')}/{qn('a:rPr')}"
+    ).get("sz") == "2800"
+
+
+def test_empty_replacement_keeps_the_end_paragraph_style():
+    """M2: the paragraph-ending insertion style is what an empty paragraph
+    renders at. Taking the first visible run's style instead buried a
+    24 pt insertion point under 10 pt body text and called it preserved."""
+    from kitchensink4ppt.ops.text import _replace_body_paragraphs
+
+    body = _bare_body()
+    p = etree.SubElement(body, qn("a:p"))
+    r = etree.SubElement(p, qn("a:r"))
+    etree.SubElement(r, qn("a:rPr")).set("sz", "1000")
+    etree.SubElement(r, qn("a:t")).text = "visible"
+    etree.SubElement(p, qn("a:endParaRPr")).set("sz", "2400")
+
+    _replace_body_paragraphs(body, [_spec("")])
+    end = body.find(f"{qn('a:p')}/{qn('a:endParaRPr')}")
+    assert end is not None, "the end-paragraph style is gone"
+    assert end.get("sz") == "2400", (
+        f"empty replacement took the run style, not endParaRPr: "
+        f"sz={end.get('sz')}"
+    )
+
+
+def test_a_visible_run_still_takes_the_run_style_not_end_para():
+    """M2 guard: the other direction must not flip."""
+    from kitchensink4ppt.ops.text import _replace_body_paragraphs
+
+    body = _bare_body()
+    p = etree.SubElement(body, qn("a:p"))
+    r = etree.SubElement(p, qn("a:r"))
+    etree.SubElement(r, qn("a:rPr")).set("sz", "1000")
+    etree.SubElement(r, qn("a:t")).text = "visible"
+    etree.SubElement(p, qn("a:endParaRPr")).set("sz", "2400")
+
+    _replace_body_paragraphs(body, [_spec("new words")])
+    assert body.find(
+        f"{qn('a:p')}/{qn('a:r')}/{qn('a:rPr')}"
+    ).get("sz") == "1000"
+
+
+def _two_run_para(body, second_rpr_edit):
+    p = etree.SubElement(body, qn("a:p"))
+    for i, edit in enumerate((None, second_rpr_edit)):
+        r = etree.SubElement(p, qn("a:r"))
+        rpr = etree.SubElement(r, qn("a:rPr"))
+        rpr.set("sz", "1800")
+        etree.SubElement(rpr, qn("a:ea")).set("typeface", "Yu Gothic")
+        if edit is not None:
+            edit(rpr)
+        etree.SubElement(r, qn("a:t")).text = f"run{i}"
+    return p
+
+
+def _collapse_probe(old):
+    from kitchensink4ppt.ops import shapes as _shp
+
+    new = _bare_body()
+    np_ = etree.SubElement(new, qn("a:p"))
+    r = etree.SubElement(np_, qn("a:r"))
+    etree.SubElement(r, qn("a:rPr"))
+    etree.SubElement(r, qn("a:t")).text = "merged"
+    carried, facts = _shp._carry_text_properties(old, new, set())
+    return new, carried, facts
+
+
+def test_east_asian_difference_is_reported_as_a_collapse():
+    """M1: two runs differing only in East Asian typeface compared EQUAL
+    under the old hand-picked signature, so the collapse onto the first
+    run happened with nothing said."""
+    old = _bare_body()
+    _two_run_para(
+        old, lambda rpr: rpr.find(qn("a:ea")).set("typeface", "Malgun Gothic")
+    )
+    _new, _carried, facts = _collapse_probe(old)
+    assert facts.get("runs_collapsed_to_first") is True, (
+        "an East Asian typeface difference was collapsed in silence"
+    )
+
+
+def test_rtl_difference_is_reported_as_a_collapse():
+    """M1: same for a:rtl, which the old signature never looked at."""
+    old = _bare_body()
+    _two_run_para(
+        old, lambda rpr: etree.SubElement(rpr, qn("a:rtl")).set("val", "1")
+    )
+    _new, _carried, facts = _collapse_probe(old)
+    assert facts.get("runs_collapsed_to_first") is True
+
+
+def test_identical_runs_are_not_reported_as_a_collapse():
+    """M1 guard: the widened signature must not cry wolf on runs that
+    really are alike, including a bare a:br between them."""
+    old = _bare_body()
+    p = _two_run_para(old, None)
+    p.insert(1, etree.Element(qn("a:br")))
+    _new, _carried, facts = _collapse_probe(old)
+    assert "runs_collapsed_to_first" not in facts
+
+
+def test_disagreeing_hyperlinks_are_dropped_not_spread():
+    """M1: a paragraph whose first run links to A and whose second links
+    nowhere became one replacement run entirely linked to A, silently."""
+    from kitchensink4ppt.core.package import NSMAP
+
+    old = _bare_body()
+    p = etree.SubElement(old, qn("a:p"))
+    for i in range(2):
+        r = etree.SubElement(p, qn("a:r"))
+        rpr = etree.SubElement(r, qn("a:rPr"))
+        rpr.set("sz", "1800")
+        if i == 0:
+            link = etree.SubElement(rpr, qn("a:hlinkClick"))
+            link.set(f"{{{NSMAP['r']}}}id", "rId7")
+        etree.SubElement(r, qn("a:t")).text = f"run{i}"
+
+    new, _carried, facts = _collapse_probe(old)
+    merged = new.find(f"{qn('a:p')}/{qn('a:r')}/{qn('a:rPr')}")
+    assert merged.find(qn("a:hlinkClick")) is None, (
+        "the first run's hyperlink was spread over the whole replacement"
+    )
+    assert "hyperlinks_dropped" in facts
+    # what every run DID agree on still rides through
+    assert merged.get("sz") == "1800"
+
+
+def test_one_shared_hyperlink_still_rides_through():
+    """M1 guard: agreement is not a loss. A link every run shared stays."""
+    from kitchensink4ppt.core.package import NSMAP
+
+    old = _bare_body()
+    p = etree.SubElement(old, qn("a:p"))
+    for i in range(2):
+        r = etree.SubElement(p, qn("a:r"))
+        rpr = etree.SubElement(r, qn("a:rPr"))
+        etree.SubElement(rpr, qn("a:hlinkClick")).set(
+            f"{{{NSMAP['r']}}}id", "rId7"
+        )
+        etree.SubElement(r, qn("a:t")).text = f"run{i}"
+
+    new, _carried, facts = _collapse_probe(old)
+    merged = new.find(f"{qn('a:p')}/{qn('a:r')}/{qn('a:rPr')}")
+    assert merged.find(qn("a:hlinkClick")) is not None
+    assert "hyperlinks_dropped" not in facts
+
+
+def test_a_carried_level_survives_a_later_explicit_one(field_deck):
+    """N2: `carried` is body-global, so a later paragraph whose level the
+    caller stated used to erase the accurate report from an earlier one."""
+    from kitchensink4ppt.ops import text as txt
+
+    pkg, slide, _sid, ph_id = field_deck
+    out = txt.set_placeholder_text(
+        pkg, slide, "body",
+        paragraphs=[
+            {"text": "keeps its carried level"},
+            {"text": "restyled", "level": 1},
+            {"text": "states its own", "level": 4},
+        ],
+    )
+    part = get_slide_info(pkg, slide)["part"]
+    elem, _chain = shp._find_shape(pkg, part, ph_id)
+    paras = elem.find(qn("p:txBody")).findall(qn("a:p"))
+    assert paras[2].find(qn("a:pPr")).get("lvl") == "4"
+    assert "level" in out.get("preserved", []), (
+        "paragraph 1 carried a level and the report lost it"
+    )
+
+
+# --------------------------------------------------- B2 and M6 (validator)
+
+_MC = "http://schemas.openxmlformats.org/markup-compatibility/2006"
+_P14 = "http://schemas.microsoft.com/office/powerpoint/2010/main"
+_C = "http://schemas.openxmlformats.org/drawingml/2006/chart"
+
+
+def _alternate_content(choice_para, fallback_para):
+    """An mc:AlternateContent wrapper with the given paragraphs (None for
+    a branch that supplies none)."""
+    ac = etree.Element(
+        f"{{{_MC}}}AlternateContent", nsmap={"mc": _MC, "p14": _P14}
+    )
+    choice = etree.SubElement(ac, f"{{{_MC}}}Choice")
+    choice.set("Requires", "p14")
+    if choice_para is not None:
+        choice.append(choice_para)
+    fallback = etree.SubElement(ac, f"{{{_MC}}}Fallback")
+    if fallback_para is not None:
+        fallback.append(fallback_para)
+    return ac
+
+
+def _first_body(pkg):
+    part = pkg.slide_parts()[0]
+    body = pkg.root(part).find(f".//{qn('p:txBody')}")
+    assert body is not None, "no text body on the first slide"
+    return part, body
+
+
+def test_txbody_accepts_mce_wrapped_paragraph(make_deck, tmp_path):
+    """B2: Markup Compatibility lets a body's paragraphs arrive through an
+    mc:AlternateContent branch. Requiring a DIRECT a:p refused a legal
+    deck at save, which is the worst thing this gate can do."""
+    import copy
+
+    pkg = PptxPackage(make_deck("mce.pptx"))
+    part, body = _first_body(pkg)
+    para = body.find(qn("a:p"))
+    body.replace(
+        para,
+        _alternate_content(copy.deepcopy(para), copy.deepcopy(para)),
+    )
+    pkg.mark_dirty(part)
+    out = tmp_path / "out.pptx"
+    pkg.save(str(out))  # used to raise ValidationFailed
+    assert out.is_file()
+
+
+def test_an_empty_selectable_branch_is_still_refused(make_deck, tmp_path):
+    """B2: a valid Fallback must not hide an empty Choice. PowerPoint
+    picks ONE branch, so every branch has to supply a paragraph."""
+    import copy
+
+    from kitchensink4ppt.core.errors import ValidationFailed
+
+    pkg = PptxPackage(make_deck("mce_bad.pptx"))
+    part, body = _first_body(pkg)
+    para = body.find(qn("a:p"))
+    body.replace(para, _alternate_content(None, copy.deepcopy(para)))
+    pkg.mark_dirty(part)
+    with pytest.raises(ValidationFailed) as excinfo:
+        pkg.save(str(tmp_path / "out.pptx"))
+    assert "AlternateContent" in str(excinfo.value)
+
+
+def test_a_direct_paragraph_beside_alternate_content_is_enough(
+    make_deck, tmp_path
+):
+    """B2: a body that keeps a real paragraph AND carries an
+    AlternateContent for something else is never empty."""
+    import copy
+
+    pkg = PptxPackage(make_deck("mce_mixed.pptx"))
+    part, body = _first_body(pkg)
+    para = body.find(qn("a:p"))
+    body.append(_alternate_content(None, copy.deepcopy(para)))
+    pkg.mark_dirty(part)
+    out = tmp_path / "out.pptx"
+    pkg.save(str(out))
+    assert out.is_file()
+
+
+def test_nested_alternate_content_branches_resolve(make_deck, tmp_path):
+    """B2: a branch may itself hold an AlternateContent."""
+    import copy
+
+    pkg = PptxPackage(make_deck("mce_nested.pptx"))
+    part, body = _first_body(pkg)
+    para = body.find(qn("a:p"))
+    inner = _alternate_content(copy.deepcopy(para), copy.deepcopy(para))
+    outer = etree.Element(
+        f"{{{_MC}}}AlternateContent", nsmap={"mc": _MC, "p14": _P14}
+    )
+    choice = etree.SubElement(outer, f"{{{_MC}}}Choice")
+    choice.set("Requires", "p14")
+    choice.append(inner)
+    fallback = etree.SubElement(outer, f"{{{_MC}}}Fallback")
+    fallback.append(copy.deepcopy(para))
+    body.replace(para, outer)
+    pkg.mark_dirty(part)
+    out = tmp_path / "out.pptx"
+    pkg.save(str(out))
+    assert out.is_file()
+
+
+def test_chart_text_bodies_are_covered(tmp_path):
+    """M6: c:rich and c:txPr use the same paragraph-bearing model. Leaving
+    them out made the 'every text body' claim false."""
+    from kitchensink4ppt.core.errors import ValidationFailed
+    from kitchensink4ppt.ops import charts as ch
+
+    prs = Presentation()
+    prs.slides.add_slide(prs.slide_layouts[6])
+    path = tmp_path / "chart.pptx"
+    prs.save(str(path))
+    pkg = PptxPackage(str(path))
+    ch.create_chart(
+        pkg, 0, "bar", ["a", "b"], [{"name": "s", "values": [1, 2]}],
+        1, 1, 6, 4, title="Numbers",
+    )
+    pkg.save(str(tmp_path / "chart_ok.pptx"))  # a real chart still saves
+
+    chart_part = next(
+        p for p in pkg.part_names() if p.startswith("ppt/charts/chart")
+    )
+    rich = pkg.root(chart_part).find(f".//{{{_C}}}rich")
+    assert rich is not None, "the chart title has no c:rich to empty"
+    for p in list(rich.findall(qn("a:p"))):
+        rich.remove(p)
+    pkg.mark_dirty(chart_part)
+    with pytest.raises(ValidationFailed) as excinfo:
+        pkg.save(str(tmp_path / "chart_bad.pptx"))
+    assert "charts" in str(excinfo.value)
+
+
+def test_a_real_chart_round_trips(tmp_path):
+    """M6 guard: covering charts must not refuse a chart the server built."""
+    from kitchensink4ppt.ops import charts as ch
+
+    prs = Presentation()
+    prs.slides.add_slide(prs.slide_layouts[6])
+    path = tmp_path / "chart2.pptx"
+    prs.save(str(path))
+    pkg = PptxPackage(str(path))
+    for kind in ("bar", "line", "pie"):
+        ch.create_chart(
+            pkg, 0, kind, ["a", "b"], [{"name": kind, "values": [1, 2]}],
+            1, 1, 4, 3, title=f"{kind} title",
+        )
+    out = tmp_path / "charts_ok.pptx"
+    pkg.save(str(out))
+    assert out.is_file()
+
+
+# ------------------------------------------------- M3, M4, N3 (the COM walk)
+
+
+class _FakeFrame:
+    def __init__(self, text="words", raises=False):
+        self._text = text
+        self._raises = raises
+        self.HasText = -1
+
+    @property
+    def TextRange(self):
+        if self._raises:
+            raise OSError("the text refused to load")
+        return self
+
+    @property
+    def Text(self):
+        return self._text
+
+
+class _FakeShape:
+    """A PowerPoint shape proxy with only the members a real one would
+    answer; anything else raises AttributeError the way getattr sees a
+    missing COM member."""
+
+    def __init__(self, name, *, text=None, raises=False, group=None,
+                 table=None, fault=None, has_text_frame=-1):
+        self.Name = name
+        self._fault = fault
+        self._has_text_frame = has_text_frame
+        self._frame = (
+            _FakeFrame(text, raises) if text is not None or raises else None
+        )
+        self._group = group
+        self._table = table
+
+    @property
+    def HasTextFrame(self):
+        if self._fault is not None:
+            raise self._fault
+        return self._has_text_frame if self._frame is not None else 0
+
+    @property
+    def TextFrame(self):
+        return self._frame
+
+    @property
+    def HasTable(self):
+        return -1 if self._table is not None else 0
+
+    @property
+    def Table(self):
+        return self._table
+
+    @property
+    def Type(self):
+        return 6 if self._group is not None else 1
+
+    @property
+    def GroupItems(self):
+        return _FakeShapes(self._group)
+
+
+class _FakeShapes:
+    def __init__(self, shapes):
+        self._shapes = shapes
+        self.Count = len(shapes)
+
+    def Item(self, i):
+        return self._shapes[i - 1]
+
+
+class _FakeCell:
+    def __init__(self, shape):
+        self.Shape = shape
+
+
+class _FakeTable:
+    def __init__(self, grid):
+        self._grid = grid
+        self.Rows = _FakeShapes([None] * len(grid))
+        self.Columns = _FakeShapes([None] * len(grid[0]))
+
+    def Cell(self, r, c):
+        return _FakeCell(self._grid[r - 1][c - 1])
+
+
+class _FakeSlide:
+    def __init__(self, sid, shapes):
+        self.SlideID = sid
+        self.Shapes = _FakeShapes(shapes)
+
+
+class _FakePres:
+    def __init__(self, slides):
+        self.Slides = _FakeShapes(slides)
+
+
+def test_every_text_shape_is_read_not_just_the_first():
+    """M3: after the first successful text read the walk stopped reading,
+    so a second shape that raises on access was never touched and the deck
+    came back clean."""
+    from kitchensink4ppt.com import bridge
+
+    pres = _FakePres([
+        _FakeSlide(256, [
+            _FakeShape("Good 1", text="fine"),
+            _FakeShape("Broken 2", raises=True),
+        ]),
+    ])
+    with pytest.raises(bridge.FullLoadFailed) as excinfo:
+        bridge._full_load(pres)
+    exc = excinfo.value
+    assert exc.slide_index == 1 and exc.shape_index == 2
+    assert exc.shape_name == "Broken 2"
+
+
+def test_a_failure_inside_a_group_is_found_and_named():
+    """M3: group children were never enumerated at all."""
+    from kitchensink4ppt.com import bridge
+
+    inner = _FakeShape("Deep Label", raises=True)
+    group = _FakeShape("Diagram", group=[_FakeShape("Ok", text="a"), inner])
+    pres = _FakePres([_FakeSlide(300, [_FakeShape("Title", text="t"), group])])
+    with pytest.raises(bridge.FullLoadFailed) as excinfo:
+        bridge._full_load(pres)
+    message = str(excinfo.value)
+    assert "Deep Label" in message and "Diagram" in message
+    assert excinfo.value.shape_index == 2
+
+
+def test_a_failure_inside_a_table_cell_is_found_and_named():
+    """M3: table cells were never read."""
+    from kitchensink4ppt.com import bridge
+
+    grid = [
+        [_FakeShape("c00", text="a"), _FakeShape("c01", text="b")],
+        [_FakeShape("c10", text="c"), _FakeShape("c11", raises=True)],
+    ]
+    table = _FakeShape("Grid", table=_FakeTable(grid))
+    pres = _FakePres([_FakeSlide(301, [table])])
+    with pytest.raises(bridge.FullLoadFailed) as excinfo:
+        bridge._full_load(pres)
+    message = str(excinfo.value)
+    assert "row 2" in message and "column 2" in message
+
+
+def test_a_clean_walk_reports_what_it_touched():
+    from kitchensink4ppt.com import bridge
+
+    group = _FakeShape("G", group=[_FakeShape("g1", text="x")])
+    pres = _FakePres([
+        _FakeSlide(256, [_FakeShape("A", text="a"), group]),
+        _FakeSlide(257, [_FakeShape("B", text="b")]),
+    ])
+    out = bridge._full_load(pres)
+    assert out["slides"] == 2
+    assert out["shapes"] == 3          # top level only, as before
+    assert out["shapes_walked"] == 4   # including the group member
+    assert out["text_reads"] == 3      # the group frame itself has none
+    assert "walk_truncated" not in out
+
+
+def test_an_enormous_deck_says_the_walk_was_truncated(monkeypatch):
+    """M3: a cap, and an honest flag when it bites, beats sitting inside
+    the bounded operation until it times out and reports nothing."""
+    from kitchensink4ppt.com import bridge
+
+    monkeypatch.setattr(bridge, "FULL_LOAD_MAX_SHAPES", 3)
+    pres = _FakePres([
+        _FakeSlide(256, [_FakeShape(f"S{i}", text="t") for i in range(10)]),
+    ])
+    out = bridge._full_load(pres)
+    assert "walk_truncated" in out
+    assert out["shapes_walked"] == 3
+    assert "cap 3" in out["walk_truncated"]
+
+
+def _com_error(hresult):
+    """A stand-in for a pywin32 com_error carrying one HRESULT."""
+
+    class _ComError(Exception):
+        pass
+
+    exc = _ComError("com fault")
+    exc.hresult = hresult
+    return exc
+
+
+def test_a_busy_powerpoint_mid_walk_is_not_a_corrupt_file():
+    """M4: a dialog opening halfway through the walk came back as an
+    authoritative corruption verdict naming an innocent shape."""
+    from kitchensink4ppt.com import bridge
+    from kitchensink4ppt.core.errors import PowerPointBusy
+
+    pres = _FakePres([
+        _FakeSlide(256, [
+            _FakeShape("Fine", text="a"),
+            _FakeShape("Innocent", fault=_com_error(
+                bridge.RPC_E_CALL_REJECTED)),
+        ]),
+    ])
+    with pytest.raises(PowerPointBusy):
+        bridge._full_load(pres)
+
+
+def test_a_disconnected_powerpoint_mid_walk_is_not_a_corrupt_file():
+    """M4: the same for a PowerPoint that went away under the proxy."""
+    from kitchensink4ppt.com import bridge
+    from kitchensink4ppt.core.errors import PowerPointDisconnected
+
+    pres = _FakePres([
+        _FakeSlide(256, [
+            _FakeShape("Innocent", fault=_com_error(
+                bridge.RPC_E_DISCONNECTED)),
+        ]),
+    ])
+    with pytest.raises(PowerPointDisconnected):
+        bridge._full_load(pres)
+
+
+def test_a_busy_fault_inside_a_group_still_blames_the_application():
+    """M4: the classifier has to be consulted at every depth."""
+    from kitchensink4ppt.com import bridge
+    from kitchensink4ppt.core.errors import PowerPointBusy
+
+    inner = _FakeShape("Deep", fault=_com_error(
+        bridge.RPC_E_SERVERCALL_RETRYLATER))
+    group = _FakeShape("G", group=[inner])
+    pres = _FakePres([_FakeSlide(256, [group])])
+    with pytest.raises(PowerPointBusy):
+        bridge._full_load(pres)
+
+
+def test_an_unclassified_fault_is_still_a_file_verdict():
+    """M4 guard: classification must not swallow real content failures."""
+    from kitchensink4ppt.com import bridge
+
+    pres = _FakePres([
+        _FakeSlide(256, [_FakeShape("Broken", fault=OSError("bad record"))]),
+    ])
+    with pytest.raises(bridge.FullLoadFailed):
+        bridge._full_load(pres)
+
+
+def test_mixed_tristate_is_not_treated_as_yes():
+    """N3: `if shp.HasTextFrame` counted msoTriStateMixed (-2) as true, so
+    an unusual shape was probed for a TextFrame it does not support and
+    became a false failure."""
+    from kitchensink4ppt.com import bridge
+
+    assert bridge._mso_true(-1) is True
+    assert bridge._mso_true(-2) is False
+    assert bridge._mso_true(0) is False
+    assert bridge._mso_true(None) is False
+
+    shape = _FakeShape("Odd", text="never read", has_text_frame=-2)
+    pres = _FakePres([_FakeSlide(256, [shape])])
+    out = bridge._full_load(pres)
+    assert out["text_reads"] == 0, "a mixed tri-state was probed as a yes"
+
+
+# ------------------------------------------------------- M5 (table geometry)
+
+
+def _table_pkg(tmp_path, name="m5.pptx"):
+    prs = Presentation()
+    prs.slides.add_slide(prs.slide_layouts[6])
+    path = tmp_path / name
+    prs.save(str(path))
+    return PptxPackage(str(path))
+
+
+def _geometry(pkg):
+    from kitchensink4ppt.ops import geometry as g
+
+    part = get_slide_info(pkg, 0)["part"]
+    frame = pkg.root(part).find(f".//{qn('p:graphicFrame')}")
+    ext = frame.find(f"{qn('p:xfrm')}/{qn('a:ext')}")
+    tbl = frame.find(f".//{qn('a:tbl')}")
+    widths = [int(c.get("w")) for c in tbl.iter(qn("a:gridCol"))]
+    heights = [int(r.get("h")) for r in tbl.findall(qn("a:tr"))]
+    return {
+        "frame_cx": int(ext.get("cx")),
+        "frame_cy": int(ext.get("cy")),
+        "widths": widths,
+        "heights": heights,
+        "in": g.emu_to_in,
+    }
+
+
+def test_a_complete_underfilling_list_resizes_the_frame(tmp_path):
+    """M5: a 6-inch frame around a grid declaring 2 inches is geometry
+    PowerPoint has to normalize away, so the widths that rendered were not
+    the widths the caller asked for."""
+    from kitchensink4ppt.ops import tables as tb
+    from kitchensink4ppt.ops import geometry as g
+
+    pkg = _table_pkg(tmp_path)
+    out = tb.create_table(
+        pkg, 0, 2, 2, 1, 1, 6, 3, col_widths=[1.0, 1.0]
+    )
+    geo = _geometry(pkg)
+    assert geo["widths"] == [g.in_to_emu(1.0), g.in_to_emu(1.0)]
+    assert geo["frame_cx"] == sum(geo["widths"]), (
+        "the frame still claims a width the grid does not fill"
+    )
+    assert out["w_in"] == 2.0
+    assert "box_resized" in out and "width" in out["box_resized"]
+
+
+def test_a_complete_overfilling_list_resizes_the_frame_too(tmp_path):
+    """M5: the same rule in the other direction, instead of a refusal."""
+    from kitchensink4ppt.ops import tables as tb
+    from kitchensink4ppt.ops import geometry as g
+
+    pkg = _table_pkg(tmp_path)
+    out = tb.create_table(
+        pkg, 0, 3, 2, 1, 1, 6, 3, row_heights=[2.0, 2.0, 2.0]
+    )
+    geo = _geometry(pkg)
+    assert geo["heights"] == [g.in_to_emu(2.0)] * 3
+    assert geo["frame_cy"] == sum(geo["heights"])
+    assert out["h_in"] == 6.0
+    assert "height" in out["box_resized"]
+
+
+def test_a_complete_exact_list_does_not_claim_a_resize(tmp_path):
+    """M5 guard: a list that already totals the box says nothing."""
+    from kitchensink4ppt.ops import tables as tb
+
+    pkg = _table_pkg(tmp_path)
+    out = tb.create_table(
+        pkg, 0, 2, 2, 1, 1, 6, 3, col_widths=[2.0, 4.0],
+        row_heights=[1.5, 1.5],
+    )
+    geo = _geometry(pkg)
+    assert geo["frame_cx"] == sum(geo["widths"])
+    assert geo["frame_cy"] == sum(geo["heights"])
+    assert "box_resized" not in out
+
+
+def test_a_single_row_underfill_resizes(tmp_path):
+    """M5: the 1-row and 1-column edges the reviewer asked for."""
+    from kitchensink4ppt.ops import tables as tb
+    from kitchensink4ppt.ops import geometry as g
+
+    pkg = _table_pkg(tmp_path)
+    tb.create_table(pkg, 0, 1, 1, 1, 1, 6, 3, row_heights=[0.4],
+                    col_widths=[0.9])
+    geo = _geometry(pkg)
+    assert geo["heights"] == [g.in_to_emu(0.4)]
+    assert geo["widths"] == [g.in_to_emu(0.9)]
+    assert geo["frame_cy"] == g.in_to_emu(0.4)
+    assert geo["frame_cx"] == g.in_to_emu(0.9)
+
+
+def test_a_partial_dict_still_fits_the_box_it_was_given(tmp_path):
+    """M5 guard: a dict names some rows and leaves the rest to the box, so
+    the box still rules and the frame does not move."""
+    from kitchensink4ppt.ops import tables as tb
+    from kitchensink4ppt.ops import geometry as g
+
+    pkg = _table_pkg(tmp_path)
+    out = tb.create_table(pkg, 0, 3, 2, 1, 1, 6, 3, row_heights={1: 2.0})
+    geo = _geometry(pkg)
+    assert sum(geo["heights"]) == g.in_to_emu(3)
+    assert geo["frame_cy"] == g.in_to_emu(3)
+    assert "box_resized" not in out
+
+
+def test_a_partial_dict_that_leaves_no_room_still_refuses(tmp_path):
+    """M5: the one case a dict cannot resolve."""
+    from kitchensink4ppt.core.errors import PptMcpError
+    from kitchensink4ppt.ops import tables as tb
+
+    pkg = _table_pkg(tmp_path)
+    with pytest.raises(PptMcpError) as excinfo:
+        tb.create_table(pkg, 0, 3, 2, 1, 1, 6, 3, row_heights={0: 4.0})
+    message = str(excinfo.value)
+    assert "row_heights" in message and "unstated" in message
+
+
+def test_a_sized_table_still_saves(tmp_path):
+    """M5: the geometry the tests read has to survive the save gate."""
+    from kitchensink4ppt.ops import tables as tb
+
+    pkg = _table_pkg(tmp_path)
+    tb.create_table(pkg, 0, 3, 2, 1, 1, 6, 3, col_widths=[1.0, 1.0],
+                    data=[["a", "b"], ["c", "d"], ["e", "f"]])
+    out = tmp_path / "sized.pptx"
+    pkg.save(str(out))
+    assert out.is_file()

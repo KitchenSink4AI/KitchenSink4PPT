@@ -2079,8 +2079,8 @@ def create_table(
     row from data (short rows pad, long rows refuse). style: a built-in
     table style by name or GUID (apply_table_style lists the families);
     first_row/band_rows set the header and banding flags. row_heights
-    and col_widths size the grid at creation: a list of inches or an
-    {index: inches} dict, the rest splitting what is left.
+    and col_widths size the grid at creation: a full list of inches sets
+    the box, an {index: inches} dict splits what is left.
     Returns the shape id, the handle other table tools take. Saves
     atomically with two-slot backup; backup=False skips rotation."""
     return _edit(
@@ -3208,14 +3208,15 @@ def get_export_engines() -> dict:
 def validate(file_path: str) -> dict:
     """The two-layer soundness check. Layer 1 (always): the package
     payload is re-validated (zip integrity, required parts, relationship
-    targets, and every text body carrying at least one paragraph). Layer 2
-    (when PowerPoint COM exists): a REAL open in an invisible PowerPoint
-    with a forced full content load; a repair prompt or load failure means
-    not clean, and that verdict is authoritative. A layer 2 failure names
-    where it happened: failed_slide_index, failed_slide_id,
-    failed_shape_index, failed_shape_name. Read-only, never mutates the
-    file. Run after big generated changes and before handing a deck to a
-    human."""
+    targets, and every text body carrying at least one paragraph, charts
+    included). Layer 2 (when PowerPoint COM exists): a REAL open in an
+    invisible PowerPoint that touches every slide, top-level shape, group
+    member and table cell and reads the text of each; a repair prompt or
+    load failure means not clean, and that verdict is authoritative. A
+    failure names where it happened (failed_slide_index, failed_slide_id,
+    failed_shape_index, failed_shape_name); a busy or closed PowerPoint
+    refuses as itself instead of blaming the file. Read-only. Run after
+    big generated changes and before handing a deck to a human."""
     from pathlib import Path
 
     fp = check_path(file_path, "validate presentation")
