@@ -659,3 +659,110 @@ def test_create_table_description_stays_in_budget():
     assert round(len(desc) / 4) <= 130, (
         f"create_table description is ~{round(len(desc) / 4)} tokens"
     )
+
+
+# ----------------------------------------------------------------- #887
+
+
+_NOTE = (
+    "tools/list_changed was sent. If the new tools are not in your tool "
+    "list, this client fixed its list when the session or worker started: "
+    "do not retry here. What works in every client: ask the user to add "
+    "the packs to KS4P_MODE (comma list) in this server's launch "
+    "settings, restart the app or session, then start a new worker if "
+    "needed. Claude Code only: the orchestrator can instead call "
+    "enable_tools in the main session and then start a new worker. If "
+    "enable_tools refuses a pack, an administrator locked the tool set: "
+    "do not retry."
+)
+
+_WORKER_SENTENCE = (
+    "Workers and subagents only see the tools that were on when they "
+    "started: start the server with KS4P_MODE set to a comma list of "
+    "packs, or, in Claude Code, enable packs in the main session before "
+    "starting workers."
+)
+
+
+@pytest.fixture()
+def pristine_packs():
+    """Restore the process-wide enabled set after a test flips it."""
+    from kitchensink4ppt import packs, server  # noqa: F401
+
+    before = dict(packs._ENABLED)
+    yield packs
+    packs._ENABLED.clear()
+    packs._ENABLED.update(before)
+
+
+def test_enable_tools_note_is_the_887_wording(pristine_packs):
+    """#887: the old note promised a tool-list refresh that a worker or
+    subagent never gets, so the worker retried the same dead call."""
+    packs = pristine_packs
+    out = packs.enable(["graphics"])
+    assert out["enabled"] == ["graphics"]
+    assert out["note"] == _NOTE
+
+
+def test_the_note_is_emitted_on_a_no_op_re_enable(pristine_packs):
+    """#887: the caller who cannot see the tools is exactly the caller
+    whose second attempt enables nothing new, and that was the call the
+    old note stayed silent on."""
+    packs = pristine_packs
+    packs.enable(["graphics"])
+    again = packs.enable(["graphics"])
+    assert again["enabled"] == []
+    assert again["already_enabled"] == ["graphics"]
+    assert again["note"] == _NOTE
+
+
+def test_the_worker_sentence_is_in_the_instructions_and_the_index():
+    """#887: said once where a client actually reads the surface."""
+    from kitchensink4ppt import server
+    from kitchensink4ppt.ops import workflows as wf
+
+    assert _WORKER_SENTENCE in (server.mcp.instructions or "")
+    assert _WORKER_SENTENCE in wf.get_workflows()["note"]
+
+
+def test_the_locked_refusal_names_the_administrator(monkeypatch):
+    """#887 (c): a refusal that does not say a human set the lock reads
+    like a bug to retry."""
+    from kitchensink4ppt import packs
+    from kitchensink4ppt.core.errors import PptMcpError
+
+    monkeypatch.setenv(packs.ENV_PACK_POLICY, "locked")
+    with pytest.raises(PptMcpError) as excinfo:
+        packs.enable(["graphics"])
+    assert excinfo.value.code == "CONFLICT"
+    assert (
+        "An administrator locked the tool packs for this install."
+        in str(excinfo.value)
+    )
+
+
+def test_a_pack_policy_typo_does_not_fail_open(monkeypatch):
+    """The one env whose whole purpose is a lock used to shrug off a
+    misspelling: KS4P_PACK_POLICY=lockedd served UNLOCKED while its
+    sibling KS4P_MODE=fulll refused to start."""
+    from kitchensink4ppt import packs
+    from kitchensink4ppt.core.errors import PptMcpError
+
+    monkeypatch.setenv(packs.ENV_PACK_POLICY, "lockedd")
+    with pytest.raises(PptMcpError) as excinfo:
+        packs.resolve_lock()
+    message = str(excinfo.value)
+    assert "KS4P_PACK_POLICY" in message and "lockedd" in message
+    with pytest.raises(PptMcpError):
+        packs.apply_startup_mode()
+
+
+def test_the_accepted_pack_policies_still_work(monkeypatch):
+    from kitchensink4ppt import packs
+
+    monkeypatch.setenv(packs.ENV_PACK_POLICY, "locked")
+    assert packs.resolve_lock() is True
+    monkeypatch.setenv(packs.ENV_PACK_POLICY, "auto")
+    assert packs.resolve_lock() is False
+    monkeypatch.setenv(packs.ENV_PACK_POLICY, "")
+    assert packs.resolve_lock() is False

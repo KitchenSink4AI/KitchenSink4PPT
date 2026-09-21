@@ -112,7 +112,9 @@ mcp = FastMCP(
         "every mutation; dual-mode tools with live='auto' edit decks open in "
         "the user's PowerPoint. Starts in lite mode; enable_tools switches "
         "on the graphics, tables-charts, design, assembly-export, "
-        "review-sweeps, and com packs mid-session. get_workflows has "
+        "review-sweeps, and com packs mid-session. "
+        + _packs.WORKER_PACK_SENTENCE
+        + " get_workflows has "
         "recipes; get_presentation_view + "
         "apply_edits is the cheap batch-editing loop."
     ),
