@@ -1101,7 +1101,19 @@ def _full_load(pres) -> dict:
     re-raised as itself rather than blamed on the file.
     """
     state = _WalkState()
-    slide_count = int(pres.Slides.Count)
+    try:
+        slide_count = int(pres.Slides.Count)
+    except Exception as exc:
+        # The FIRST access is a COM access like every other one in this
+        # walk, and it used to sit outside the classification: a busy or
+        # disconnected PowerPoint faulting here reached the generic
+        # validate catch and came back as opens_clean false on a deck
+        # nobody had looked at yet (second review, G5, 2026-09-22). No
+        # slide has been reached, so the refusal carries no coordinates.
+        _reraise_environment(exc)
+        raise FullLoadFailed(
+            f"the slide collection could not be read: {exc}"
+        ) from exc
     shapes_total = 0
     for i in range(1, slide_count + 1):
         slide_id = None

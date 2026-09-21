@@ -3213,8 +3213,9 @@ def validate(file_path: str) -> dict:
     invisible PowerPoint that touches every slide, top-level shape, group
     member and table cell and reads the text of each; a repair prompt or
     load failure means not clean, and that verdict is authoritative. A
-    failure names where it happened (failed_slide_index, failed_slide_id,
-    failed_shape_index, failed_shape_name); a busy or closed PowerPoint
+    failure names where it happened when it can be located
+    (failed_slide_index, failed_slide_id, failed_shape_index,
+    failed_shape_name); a busy or closed PowerPoint
     refuses as itself instead of blaming the file. Read-only. Run after
     big generated changes and before handing a deck to a human."""
     from pathlib import Path
