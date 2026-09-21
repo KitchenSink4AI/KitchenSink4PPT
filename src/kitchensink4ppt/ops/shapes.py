@@ -261,12 +261,13 @@ def _carry_text_properties(
     # would silently relink text that pointed somewhere else, or nowhere.
     # When the source runs did not agree on their link, no link is carried
     # rather than the wrong one, and the caller is told.
-    drop_links = any(_runs_disagree_on_links(p) for p in old_paras)
-    if drop_links:
-        facts["hyperlinks_dropped"] = (
-            "the replaced runs did not share one hyperlink, so none was "
-            "carried onto the new text; re-apply it with set_hyperlink"
-        )
+    #
+    # The decision is PER PARAGRAPH. It used to be one flag for the whole
+    # body, so a paragraph mixing linked and unlinked runs stripped the
+    # link off every OTHER paragraph, including ones where every run
+    # pointed at the same place (second review, G3, 2026-09-22).
+    disagrees = {id(p): _runs_disagree_on_links(p) for p in old_paras}
+    dropped_at: list[int] = []
 
     # `carried` is body-global, so a paragraph whose level the caller
     # overrode must not erase the accurate report from a paragraph that
@@ -277,6 +278,9 @@ def _carry_text_properties(
         # A replacement with MORE paragraphs than the original takes the
         # last one's shape, which is what pressing Enter in PowerPoint does.
         source = old_paras[min(i, len(old_paras) - 1)]
+        drop_links = disagrees[id(source)]
+        if drop_links:
+            dropped_at.append(i)
 
         old_ppr = source.find(qn("a:pPr"))
         new_ppr = para.find(qn("a:pPr"))
@@ -341,6 +345,14 @@ def _carry_text_properties(
                     remove_children(merged, _HLINK_TAGS)
                 rpr.getparent().replace(rpr, merged)
                 carried |= got
+    if dropped_at:
+        facts["hyperlinks_dropped"] = (
+            "paragraph index "
+            + ", ".join(str(n) for n in dropped_at)
+            + ": the replaced runs did not share one hyperlink, so none was "
+            "carried onto that paragraph's new text; re-apply it with "
+            "set_hyperlink"
+        )
     if levels_carried > 0:
         carried.add("level")
     return sorted(carried), facts
@@ -354,7 +366,13 @@ _RUN_FAMILY = ("a:r", "a:fld", "a:br")
 #: a:r and a:fld carry text; a:br does not.
 _TEXT_BEARING = ("a:r", "a:fld")
 
-_HLINK_TAGS = ("a:hlinkClick", "a:hlinkHover")
+#: The hyperlink elements a RUN carries. The hover one is a:hlinkMouseOver
+#: (a:hlinkHover is the SHAPE-level spelling, inside p:cNvPr, and is not a
+#: legal child of a:rPr). Comparing the wrong name made every hover link
+#: compare equal to every other, so a disagreeing one was spread over the
+#: replacement in silence (second review, G3, 2026-09-22). The names and
+#: their order match _runmap.RPR_ORDER.
+_HLINK_TAGS = ("a:hlinkClick", "a:hlinkMouseOver")
 
 #: rPr attributes that say nothing about how a run LOOKS. Office writes
 #: and rewrites these constantly, so two runs that differ only here are
