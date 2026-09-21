@@ -463,16 +463,19 @@ def _apply_paragraph_props(
 
 def _parse_text_paragraphs(text: str) -> list[dict]:
     """'\\n' separates paragraphs; leading tabs set the outline level
-    (one tab per level, 0..8)."""
+    (one tab per level, 0..8). No tab is a statement too: it is level 0."""
     out = []
     for line in text.split("\n"):
         level = 0
         while line.startswith("\t") and level < 8:
             level += 1
             line = line[1:]
-        # A tab wrote the level; a line without one said nothing about it,
-        # so a replacement keeps whatever level the old paragraph had.
-        out.append({"text": line, "level": level, "level_explicit": level > 0})
+        # EVERY line of this shorthand states its level, and a line with no
+        # tab states level 0. Treating "no tab" as "said nothing" let a
+        # replacement keep the nesting of the paragraph it replaced, so
+        # "Top level\n\tSecond level\nTop again" came back from PowerPoint
+        # at levels 1, 2, 2 (second review, G4, 2026-09-22).
+        out.append({"text": line, "level": level, "level_explicit": True})
     return out
 
 

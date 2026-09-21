@@ -155,10 +155,13 @@ def _assert_field_formatting_intact(pkg, slide, shape_id, route):
         assert defrpr.find(qn("a:latin")).get("typeface") == "Calibri", (
             f"{where}: defRPr typeface lost"
         )
-    # the two outline levels survive as themselves
-    assert [p.find(qn("a:pPr")).get("lvl") for p in paras[:3]] == [
-        None, "1", None
-    ], f"{route}: outline levels moved"
+    # the two outline levels survive as themselves. Read as LEVELS, not as
+    # raw attributes: since round 3 (G4) a line of the text= shorthand with
+    # no leading tab states level 0 rather than saying nothing, and a
+    # stated 0 is written out as lvl="0". An absent lvl is the same level.
+    assert [
+        int((p.find(qn("a:pPr")).get("lvl") or 0)) for p in paras[:3]
+    ] == [0, 1, 0], f"{route}: outline levels moved"
 
 
 def test_set_placeholder_text_keeps_paragraph_level_formatting(field_deck):
