@@ -1394,7 +1394,7 @@ def _para_margins(p: etree._Element, chain=()) -> tuple[int, int]:
         containers.append(own)
     containers.extend(chain)
 
-    def _int(name: str) -> int:
+    def _int(name: str, low: int) -> int:
         for container in containers:
             raw = container.get(name)
             if raw is None:
@@ -1406,14 +1406,21 @@ def _para_margins(p: etree._Element, chain=()) -> tuple[int, int]:
                     f"a paragraph states a {name} of {raw!r}, which is not a "
                     "number of EMU"
                 ) from None
-            if not -_MAR_LIMIT_EMU <= value <= _MAR_LIMIT_EMU:
+            if not low <= value <= _MAR_LIMIT_EMU:
                 raise _Unmeasurable(
                     f"a paragraph states a {name} of {value} EMU, outside "
                     "the range DrawingML allows"
                 )
             return value
         return 0
-    return _int("marL"), _int("indent")
+    # The two attributes do NOT share a range, and treating them as if they
+    # did accepted a negative marL as a confident measurement: marL is
+    # ST_TextMargin, which is NONNEGATIVE, while indent is ST_TextIndent,
+    # which is signed because a hanging indent is how every bulleted list
+    # is written (final check, R5-2, 2026-09-22). A negative marL is
+    # schema-invalid whether the paragraph states it or inherits it, so it
+    # is unmeasurable; a negative indent stays measurable.
+    return _int("marL", 0), _int("indent", -_MAR_LIMIT_EMU)
 
 
 def _body_typeface(
