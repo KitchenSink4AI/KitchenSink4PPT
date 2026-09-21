@@ -548,3 +548,189 @@ def test_deleting_a_slide_neuters_a_run_level_mouse_over_jump(make_deck):
         "the jump's rel was removed but its mouse-over element was left "
         "behind with a dangling r:id"
     )
+
+
+# ----------------------------------------------------------------- G2b
+#
+# The same empty-snapshot flaw one layer up. powerpnt_pids() returned an
+# empty set whenever tasklist errored, timed out or printed something it
+# could not parse, so "unknown" and "nothing was running" were the same
+# value. _powerpoint_locked then computed launched = not before_pids, and
+# a session that had merely ATTACHED to the owner's PowerPoint believed it
+# had launched it and called Quit() on the way out.
+
+
+@pytestmark_win
+def test_an_unreadable_process_table_is_unknown_not_empty(monkeypatch):
+    from kitchensink4ppt.com import bridge
+
+    def boom(*_a, **_k):
+        raise OSError("tasklist is not available")
+
+    monkeypatch.setattr(bridge.subprocess, "run", boom)
+    assert bridge.powerpnt_pids() is None
+    assert bridge.powerpnt_count() == -1
+
+
+@pytestmark_win
+@pytest.mark.parametrize(
+    "stdout, code",
+    [
+        ("", 0),                                    # no output at all
+        ("", 1),                                    # errored, said nothing
+        ('"POWERPNT.EXE"\n', 0),                    # row we cannot parse
+        ('"POWERPNT.EXE","not-a-pid","Console"\n', 0),
+    ],
+)
+def test_an_unparsable_process_table_is_unknown(monkeypatch, stdout, code):
+    from kitchensink4ppt.com import bridge
+
+    class Result:
+        pass
+
+    def fake_run(*_a, **_k):
+        r = Result()
+        r.stdout, r.stderr, r.returncode = stdout, "", code
+        return r
+
+    monkeypatch.setattr(bridge.subprocess, "run", fake_run)
+    assert bridge.powerpnt_pids() is None
+
+
+@pytestmark_win
+def test_a_genuine_no_match_is_still_an_empty_set(monkeypatch):
+    """The regression this fix must not cause: tasklist's INFO line means
+    nothing is running, and the server must still be able to own what it
+    starts next."""
+    from kitchensink4ppt.com import bridge
+
+    class Result:
+        stdout = "INFO: No tasks are running which match the criteria.\n"
+        stderr = ""
+        returncode = 0
+
+    monkeypatch.setattr(bridge.subprocess, "run", lambda *a, **k: Result())
+    assert bridge.powerpnt_pids() == set()
+    assert bridge.powerpnt_count() == 0
+
+
+class _FakeApp:
+    """Enough of PowerPoint.Application to run a session to its cleanup."""
+
+    def __init__(self):
+        self.quit_calls = 0
+        self.DisplayAlerts = None
+        self.Presentations = []
+
+    def Quit(self):  # noqa: N802 - COM spelling
+        self.quit_calls += 1
+
+
+def _run_session(monkeypatch, bridge, table):
+    """Enter and leave one _powerpoint() session against a fake table and a
+    fake DispatchEx, and hand back (app, session.launched)."""
+    app = _FakeApp()
+    monkeypatch.setattr(bridge, "powerpnt_pids", table)
+    monkeypatch.setattr(
+        bridge, "_com_modules", lambda: (_Pythoncom(), _Win32(app))
+    )
+    monkeypatch.setattr(bridge, "_ensure_apartment", lambda _p: "initialized")
+    monkeypatch.setattr(bridge, "QUIT_POLL_SECONDS", 5.0)
+    seen = {}
+    with bridge._powerpoint() as session:
+        seen["launched"] = session.launched
+    return app, seen["launched"]
+
+
+class _Win32:
+    def __init__(self, app):
+        self._app = app
+
+    def DispatchEx(self, _progid):  # noqa: N802 - COM spelling
+        return self._app
+
+
+@pytestmark_win
+def test_an_unreadable_table_never_quits_the_instance_it_attached_to(
+    monkeypatch,
+):
+    """The harm: tasklist fails, the owner has PowerPoint open, the server
+    attaches to it and then quits it with the owner's unsaved work in it."""
+    from kitchensink4ppt.com import bridge
+
+    app, launched = _run_session(monkeypatch, bridge, lambda: None)
+    assert launched is False, "an unknown table is not ownership"
+    assert app.quit_calls == 0, "the owner's PowerPoint was quit"
+    assert not bridge._SELF_LAUNCHED_PIDS, "the kill-switch was armed"
+
+
+@pytestmark_win
+def test_an_unreadable_table_leaves_the_kill_switch_disarmed(monkeypatch):
+    from kitchensink4ppt.com import bridge
+    import threading
+
+    _app, _launched = _run_session(monkeypatch, bridge, lambda: None)
+    assert bridge._kill_self_launched_for_thread(
+        threading.get_ident()
+    ) is False
+
+
+@pytestmark_win
+def test_a_known_empty_table_still_owns_and_quits_what_it_started(
+    monkeypatch,
+):
+    """The normal path must behave exactly as before: nothing running, we
+    start one, we quit it."""
+    from kitchensink4ppt.com import bridge
+
+    calls = {"n": 0}
+
+    def table():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return set()          # entry: nothing was running
+        if calls["n"] == 2:
+            return {9191}         # our DispatchEx started this one
+        return set()              # after Quit: it exited
+
+    app, launched = _run_session(monkeypatch, bridge, table)
+    assert launched is True
+    assert app.quit_calls == 1
+
+
+@pytestmark_win
+def test_a_known_busy_table_still_attaches_and_does_not_quit(monkeypatch):
+    from kitchensink4ppt.com import bridge
+
+    app, launched = _run_session(monkeypatch, bridge, lambda: {321})
+    assert launched is False
+    assert app.quit_calls == 0
+
+
+@pytestmark_win
+def test_powerpoint_status_does_not_call_an_unknown_table_not_running(
+    monkeypatch,
+):
+    from kitchensink4ppt.com import bridge
+
+    monkeypatch.setattr(bridge, "powerpnt_pids", lambda: None)
+    out = bridge.powerpoint_status()
+    assert out["powerpoint_running"] is not True
+    assert "error" in out and "process table" in out["error"]
+
+
+# ------------------------------------------------------------------ S1
+
+
+@metrics
+def test_the_metrics_note_states_a_bounded_allowance_not_a_direction():
+    """The note used to claim the model "errs wide rather than narrow",
+    which is an absolute the calibration cannot support. It states what the
+    allowance IS and what that costs the reader instead."""
+    sp, body, _p = _metrics_shape([("Some words", "Calibri", 1200)])
+    note = _overflow(sp, body)["note"]
+    assert "errs wide" not in note
+    assert "3.5 pt allowance" in note
+    assert "calibrated on tested PowerPoint layouts" in note
+    assert "may be reported as wrapping" in note
+    assert note.endswith("PowerPoint's rendering is still the final authority")
