@@ -21,6 +21,7 @@ anything in this file.
 
 from __future__ import annotations
 
+import contextlib
 import inspect
 import sys
 
@@ -891,24 +892,14 @@ def test_nothing_in_the_com_package_can_end_a_powerpoint_process():
 
 
 @pytestmark_win
-def test_a_timed_out_operation_reports_the_pid_and_leaves_it_running(
-    monkeypatch,
-):
+def test_a_timed_out_operation_names_the_pid_and_ends_nothing(monkeypatch):
     """It used to terminate that process. A timeout cannot revalidate a
-    hung apartment, so the refusal reports and the process stays."""
-    import threading
-    import time
+    hung apartment, so the refusal reports and nothing is ended.
 
+    Deterministic: the worker blocks on an event the test owns, so nothing
+    here depends on how fast this machine is (R6-3)."""
     from kitchensink4ppt.com import bridge
     from kitchensink4ppt.core.errors import PowerPointBlocked
-
-    recorded = {}
-
-    def stuck():
-        recorded["tid"] = threading.get_ident()
-        bridge._SELF_LAUNCHED_PIDS[recorded["tid"]] = {5150}
-        time.sleep(3)
-        return {}
 
     real_run = bridge.subprocess.run
 
@@ -919,15 +910,13 @@ def test_a_timed_out_operation_reports_the_pid_and_leaves_it_running(
         return real_run(cmd, **kwargs)
 
     monkeypatch.setattr(bridge.subprocess, "run", no_kill)
-    try:
+    with _timeout_harness(monkeypatch, bridge, token={5150}) as h:
         with pytest.raises(PowerPointBlocked) as exc_info:
-            bridge._run_bounded("stuck-op", 0.3, stuck)
-    finally:
-        bridge._SELF_LAUNCHED_PIDS.pop(recorded.get("tid"), None)
+            h.run()
     message = str(exc_info.value)
     assert "5150" in message
-    assert "left running" in message
     assert "terminated" not in message
+    assert "was left running" not in message
 
 
 # ------------------------------------------------------------ R4-2
@@ -1103,106 +1092,281 @@ def test_an_ordinary_slide_id_read_failure_is_still_just_none():
 # ================================================================ ROUND 5
 
 
-# ------------------------------------------------------------ R5-1
+# ------------------------------------------------------------ R5-1, R6-1
+#
+# Everything below is EVENT-DRIVEN. Round 5 proved late completion with a
+# 10.8 second sleep racing _run_bounded's grace wait, and on the
+# reviewer's machine the read-only dialog inspection took long enough that
+# the worker won the race and the test failed. No sleep decides an outcome
+# here (R6-3): the worker blocks on an event the test owns, and the test
+# releases it from inside the stubbed dialog probe, which runs at a known
+# point in the grace window.
+
+
+class _TimeoutHarness:
+    """One _run_bounded call whose worker the test drives by hand.
+
+    `release` unblocks the worker. `during_diagnostics` runs inside the
+    stubbed dialog probe, which _run_bounded calls after its grace wait
+    and before it decides anything: that is the deterministic hook for
+    "something happened while the deadline was passing".
+    """
+
+    def __init__(self, bridge, token=None, outcome=None, during=None):
+        import threading
+
+        self.bridge = bridge
+        self.token = token
+        self.outcome = outcome if outcome is not None else (lambda: {"ok": 1})
+        self.during = during
+        self.release = threading.Event()
+        self.entered = threading.Event()
+        self.finished = threading.Event()
+        self.tid = None
+
+    def body(self):
+        import threading
+
+        self.tid = threading.get_ident()
+        if self.token:
+            self.bridge._SELF_LAUNCHED_PIDS[self.tid] = set(self.token)
+        self.entered.set()
+        self.release.wait(30)
+        try:
+            return self.outcome()
+        finally:
+            self.finished.set()
+
+    def diagnostics(self):
+        if self.during is not None:
+            self.during(self)
+        return []
+
+    def run(self, timeout=0.05):
+        return self.bridge._run_bounded("harness-op", timeout, self.body)
+
+    def clear_token(self):
+        self.bridge._SELF_LAUNCHED_PIDS.pop(self.tid, None)
+
+    def finish_now(self):
+        """Let the worker run to completion and wait for it, from inside
+        the grace window."""
+        self.release.set()
+        assert self.finished.wait(30), "the worker never finished"
+
+
+@contextlib.contextmanager
+def _timeout_harness(monkeypatch, bridge, token=None, outcome=None,
+                     during=None):
+    from kitchensink4ppt.com import dialogs as _dialogs
+
+    harness = _TimeoutHarness(bridge, token, outcome, during)
+    # A short grace keeps the test fast; the hook below, not the clock, is
+    # what decides every outcome.
+    monkeypatch.setattr(bridge, "TIMEOUT_GRACE_SECONDS", 2.0)
+    monkeypatch.setattr(
+        _dialogs, "pending_dialogs", lambda *a, **k: harness.diagnostics()
+    )
+    try:
+        yield harness
+    finally:
+        harness.release.set()
+        harness.finished.wait(30)
+        harness.clear_token()
 
 
 @pytestmark_win
-def test_a_timed_out_worker_is_not_cancelled_and_the_refusal_says_so():
-    """R5-1, the reviewer's probe. Nothing cancels a timed-out COM
-    operation: the worker thread is still inside the call, finishes later,
-    and can still save. Telling the caller it "was aborted" invites a retry
-    on top of a live operation."""
-    import threading
-    import time
-
+def test_a_worker_still_running_when_the_refusal_is_built_gets_the_refusal(
+    monkeypatch,
+):
+    """R6-3(a). The worker is held, so the refusal is what comes back, and
+    it carries the whole uncancelled-operation warning."""
     from kitchensink4ppt.com import bridge
     from kitchensink4ppt.core.errors import PowerPointBlocked
 
-    finished = threading.Event()
-    effect = []
-
-    def resumes_after_deadline():
-        time.sleep(10.8)  # outlasts _run_bounded's post-deadline wait
-        effect.append("completed after caller received timeout")
-        finished.set()
-        return {"ok": True}
-
-    with pytest.raises(PowerPointBlocked) as exc_info:
-        bridge._run_bounded("late-effect", 0.1, resumes_after_deadline)
+    with _timeout_harness(monkeypatch, bridge) as h:
+        with pytest.raises(PowerPointBlocked) as exc_info:
+            h.run()
+        assert not h.finished.is_set(), "the worker finished before the refusal"
     message = str(exc_info.value)
-
-    assert not effect, "the worker completed before the timeout response"
     assert "was aborted" not in message
     assert "The operation was NOT cancelled" in message
     assert "may still finish and save its output" in message
     assert "Do not retry yet" in message
-    assert "call powerpoint_status and wait until it reports no COM " \
-        "operation in progress" in message
+    assert (
+        "call powerpoint_status and wait until it reports no COM operation "
+        "in progress"
+    ) in message
     assert "check the output file before repeating the call" in message
 
-    assert finished.wait(10.0), "the worker did not resume after the refusal"
-    assert effect == ["completed after caller received timeout"]
+
+@pytestmark_win
+def test_a_worker_that_finishes_in_the_grace_wait_skips_the_diagnostics(
+    monkeypatch,
+):
+    """R6-1 stage ONE. The completion check runs the instant the grace wait
+    ends, BEFORE any process or dialog inspection, so a finished success is
+    never delayed behind a process-table call that can itself block.
+
+    Deterministic without a sleep: the worker is never blocked, and the
+    first wait is zero seconds, which cannot observe a thread that has only
+    just been started. The grace wait then returns the moment the worker
+    sets its event.
+    """
+    from kitchensink4ppt.com import bridge
+    from kitchensink4ppt.com import dialogs as _dialogs
+
+    probed = []
+    monkeypatch.setattr(bridge, "TIMEOUT_GRACE_SECONDS", 30.0)
+    monkeypatch.setattr(
+        _dialogs, "pending_dialogs",
+        lambda *a, **k: (probed.append(1), [])[1],
+    )
+    assert bridge._run_bounded(
+        "prompt-op", 0.0, lambda: {"slides": 7}
+    ) == {"slides": 7}
+    assert probed == [], (
+        "a completed result waited behind the process and dialog inspection"
+    )
 
 
 @pytestmark_win
-def test_the_timeout_pid_clause_does_not_assert_ownership(monkeypatch):
-    """The acquisition token is an observation, so the refusal reports what
-    was observed and warns before anyone ends a process."""
-    import threading
-    import time
+def test_a_worker_that_finishes_during_the_grace_returns_its_result(
+    monkeypatch,
+):
+    """R6-1 stage TWO and R6-3(b). The inspection itself can take long
+    enough for the worker to finish inside it, so the check runs again
+    afterwards. The harness releases the worker from inside the stubbed
+    dialog probe, which is exactly that window."""
+    from kitchensink4ppt.com import bridge
 
+    with _timeout_harness(
+        monkeypatch, bridge,
+        outcome=lambda: {"slides": 3},
+        during=lambda h: h.finish_now(),
+    ) as h:
+        assert h.run() == {"slides": 3}
+
+
+@pytestmark_win
+def test_a_worker_that_raises_during_the_grace_surfaces_that_error(
+    monkeypatch,
+):
+    """R6-3(c). Its own error, not a timeout that hides it."""
+    from kitchensink4ppt.com import bridge
+    from kitchensink4ppt.core.errors import DocumentLocked
+
+    def boom():
+        raise DocumentLocked("the deck is open in PowerPoint")
+
+    with _timeout_harness(
+        monkeypatch, bridge, outcome=boom, during=lambda h: h.finish_now(),
+    ) as h:
+        with pytest.raises(DocumentLocked, match="open in PowerPoint"):
+            h.run()
+
+
+@pytestmark_win
+def test_a_token_cleared_during_the_grace_is_not_reported_as_a_pid(
+    monkeypatch,
+):
+    """R6-3(d). The worker recorded pid 5150, then its session ended and
+    cleared the token while the deadline was passing. The evidence is read
+    when the refusal is BUILT, so the refusal cannot name a pid that is no
+    longer recorded, and the new wording cannot say it is still running."""
     from kitchensink4ppt.com import bridge
     from kitchensink4ppt.core.errors import PowerPointBlocked
 
-    recorded = {}
-
-    def stuck():
-        recorded["tid"] = threading.get_ident()
-        bridge._SELF_LAUNCHED_PIDS[recorded["tid"]] = {5150}
-        time.sleep(2)
-        return {}
-
-    try:
+    with _timeout_harness(
+        monkeypatch, bridge, token={5150},
+        during=lambda h: h.clear_token(),
+    ) as h:
         with pytest.raises(PowerPointBlocked) as exc_info:
-            bridge._run_bounded("stuck-op", 0.3, stuck)
-    finally:
-        bridge._SELF_LAUNCHED_PIDS.pop(recorded.get("tid"), None)
+            h.run()
+    message = str(exc_info.value)
+    assert "5150" not in message
+    assert "was left running" not in message
+    assert (
+        "no newly started PowerPoint process could be identified; no "
+        "process was force-ended"
+    ) in message
+
+
+@pytestmark_win
+def test_a_recorded_pid_is_reported_state_neutrally(monkeypatch):
+    """R6-2. What was observed and what this path did not do; no claim
+    about the process's current state and none about ownership."""
+    from kitchensink4ppt.com import bridge
+    from kitchensink4ppt.core.errors import PowerPointBlocked
+
+    with _timeout_harness(monkeypatch, bridge, token={5150}) as h:
+        with pytest.raises(PowerPointBlocked) as exc_info:
+            h.run()
     message = str(exc_info.value)
     assert (
-        "a PowerPoint process that was not running when this call began, "
-        "pid 5150, was left running; before ending it from Task Manager, "
-        "make sure no person or other program is using it"
+        "(PowerPoint process pid 5150 was not running when this call began; "
+        "this call did not force-end it, and its current state was not "
+        "re-checked)"
     ) in message
     assert "this call started" not in message
+    assert "was left running" not in message
 
 
 @pytestmark_win
-def test_the_no_token_clause_states_what_was_seen_not_what_was_done():
-    """With nothing recorded the refusal says PowerPoint was already
-    running, rather than asserting the server did not launch it."""
-    import time
-
+@pytest.mark.parametrize("table", [
+    pytest.param(lambda: None, id="unknown-process-table"),
+    pytest.param(lambda: {321}, id="ownership-gate-refused"),
+    pytest.param(set, id="worker-never-touched-powerpoint"),
+])
+def test_every_no_token_case_gets_the_same_neutral_clause(monkeypatch, table):
+    """R6-3(e). An empty token is NOT evidence that PowerPoint was already
+    running: the table may be unreadable, the ownership gate may have
+    refused, no token may have been recorded yet, or the worker may never
+    have touched PowerPoint at all. One honest sentence covers all of it."""
     from kitchensink4ppt.com import bridge
     from kitchensink4ppt.core.errors import PowerPointBlocked
 
-    with pytest.raises(PowerPointBlocked) as exc_info:
-        bridge._run_bounded("stuck-op", 0.3, lambda: time.sleep(2))
+    monkeypatch.setattr(bridge, "powerpnt_pids", table)
+    with _timeout_harness(monkeypatch, bridge) as h:
+        with pytest.raises(PowerPointBlocked) as exc_info:
+            h.run()
+    message = str(exc_info.value)
     assert (
-        "PowerPoint was already running when this call began, so no "
-        "process was touched"
-    ) in str(exc_info.value)
+        "no newly started PowerPoint process could be identified; no "
+        "process was force-ended"
+    ) in message
+    assert "already running" not in message
+
+
+def test_no_timeout_test_decides_an_outcome_with_a_sleep():
+    """R6-3, pinned: the round-5 proof failed on the reviewer's machine
+    because a sleep raced the grace wait. Nothing in this file may go back
+    to that."""
+    import pathlib
+    import re
+
+    source = pathlib.Path(__file__).read_text(encoding="utf-8")
+    offenders = [
+        line.strip()
+        for line in source.splitlines()
+        if re.search(r"\btime\.sleep\(", line)
+    ]
+    assert not offenders, "\n".join(offenders)
 
 
 @pytestmark_win
 def test_a_partial_startup_process_is_not_said_to_be_ended():
-    """R5-1(c): _classify told the caller a half-started PowerPoint "is
-    ended by this call". Nothing is ended."""
+    """R5-1(c) and R6-2: _classify told the caller a half-started
+    PowerPoint "is ended by this call". Nothing is ended, and the
+    replacement claims no current state either."""
     from kitchensink4ppt.com import bridge
 
     message = str(bridge._classify(_com_error(bridge.CO_E_SERVER_EXEC_FAILURE)))
     assert "is ended by this call" not in message
+    assert "was left running" not in message
     assert (
-        "a PowerPoint process may have been started and was left running"
+        "a PowerPoint process may have been started, and this call does "
+        "not end PowerPoint processes"
     ) in message
 
 

@@ -77,6 +77,11 @@ PP_ALERTS_NONE = 1  # ppAlertsNone
 PP_SAVE_AS_PDF = 32  # ppSaveAsPDF
 PP_FIXED_FORMAT_TYPE_PDF = 2  # ppFixedFormatTypePDF
 QUIT_POLL_SECONDS = 15.0
+#: How much longer a timed-out operation is given before the refusal is
+#: built. The deadline bounds the CALLER's wait and cancels nothing, so a
+#: worker that finishes in this window has finished and its result is
+#: returned instead of a false timeout (final check, R6-1, 2026-09-22).
+TIMEOUT_GRACE_SECONDS = 10.0
 
 DEFAULT_IMAGE_WIDTH = 1280
 
@@ -187,7 +192,8 @@ def _classify(exc):
         # so that case gets the honest sentence instead (review, 2026-09-22).
         aftermath = (
             " No presentation was opened and no file was changed; a "
-            "PowerPoint process may have been started and was left running."
+            "PowerPoint process may have been started, and this call does "
+            "not end PowerPoint processes."
             if CO_E_SERVER_EXEC_FAILURE in hrs
             else " Nothing was opened and nothing was changed."
         )
@@ -395,18 +401,33 @@ def _alerts_suppressed(app):
 
 
 def _run_bounded(name: str, timeout: float, fn):
-    """Run fn on a worker thread under the COM lock with a hard deadline.
+    """Run fn on a worker thread under the COM lock, bounding how long the
+    CALLER waits.
 
     On expiry: if the worker never got the lock, that is queue contention
     and PowerPointBusy names the operation actually running. If it got the
-    lock and then stalled, the caller is told (PowerPointBlocked) and
-    NOTHING IS CANCELLED: the deadline bounds how long the CALLER waits,
-    not how long the work runs. The worker thread is still inside the COM
-    call, can finish later, and can still save its output, so the refusal
-    says exactly that and tells the caller how to check before retrying.
-    No process is terminated here, or anywhere else in this package; a
-    PowerPoint this call started is named as an observation and left
-    running (final check, R5-1, 2026-09-22)."""
+    lock and then stalled, NOTHING IS CANCELLED: the deadline bounds how
+    long the CALLER waits, not how long the work runs. The worker thread is
+    still inside the COM call, can finish later, and can still save its
+    output.
+
+    So `timeout` is NOT a hard deadline and NOT a maximum elapsed time: it
+    is how long the caller waits for PowerPoint to answer, after which
+    TIMEOUT_GRACE_SECONDS more and a dialog inspection follow, and a
+    result that arrives in that window is still returned.
+
+    The completion check is TWO-STAGE: once the instant the grace wait
+    ends, before any process or dialog inspection, so a completed success
+    is never delayed behind a process-table call; and once more after that
+    inspection, which can itself take long enough for the worker to finish
+    inside it. Either way the worker's own answer wins, its result
+    returned or its exception raised, because reporting a timeout for an
+    operation that succeeded is a false failure the caller acts on (final
+    check, R6-1). Only if it is still not done is the refusal built, and
+    everything it says about a process is read at that same moment and is
+    state-neutral: what was observed, and what this path did not do.
+    No process is terminated here, and none anywhere else in this package
+    (final check, R5-1 and R6-2, 2026-09-22)."""
     # Preserve the bridge's documented side effect: before v1.1 every public
     # operation ran ON THE CALLING THREAD and left that thread's COM
     # apartment initialized (this module initializes freely and never
@@ -468,31 +489,59 @@ def _run_bounded(name: str, timeout: float, fn):
             f"({running} is still running); retry when it finishes. "
             "powerpoint_status reports the running operation."
         )
-    ours = _self_launched_pids_for_thread(
-        worker_tid[0] if worker_tid else None
-    )
-    done.wait(10.0)
+    # The deadline has passed, but the work has NOT been cancelled, so the
+    # grace wait below is a real second chance rather than a formality. A
+    # worker that finishes during it finished, and reporting a timeout for
+    # an operation that succeeded is a false failure the caller would act
+    # on (final check, R6-1, 2026-09-22).
+    done.wait(TIMEOUT_GRACE_SECONDS)
+
+    def _completed():
+        """The worker's own answer, when it has one. TWO-STAGE by design:
+        asked once the moment the grace wait ends, BEFORE any process or
+        dialog inspection, so a completed success is never delayed behind
+        a process-table call, and once more after that inspection, which
+        can itself take long enough for the worker to finish inside it."""
+        if not done.is_set():
+            return False
+        if "error" in result:
+            raise result["error"]
+        return "value" in result
+
+    if _completed():
+        return result["value"]
+
     dialogs_seen = []
     with contextlib.suppress(Exception):
         from . import dialogs as _dialogs
 
         dialogs_seen = _dialogs.pending_dialogs()
-    # The pid clause reports an OBSERVATION, not proven ownership: the
-    # acquisition token says this process was not running when the call
-    # began and looked freshly created, which is evidence, not proof, and
-    # the caller is told to check before ending anything (R5-1).
+
+    if _completed():
+        return result["value"]
+    # Evidence for the refusal is read HERE, at the moment the refusal is
+    # built, not before the wait: a token sampled earlier can have been
+    # cleared by a worker that finished and quit its instance meanwhile.
+    ours = _self_launched_pids_for_thread(
+        worker_tid[0] if worker_tid else None
+    )
+    # STATE-NEUTRAL: this path reports what it OBSERVED and what it did not
+    # do. It does not know the process's current state, it did not
+    # re-check it, and an empty token is not evidence that PowerPoint was
+    # already running: the table may have been unreadable, the ownership
+    # gate may have refused, no token may have been recorded yet, or the
+    # worker may never have touched PowerPoint at all (R6-2).
     if ours:
         pids = ", ".join(str(p) for p in sorted(ours))
         detail = (
-            f" (a PowerPoint process that was not running when this call "
-            f"began, pid {pids}, was left running; before ending it from "
-            "Task Manager, make sure no person or other program is using "
-            "it)"
+            f" (PowerPoint process pid {pids} was not running when this "
+            "call began; this call did not force-end it, and its current "
+            "state was not re-checked)"
         )
     else:
         detail = (
-            " (PowerPoint was already running when this call began, so no "
-            "process was touched)"
+            " (no newly started PowerPoint process could be identified; no "
+            "process was force-ended)"
         )
     if dialogs_seen:
         titles = ", ".join(
