@@ -327,8 +327,14 @@ def _make_hlink(rid: str, action: str | None, tooltip: str | None):
 def _set_cnvpr_hlink(
     cnvpr: etree._Element, rid: str, action: str | None, tooltip: str | None
 ) -> list[str]:
-    """Replace the shape-level hlinkClick; returns the rIds of replaced
-    links (for rel GC). Media playback affordances refuse."""
+    """Replace EVERY shape-level hyperlink; returns the rIds of the links
+    replaced (for rel GC). Media playback affordances refuse.
+
+    Click AND hover, because removing only a:hlinkClick left an old
+    a:hlinkHover (the correct SHAPE-level hover element, inside p:cNvPr)
+    beside the new link with its relationship still referenced, which is
+    not the replacement set_hyperlink promises (final check, R4-3,
+    2026-09-22)."""
     replaced: list[str] = []
     for el in _existing_hlinks(cnvpr):
         if el.get("action") == _ACTION_MEDIA:
@@ -337,11 +343,10 @@ def _set_cnvpr_hlink(
                 "video/audio); refusing to overwrite the playback control "
                 "with a hyperlink"
             )
-        if el.tag == qn("a:hlinkClick"):
-            old = el.get(_R_ID)
-            if old:
-                replaced.append(old)
-            cnvpr.remove(el)
+        old = el.get(_R_ID)
+        if old:
+            replaced.append(old)
+        cnvpr.remove(el)
     cnvpr.insert(0, _make_hlink(rid, action, tooltip))
     return replaced
 
@@ -349,17 +354,23 @@ def _set_cnvpr_hlink(
 def _set_run_hlink(
     run: etree._Element, rid: str, action: str | None, tooltip: str | None
 ) -> list[str]:
+    """Replace EVERY hyperlink on one run; returns the rIds replaced.
+
+    Click, the run-level hover element a:hlinkMouseOver, and the legacy
+    a:hlinkHover spelling a run should never carry but might: all of them
+    go before the new link is written, and each rId they held is returned
+    so the relationship is dereferenced with them (final check, R4-3,
+    2026-09-22)."""
     rpr = run.find(qn("a:rPr"))
     if rpr is None:
         rpr = etree.Element(qn("a:rPr"))
         run.insert(0, rpr)  # rPr is the first child of a:r
     replaced: list[str] = []
     for el in _existing_hlinks(rpr):
-        if el.tag == qn("a:hlinkClick"):
-            old = el.get(_R_ID)
-            if old:
-                replaced.append(old)
-            rpr.remove(el)
+        old = el.get(_R_ID)
+        if old:
+            replaced.append(old)
+        rpr.remove(el)
     ext = rpr.find(qn("a:extLst"))
     hl = _make_hlink(rid, action, tooltip)
     if ext is not None:
