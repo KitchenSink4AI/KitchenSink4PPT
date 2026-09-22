@@ -176,11 +176,18 @@ CHECKS: dict[str, tuple[dict, str]] = {
         "not resolve anywhere instead of passing them",
     ),
     "overflow": (
-        {"min_fill_ratio": 1.4},
-        "text-length-vs-frame-area estimate with no real font metrics "
-        "(flags only past min_fill_ratio to absorb model error); shapes "
-        "with spAutoFit are skipped because their frame grows with the "
-        "text; confirm with export_slide_images before acting",
+        {"min_fill_ratio": 1.4, "min_fill_ratio_metrics": 1.0},
+        "two models, and every finding names the one that produced it. "
+        "With the optional metrics extra installed and each run's font file "
+        "present, every run is measured against its own font and the wrap "
+        "carries a per-line allowance calibrated against PowerPoint, so "
+        "that model needs no extra margin here and min_fill_ratio_metrics "
+        "is 1.0. Otherwise it is the original text-length-vs-frame-area "
+        "estimate with no real font metrics, suppressed under the wider "
+        "min_fill_ratio because that model's error is wider and "
+        "uncalibrated. Shapes with spAutoFit are skipped because their "
+        "frame grows with the text; confirm with export_slide_images "
+        "before acting",
     ),
     "empty_placeholder": (
         {},
@@ -1311,26 +1318,44 @@ def _check_overflow(ctx: _SlideCtx, opts: dict) -> list[dict]:
             s["elem"], body, bodypr, font_scale, lnspc,
             box=s["box"] if s.get("box_inherited") else None,
             size_pt=resolved_pt,
+            pkg=ctx.pkg,
+            part=ctx.part,
         )
         if not est or est.get("likely_overflow") is not True:
             continue
         ratio = est.get("fill_ratio")
-        if ratio is not None and ratio < float(opts["min_fill_ratio"]):
+        measured = est.get("method") == "font-metrics"
+        # The suppression threshold is an allowance for MODEL error, so it
+        # tracks the model. The character-count estimate keeps the wide 1.4x
+        # margin it always had; a measurement of the font's own advance
+        # widths does not need it, and the 2026-09-21 field run is what
+        # proved that a real ~1.1x overflow was being swallowed by it.
+        floor = float(
+            opts["min_fill_ratio_metrics"] if measured
+            else opts["min_fill_ratio"]
+        )
+        if ratio is not None and ratio < floor:
             continue  # within the model's error margin; do not cry wolf
+        if measured:
+            how = f"measured against {est.get('font_file')}, no kerning"
+        else:
+            how = "HEURISTIC estimate with no real font metrics"
         findings.append(
             ctx.finding(
                 "overflow",
                 "warning",
                 f"{_label(s)} likely overflows its frame"
                 + (f" (estimated {ratio}x the available height)" if ratio else "")
-                + "; HEURISTIC estimate with no real font metrics",
+                + "; " + how,
                 f"format_text(slide={ctx.rec['index']}, shape={s['id']}, "
                 f"size_pt=...) to shrink the text, or set_shape(slide="
                 f"{ctx.rec['index']}, shape={s['id']}, h=...) to grow the "
                 "frame; confirm with export_slide_images first",
                 shape_ids=[s["id"]],
                 fill_ratio=ratio,
-                heuristic=True,
+                heuristic=not measured,
+                method=est.get("method"),
+                font_file=est.get("font_file"),
             )
         )
     return findings

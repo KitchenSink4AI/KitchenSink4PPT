@@ -319,14 +319,38 @@ def validate_toggles() -> None:
         toggle(name)
 
 
+#: The only values KS4P_PACK_POLICY accepts.
+_POLICIES = ("auto", "locked")
+
+
+def pack_policy() -> str:
+    """The validated KS4P_PACK_POLICY value.
+
+    A typo used to FAIL OPEN: KS4P_PACK_POLICY=lockedd served with the
+    packs unlockable, while its sibling KS4P_MODE=fulll refused to start.
+    The one env whose whole purpose is a lock was the one that shrugged
+    off a misspelling. Unknown values now refuse loudly, at startup
+    (apply_startup_mode) and at every consultation, matching Excel.
+    """
+    raw = _explicit(ENV_PACK_POLICY).lower()
+    if not raw:
+        return "auto"
+    if raw not in _POLICIES:
+        raise PptMcpError(
+            f"{ENV_PACK_POLICY}={raw!r} is not a recognized policy; use "
+            f"one of {_POLICIES}. Refusing rather than letting a typo "
+            "silently drop the host's lock."
+        )
+    return raw
+
+
 def resolve_lock() -> bool:
     """Is the tool surface fixed at startup?
 
     Precedence: an explicit KS4P_PACK_POLICY beats KS4P_LOCK_TOOLS beats
     the unlocked default."""
-    explicit = _explicit(ENV_PACK_POLICY)
-    if explicit:
-        return explicit.lower() == "locked"
+    if _explicit(ENV_PACK_POLICY):
+        return pack_policy() == "locked"
     return toggle(ENV_LOCK_TOOLS)
 
 
@@ -363,6 +387,51 @@ def _validate(packs: list[str]) -> list[str]:
     return out
 
 
+#: What enable_tools says on EVERY successful call, including one that
+#: enabled nothing new. The old sentence promised a refresh that a worker
+#: or subagent never gets: its tool list was fixed when it started, so it
+#: retried the same dead call instead of asking for the one thing that
+#: works everywhere, a start-up pack list (punch-list #887).
+#:
+#: The note is a PREFIX plus the body. The prefix has to tell the truth
+#: about the notification: _sync only fires the visibility hook when a
+#: tool actually flipped, so saying "tools/list_changed was sent" after a
+#: no-op re-enable was a plain falsehood (review finding N1).
+LIST_CHANGED_PREFIX = "tools/list_changed was sent."
+
+NO_CHANGE_PREFIX = (
+    "These packs were already on, so no list change was sent."
+)
+
+PACK_NOTE_BODY = (
+    "If the new tools are not in your tool "
+    "list, this client fixed its list when the session or worker started: "
+    "do not retry here. What works in every client: ask the user to add "
+    f"the packs to {ENV_MODE} (comma list) in this server's launch "
+    "settings, restart the app or session, then start a new worker if "
+    "needed. Claude Code only: the orchestrator can instead call "
+    "enable_tools in the main session and then start a new worker. If "
+    "enable_tools refuses a pack, an administrator locked the tool set: "
+    "do not retry."
+)
+
+
+def pack_note(list_changed: bool) -> str:
+    """The enable_tools note, whose first sentence states what actually
+    happened to the tool list."""
+    prefix = LIST_CHANGED_PREFIX if list_changed else NO_CHANGE_PREFIX
+    return f"{prefix} {PACK_NOTE_BODY}"
+
+#: The same fact, said once where a client reads the surface: the server
+#: instructions and the get_workflows index.
+WORKER_PACK_SENTENCE = (
+    "Workers and subagents only see the tools that were on when they "
+    f"started: start the server with {ENV_MODE} set to a comma list of "
+    "packs, or, in Claude Code, enable packs in the main session before "
+    "starting workers."
+)
+
+
 def enable(packs: list[str]) -> dict:
     """Idempotent enable. Reports what changed, the approx token cost added,
     and the resulting total surface."""
@@ -370,7 +439,8 @@ def enable(packs: list[str]) -> dict:
         err = PptMcpError(
             "the tool surface is fixed at startup by the host "
             "(KS4P_PACK_POLICY=locked, or the 'Lock the tool set at "
-            "startup' setting). Only a human can change it: untick that "
+            "startup' setting). An administrator locked the tool packs "
+            "for this install. Only a human can change it: untick that "
             "setting, or restart the server with a different KS4P_MODE."
         )
         err.code = "CONFLICT"
@@ -390,18 +460,18 @@ def enable(packs: list[str]) -> dict:
                 newly = True
         (enabled_now if newly else already).append(pack)
     _sync(flipped, True)
-    result = {
+    return {
         "enabled": enabled_now,
         "already_enabled": already,
         "approx_tokens_added": tokens_added,
+        # On EVERY successful call, including a no-op re-enable: a caller
+        # that cannot see the tools is exactly the caller whose second
+        # attempt enables nothing new, and that was the attempt the old
+        # note stayed silent on. `flipped` is what _sync acted on, so it
+        # is also what decides whether a notification really went out.
+        "note": pack_note(bool(flipped)),
         **surface_report(),
     }
-    if enabled_now:
-        result["note"] = (
-            "tools/list_changed was sent; re-fetch the tool list if your "
-            "client does not refresh automatically"
-        )
-    return result
 
 
 def disable(packs: list[str]) -> dict:

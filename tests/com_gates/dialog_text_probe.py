@@ -8,7 +8,12 @@ descendant class + text of a real PowerPoint modal so the extraction can
 be widened to whatever PowerPoint actually uses.
 
 Same safety contract as the discovery script: refuses if PowerPoint is
-already running, kills only the pid it launched, never clicks a dialog.
+already running, never clicks a dialog, and cleans up after itself by
+ending only the pid THIS SCRIPT launched.
+
+That cleanup belongs to this gate script alone. The shipped package ends
+no PowerPoint process at any point: its timeout path reports what it
+observed and says it did not force-end anything (R7-2).
 """
 
 from __future__ import annotations

@@ -495,15 +495,22 @@ def create_table(
     first_row: bool = True,
     band_rows: bool = True,
     name: str | None = None,
+    row_heights=None,
+    col_widths=None,
 ) -> dict:
     """Create a native table graphicFrame at x, y sized w x h (inches).
 
-    Columns split w evenly; rows split h evenly (set_column_widths /
-    set_row_heights adjust afterwards). data: optional 2D list of cell texts
-    (row-major; shorter rows leave trailing cells empty). style: a named
-    built-in style or GUID (default Medium Style 2 - Accent 1, the
-    PowerPoint default); first_row/band_rows set the header and banding
-    flags PowerPoint turns on for new tables.
+    Columns split w evenly and rows split h evenly unless row_heights or
+    col_widths say otherwise, applied at creation. A COMPLETE list of
+    inches states the whole grid and the frame is set to its total, which
+    is reported as box_resized when that differs from w or h; an
+    {index: inches} dict leaves the box alone and splits what is left
+    among the rows or columns it did not name, refusing only when it
+    leaves them nothing. Row heights are MINIMUMS; PowerPoint grows a row
+    to fit its text. data: optional 2D list of cell texts (row-major;
+    shorter rows leave trailing cells empty). style: a named built-in
+    style or GUID (default Medium Style 2 - Accent 1); first_row and
+    band_rows set the header and banding flags.
     """
     rec = resolve_slide(pkg, slide)
     part = rec["part"]
@@ -541,17 +548,29 @@ def create_table(
     locks = etree.SubElement(cnvfr, qn("a:graphicFrameLocks"))
     locks.set("noGrp", "1")
     etree.SubElement(nv, qn("p:nvPr"))
-    g.check_emu_box(
-        g.in_to_emu(x), g.in_to_emu(y), g.in_to_emu(w), g.in_to_emu(h),
-        what="table",
-    )
+    # The grid is sized BEFORE the frame, because a complete list of sizes
+    # decides the frame rather than being squeezed into it: a 6-inch frame
+    # around a grid declaring 2 inches is contradictory geometry that
+    # PowerPoint normalizes away, so the caller's numbers were not what
+    # rendered (review finding M5).
+    col_w = _sizes_at_creation(col_widths, cols, g.in_to_emu(w), "col_widths")
+    row_h = _sizes_at_creation(row_heights, rows, g.in_to_emu(h), "row_heights")
+    cx, cy = sum(col_w), sum(row_h)
+    resized = [
+        axis
+        for axis, got, asked in (
+            ("width", cx, g.in_to_emu(w)), ("height", cy, g.in_to_emu(h))
+        )
+        if got != asked
+    ]
+    g.check_emu_box(g.in_to_emu(x), g.in_to_emu(y), cx, cy, what="table")
     xfrm = etree.SubElement(frame, qn("p:xfrm"))
     off = etree.SubElement(xfrm, qn("a:off"))
     off.set("x", str(g.in_to_emu(x)))
     off.set("y", str(g.in_to_emu(y)))
     ext = etree.SubElement(xfrm, qn("a:ext"))
-    ext.set("cx", str(g.in_to_emu(w)))
-    ext.set("cy", str(g.in_to_emu(h)))
+    ext.set("cx", str(cx))
+    ext.set("cy", str(cy))
     graphic = etree.SubElement(frame, qn("a:graphic"))
     gdata = etree.SubElement(graphic, qn("a:graphicData"))
     gdata.set("uri", _URI_TABLE)
@@ -565,11 +584,9 @@ def create_table(
     styleid = etree.SubElement(tblpr, qn("a:tableStyleId"))
     styleid.text = guid
     grid = etree.SubElement(tbl, qn("a:tblGrid"))
-    col_w = _split_emu(g.in_to_emu(w), cols)
     for cw in col_w:
         gc = etree.SubElement(grid, qn("a:gridCol"))
         gc.set("w", str(cw))
-    row_h = _split_emu(g.in_to_emu(h), rows)
     for r in range(rows):
         tr = etree.SubElement(tbl, qn("a:tr"))
         tr.set("h", str(row_h[r]))
@@ -583,7 +600,7 @@ def create_table(
             etree.SubElement(tc, qn("a:tcPr"))
 
     pkg.mark_dirty(part)
-    return {
+    out = {
         "shape_id": shape_id,
         "created": [shape_id],
         "table_index": len(_tables_on_slide(pkg, part)) - 1,
@@ -593,7 +610,16 @@ def create_table(
         "slide_index": rec["index"],
         "slide_id": rec["slide_id"],
         "name": display,
+        "w_in": round(g.emu_to_in(cx), 4),
+        "h_in": round(g.emu_to_in(cy), 4),
     }
+    if resized:
+        out["box_resized"] = (
+            f"the {' and '.join(resized)} of the box was set to the sizes "
+            f"given, so the table is {out['w_in']}in x {out['h_in']}in "
+            f"rather than {w}in x {h}in"
+        )
+    return out
 
 
 def _split_emu(total: int, n: int) -> list[int]:
@@ -601,6 +627,54 @@ def _split_emu(total: int, n: int) -> list[int]:
     out = [base] * n
     out[-1] += total - base * n
     return out
+
+
+def _sizes_at_creation(sizes, n: int, total_emu: int, label: str) -> list[int]:
+    """The per-row or per-column EMU sizes for a brand-new table.
+
+    None keeps the even split. Otherwise the caller's inches are resolved
+    through the same _resolve_sizes that set_row_heights and
+    set_column_widths use (full list or {index: inches}). A 27-row
+    reference table at 10 pt needed this at creation; the only route was a
+    second call after the fact (field report 2026-09-21, P8).
+
+    Two rules, because the two inputs say different things:
+
+    - A COMPLETE list states the whole grid, so it WINS and the graphic
+      frame is set to its total. Squeezing it into the requested box left
+      a 6-inch frame around a grid declaring 2 inches, contradictory
+      geometry that PowerPoint normalizes away, so what rendered was not
+      what the caller asked for (review finding M5). The caller is told
+      the box moved.
+    - A PARTIAL dict names some rows and leaves the rest to the box, so
+      what it did not name splits what is left. That only works while
+      something IS left, which is the one case that still refuses.
+    """
+    if sizes is None:
+        return _split_emu(total_emu, n)
+    kind = "row" if label == "row_heights" else "column"
+    try:
+        resolved = _resolve_sizes(sizes, n, kind)
+    except PptMcpError as exc:
+        raise PptMcpError(f"{label}: {exc}") from exc
+    named = [g.in_to_emu(v) if v is not None else None for v in resolved]
+    stated = sum(v for v in named if v is not None)
+    unnamed = [i for i, v in enumerate(named) if v is None]
+    if not unnamed:
+        return [int(v) for v in named]  # complete: the list is the geometry
+    if stated >= total_emu:
+        axis = "h" if label == "row_heights" else "w"
+        raise PptMcpError(
+            f"{label} states {g.emu_to_in(stated):.3g} inches of a table "
+            f"box {axis}={g.emu_to_in(total_emu):.3g} inches, leaving "
+            f"nothing for the {len(unnamed)} unstated {kind}s; name every "
+            f"{kind} to set the box from the sizes, or grow the box"
+        )
+    out = list(named)
+    share = _split_emu(total_emu - stated, len(unnamed))
+    for slot, value in zip(unnamed, share):
+        out[slot] = value
+    return [int(v) for v in out]
 
 
 # ---------------------------------------------------------------- cell edits

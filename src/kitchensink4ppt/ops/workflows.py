@@ -545,6 +545,8 @@ WORKFLOWS: dict[str, dict] = {
 def get_workflows(task: str | None = None) -> dict:
     """Serve one workflow by name, or the index of all of them."""
     if task is None:
+        from .. import packs as _packs
+
         return {
             "workflows": {
                 name: {"summary": wf["summary"], "packs": wf["packs"]}
@@ -552,7 +554,8 @@ def get_workflows(task: str | None = None) -> dict:
             },
             "note": (
                 "call get_workflows(task=<name>) for the full step sequence; "
-                "enable_tools lists every pack with token costs"
+                "enable_tools lists every pack with token costs. "
+                + _packs.WORKER_PACK_SENTENCE
             ),
         }
     if task not in WORKFLOWS:

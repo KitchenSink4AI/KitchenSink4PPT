@@ -35,10 +35,18 @@ LIVE-SAFETY STACK (v1.1, ported from KS4W's 2026-09-03 stress report):
   server this is not a mitigation, it is the only isolation there is.
 - Bounded timeouts: the public operations run on a worker thread under a
   deadline, turning the report's 30-minute silent hang into a structured
-  PowerPointBlocked. On expiry the kill-switch terminates POWERPNT by
-  RECORDED PID, and it is armed ONLY when this call launched the process.
-  If we attached to the user's PowerPoint, nothing is ever recorded and
-  nothing can ever be killed.
+  PowerPointBlocked. NOTHING IN THIS PACKAGE FORCE-ENDS A POWERPOINT PROCESS.
+  The refusal REPORTS AN OBSERVATION AND A NON-ACTION: when a pid was
+  recorded on positive evidence it says that process was not running when
+  the call began, that this call did not force-end it, and that its
+  current state was not re-checked. It claims nothing about the present,
+  because a timeout cannot revalidate a hung apartment and a token taken
+  minutes earlier is not proof of what is true now.
+- Queue abandonment: a call that gives up while its worker is still
+  QUEUED on the serialization lock marks itself abandoned, atomically,
+  against the worker's own attempt to start. The loser stands down, so a
+  caller told the operation did not happen never has it happen anyway
+  behind its back, and the retry it was offered is safe (R7-1).
 - DisplayAlerts: suppressed for the duration and RESTORED when the instance
   is the user's. The pre-v1.1 code set ppAlertsNone on whatever instance it
   reached and never put it back, which on a singleton leaked into the
@@ -64,6 +72,7 @@ from ..core.errors import (
     PowerPointBlocked,
     PowerPointBusy,
     PowerPointDisconnected,
+    PowerPointNotRunning,
     PptMcpError,
 )
 from ..core.sandbox import check_path
@@ -75,6 +84,18 @@ PP_ALERTS_NONE = 1  # ppAlertsNone
 PP_SAVE_AS_PDF = 32  # ppSaveAsPDF
 PP_FIXED_FORMAT_TYPE_PDF = 2  # ppFixedFormatTypePDF
 QUIT_POLL_SECONDS = 15.0
+#: How much longer a timed-out operation is given before the refusal is
+#: built. The deadline bounds the CALLER's wait and cancels nothing, so a
+#: worker that finishes in this window has finished and its result is
+#: returned instead of a false timeout (final check, R6-1, 2026-09-22).
+TIMEOUT_GRACE_SECONDS = 10.0
+
+#: TEST SEAM (R7-3). _run_bounded builds its internal completion signal
+#: through this factory, so a test can substitute an event whose waits it
+#: drives and pin WHICH stage observed completion without assuming
+#: anything about thread scheduling. Production behaviour is unchanged:
+#: this is threading.Event and nothing in the package reassigns it.
+_COMPLETION_EVENT_FACTORY = threading.Event
 
 DEFAULT_IMAGE_WIDTH = 1280
 
@@ -86,6 +107,17 @@ CO_E_OBJNOTCONNECTED = -2147220995  # proxy no longer connected
 RPC_S_CALL_FAILED = -2147023170  # 0x800706BE, app killed mid-call
 RPC_S_SERVER_UNAVAILABLE = -2147023174  # 0x800706BA, RPC server gone
 
+# The COM START-UP family: the apartment, the registration and the launch.
+# None of these is a caller mistake, and mapping them to PptMcpError sent
+# them to the wire as BAD_PARAMS, which tells a caller to go and look at
+# its own arguments (2026-09-21 field report, P7).
+CO_E_NOTINITIALIZED = -2147221008  # 0x800401F0, CoInitialize not called
+CO_E_ALREADYINITIALIZED = -2147221007  # 0x800401F1, apartment already up
+RPC_E_CHANGED_MODE = -2147417850  # 0x80010106, thread is in the other model
+REGDB_E_CLASSNOTREG = -2147221164  # 0x80040154, PowerPoint not registered
+CO_E_SERVER_EXEC_FAILURE = -2146959355  # 0x80080005, the server failed to run
+S_FALSE = 1  # CoInitializeEx: already initialized in this same mode
+
 BUSY_HRESULTS = {RPC_E_CALL_REJECTED, RPC_E_SERVERCALL_RETRYLATER}
 GONE_HRESULTS = {
     RPC_E_DISCONNECTED,
@@ -93,6 +125,38 @@ GONE_HRESULTS = {
     RPC_S_CALL_FAILED,
     RPC_S_SERVER_UNAVAILABLE,
 }
+#: Start-up faults: PowerPoint never came up, so nothing is running.
+STARTUP_HRESULTS = {
+    CO_E_NOTINITIALIZED,
+    CO_E_ALREADYINITIALIZED,
+    RPC_E_CHANGED_MODE,
+    REGDB_E_CLASSNOTREG,
+    CO_E_SERVER_EXEC_FAILURE,
+}
+#: The subset worth one more try. The ONLY action taken between the two
+#: attempts is re-arming this thread's apartment, so the retry set is
+#: exactly the errors that action can repair, and nothing else (review
+#: finding M3, 2026-09-22). Deliberately NOT retried:
+#:   REGDB_E_CLASSNOTREG       a second attempt cannot register a class;
+#:   RPC_E_CHANGED_MODE        the thread's apartment model is already set,
+#:                             and re-initializing it the same way cannot
+#:                             change it, so a retry is theatre;
+#:   CO_E_SERVER_EXEC_FAILURE  PowerPoint may have PARTIALLY LAUNCHED before
+#:                             failing, and starting a second one without
+#:                             accounting for the first is how a process
+#:                             gets stranded and the zombie alarm fires on
+#:                             an otherwise successful call.
+STARTUP_RETRY_HRESULTS = {
+    CO_E_NOTINITIALIZED,
+    CO_E_ALREADYINITIALIZED,
+}
+STARTUP_RETRY_DELAY = 0.5  # seconds between the two start attempts
+
+#: What the last CoInitializeEx on each thread did, so a start-up failure
+#: can SAY what the apartment was instead of the caller guessing. Written
+#: by _ensure_apartment, read by the start-up error message and by
+#: powerpoint_status. Keyed by thread id.
+_APARTMENT_STATE: dict[int, str] = {}
 
 
 def _com_modules():
@@ -136,7 +200,103 @@ def _classify(exc):
             "PowerPoint is busy or has a dialog open (a dialog box, "
             "Backstage, or a running command). Close it and retry."
         )
+    if hrs & STARTUP_HRESULTS:
+        # "Nothing was opened" is only true when PowerPoint never ran. A
+        # server-execution failure can leave a partially launched process,
+        # so that case gets the honest sentence instead (review, 2026-09-22).
+        aftermath = (
+            " No presentation was opened and no file was changed; a "
+            "PowerPoint process may have been started, and this call does "
+            "not end PowerPoint processes."
+            if CO_E_SERVER_EXEC_FAILURE in hrs
+            else " Nothing was opened and nothing was changed."
+        )
+        return PowerPointNotRunning(
+            "PowerPoint could not be started on this thread: "
+            + _startup_detail(hrs)
+            + aftermath
+            + " The file-based tools do not need PowerPoint; retry the COM "
+            "call, and if it keeps failing check that PowerPoint is "
+            "installed and that no install repair is in progress."
+        )
     return None
+
+
+def _startup_detail(hrs: set) -> str:
+    """The one sentence that names WHICH start-up fault this was, plus what
+    this thread's COM apartment was doing when it happened."""
+    if REGDB_E_CLASSNOTREG in hrs:
+        what = (
+            "PowerPoint.Application is not registered on this machine "
+            "(REGDB_E_CLASSNOTREG)."
+        )
+    elif CO_E_SERVER_EXEC_FAILURE in hrs:
+        what = (
+            "the PowerPoint COM server failed to launch "
+            "(CO_E_SERVER_EXEC_FAILURE)."
+        )
+    elif RPC_E_CHANGED_MODE in hrs:
+        what = (
+            "this thread's COM apartment is in the other threading model "
+            "(RPC_E_CHANGED_MODE)."
+        )
+    else:
+        what = (
+            "this thread's COM apartment was not initialized "
+            "(CO_E_NOTINITIALIZED)."
+        )
+    state = _APARTMENT_STATE.get(threading.get_ident())
+    if state:
+        what += f" The apartment on this thread reported: {state}."
+    return what
+
+
+def _ensure_apartment(pythoncom) -> str:
+    """Initialize THIS thread's COM apartment and say what happened.
+
+    CoInitializeEx rather than CoInitialize so the two benign outcomes are
+    handled deliberately instead of by luck: S_FALSE means the apartment was
+    already up in this same model (fine, and pywin32 does not raise for it),
+    and RPC_E_CHANGED_MODE means some other code already put this thread in
+    the other threading model. Fighting that would break whatever set it, so
+    it is recorded and the call proceeds; COM still marshals, it just
+    marshals differently.
+
+    A pythoncom without CoInitializeEx falls back to CoInitialize, which is
+    the same request in the older API. A MISSING API is not an apartment
+    failure and must not be reported as one, or the N1 refusal below would
+    turn an old pywin32 into "PowerPoint could not be started".
+
+    CoUninitialize is never paired here, for the reason in the module
+    docstring. Returns one of "initialized", "already", "changed-mode", or
+    "failed: ...", and records it per thread so a later start-up failure can
+    quote it."""
+    tid = threading.get_ident()
+    init_ex = getattr(pythoncom, "CoInitializeEx", None)
+    mode = getattr(pythoncom, "COINIT_APARTMENTTHREADED", 2)
+    try:
+        if init_ex is not None:
+            init_ex(mode)
+        else:
+            pythoncom.CoInitialize()
+        state = "initialized"
+    except Exception as exc:
+        hrs = _hresults(exc)
+        if S_FALSE in hrs:
+            state = "already"
+        elif RPC_E_CHANGED_MODE in hrs or CO_E_ALREADYINITIALIZED in hrs:
+            state = "changed-mode"
+        else:
+            state = f"failed: {exc}"
+    _APARTMENT_STATE[tid] = state
+    return state
+
+
+def apartment_state(tid: int | None = None) -> str | None:
+    """What the last CoInitializeEx on a thread did (diagnostic)."""
+    return _APARTMENT_STATE.get(
+        threading.get_ident() if tid is None else tid
+    )
 
 
 def _raise_classified(exc, fallback_message: str):
@@ -146,10 +306,24 @@ def _raise_classified(exc, fallback_message: str):
     raise PptMcpError(f"{fallback_message}: {exc}") from exc
 
 
-def powerpnt_pids() -> set:
-    """POWERPNT.EXE process ids via the process table (never COM). PID
-    precision is what lets the timeout kill-switch terminate exactly the
-    instance this server launched and nothing else."""
+def powerpnt_pids() -> set | None:
+    """POWERPNT.EXE process ids via the process table (never COM), or None
+    when the table could not be READ. PID precision is what lets the
+    server name exactly the instance it started and nothing else.
+
+    NONE MEANS UNKNOWN AND NEVER MEANS "NOTHING WAS RUNNING". This used to
+    return an empty set for both, and every ownership decision in the
+    module then read a failed tasklist as an empty machine: a session
+    concluded it had LAUNCHED the PowerPoint it had merely attached to and
+    quit the owner's instance on the way out, unsaved work and all (second
+    review follow-up, G2b, 2026-09-22). Nothing that can end, quit or kill
+    a process may act on None.
+
+    A genuine no-match is NOT a failure: tasklist prints its INFO line and
+    the answer is an empty set. Unknown is the subprocess raising or timing
+    out, a non-zero exit with nothing on stdout, no output at all, or a row
+    naming POWERPNT.EXE whose pid column will not parse.
+    """
     try:
         result = subprocess.run(
             ["tasklist", "/FI", f"IMAGENAME eq {PROCESS_NAME}", "/FO", "CSV",
@@ -159,48 +333,72 @@ def powerpnt_pids() -> set:
             timeout=30,
         )
     except Exception:
-        return set()
+        return None
+    if result.returncode != 0:
+        # EVERY nonzero return is unknown, text on stdout or not: tasklist
+        # prints "ERROR: Access is denied." to stdout and exits 1, which
+        # parsed as a clean empty table (final check, R4-1, 2026-09-22).
+        # A genuine no-match exits 0 with its INFO line, so nothing that
+        # really means "nothing is running" is lost here.
+        return None
+    stdout = result.stdout or ""
+    if not stdout.strip():
+        return None
     pids = set()
-    for ln in result.stdout.splitlines():
+    for ln in stdout.splitlines():
         if PROCESS_NAME not in ln.upper():
             continue
         parts = ln.split('","')
-        if len(parts) >= 2:
-            with contextlib.suppress(ValueError):
-                pids.add(int(parts[1].strip('"')))
+        if len(parts) < 2:
+            return None
+        try:
+            pids.add(int(parts[1].strip('"')))
+        except ValueError:
+            return None
     return pids
 
 
 def powerpnt_count() -> int:
-    """POWERPNT.EXE process count via the process table (never COM)."""
-    return len(powerpnt_pids())
+    """POWERPNT.EXE process count via the process table (never COM), or -1
+    when the table could not be read. A diagnostic: every decision that can
+    end a process reads powerpnt_pids() itself and stops on None."""
+    pids = powerpnt_pids()
+    return -1 if pids is None else len(pids)
 
 
-# POWERPNT.EXE pids this server LAUNCHED, keyed by spawning thread. The
-# timeout kill-switch terminates exactly these. An entry exists only when
-# _powerpoint() found no PowerPoint running and started one itself; when we
-# attached to the user's instance this dict stays empty for that thread and
-# the kill-switch is therefore disarmed. On a singleton COM server that
-# distinction is the difference between cleaning up after ourselves and
-# killing the user's PowerPoint out from under them.
+# POWERPNT.EXE pids this server LAUNCHED, keyed by spawning thread.
+# EVIDENCE, not a target list: nothing in this package force-terminates
+# a process, and a timed-out operation only NAMES these in its refusal. An
+# entry exists only when _powerpoint() READ the process table, found no
+# PowerPoint running, started one itself, read the table again to name the
+# one new pid, and found that instance in the state of a just-created
+# automation server. When we attached, when the table could not be read at
+# either end, or when the application did not look freshly created, this
+# dict stays empty for that thread (G2b; final check R4-1).
 _SELF_LAUNCHED_PIDS: dict[int, set] = {}
 
 
-def _kill_self_launched_for_thread(tid) -> bool:
-    """Terminate the POWERPNT instance(s) the given worker thread launched.
-    Returns False when nothing was recorded for that thread, which is the
-    normal case whenever we attached to the user's PowerPoint."""
-    pids = _SELF_LAUNCHED_PIDS.get(tid) or set()
-    killed = False
-    for pid in pids:
-        with contextlib.suppress(Exception):
-            subprocess.run(
-                ["taskkill", "/PID", str(pid), "/F"],
-                capture_output=True,
-                timeout=15,
-            )
-            killed = True
-    return killed
+def _self_launched_pids_for_thread(tid) -> set:
+    """The POWERPNT pids the given worker thread is known, ON POSITIVE
+    EVIDENCE, to have launched. Empty whenever we attached to a PowerPoint
+    we did not start, which is the normal case.
+
+    EVIDENCE ONLY, AND ONLY ABOUT THE PAST. This used to terminate them
+    when a COM operation timed out, and 1.3.1 removes that: the timeout
+    path cannot revalidate a hung apartment, so a token taken minutes
+    earlier is not proof that the process is still only ours. Another
+    session can attach to the hidden instance and open work in it while
+    our operation hangs, and a kill would destroy that work.
+
+    A token records what was OBSERVED at entry, that this pid was not
+    running then and the instance looked freshly created, and it is not
+    proof of causation or of current liveness. Nothing in this package
+    ends a PowerPoint process, so the refusal reports the observation and
+    the NON-ACTION: it names the pid, says this call did not force-end it,
+    and says its current state was not re-checked. It does not describe
+    the process's present state, because this path does not know it
+    (final check, R4-1 amended, R7-2, 2026-09-22)."""
+    return set(_SELF_LAUNCHED_PIDS.get(tid) or set())
 
 
 @contextlib.contextmanager
@@ -224,14 +422,34 @@ def _alerts_suppressed(app):
 
 
 def _run_bounded(name: str, timeout: float, fn):
-    """Run fn on a worker thread under the COM lock with a hard deadline.
+    """Run fn on a worker thread under the COM lock, bounding how long the
+    CALLER waits.
 
     On expiry: if the worker never got the lock, that is queue contention
     and PowerPointBusy names the operation actually running. If it got the
-    lock and then stalled, the POWERPNT instance IT launched is terminated
-    so the COM call errors out and the lock is released (PowerPointBlocked).
-    When the stalled call was working against the USER's PowerPoint no
-    process is touched at all; the error says so and the caller decides."""
+    lock and then stalled, NOTHING IS CANCELLED: the deadline bounds how
+    long the CALLER waits, not how long the work runs. The worker thread is
+    still inside the COM call, can finish later, and can still save its
+    output.
+
+    So `timeout` is NOT a hard deadline and NOT a maximum elapsed time: it
+    is how long the caller waits for PowerPoint to answer, after which
+    TIMEOUT_GRACE_SECONDS more and a dialog inspection follow, and a
+    result that arrives in that window is still returned.
+
+    The completion check is TWO-STAGE: once the instant the grace wait
+    ends, before any process or dialog inspection, so a completed success
+    is never delayed behind a process-table call; and once more after that
+    inspection, which can itself take long enough for the worker to finish
+    inside it. Either way the worker's own answer wins, its result
+    returned or its exception raised, because reporting a timeout for an
+    operation that succeeded is a false failure the caller acts on (final
+    check, R6-1). Only if it is still not done is the refusal built, and
+    everything it says about a process is read at that same moment and is
+    state-neutral: what was observed, and what this path did not do.
+    No process is force-terminated here, and none anywhere else in this
+    package
+    (final check, R5-1 and R6-2, 2026-09-22)."""
     # Preserve the bridge's documented side effect: before v1.1 every public
     # operation ran ON THE CALLING THREAD and left that thread's COM
     # apartment initialized (this module initializes freely and never
@@ -240,26 +458,63 @@ def _run_bounded(name: str, timeout: float, fn):
     # COM calls afterwards started failing with "CoInitialize has not been
     # called" (caught by test_av's media scenario, 2026-09-04). Initialize
     # the caller's apartment too, so the contract survives the port.
-    with contextlib.suppress(Exception):
+    # The failure used to be swallowed by contextlib.suppress, which meant a
+    # caller thread whose apartment could not be armed produced no evidence
+    # at all: the next COM call two frames away failed with "CoInitialize
+    # has not been called" and the report said nothing about why.
+    #
+    # It is recorded now, in _APARTMENT_STATE, keyed by thread. That is an
+    # IN-PROCESS diagnostic and nothing more: it is read by _startup_detail
+    # when a start-up fault is classified, and reported by powerpoint_status
+    # as com_apartment. It is deliberately NOT injected into this operation's
+    # return value, because every public result here has an established shape
+    # and diagnostics do not belong conditionally inside them (review finding
+    # N2, 2026-09-22, which caught the earlier comment claiming otherwise).
+    caller_apartment = "no pythoncom"
+    try:
         import pythoncom
 
-        pythoncom.CoInitialize()
+        caller_apartment = _ensure_apartment(pythoncom)
+    except Exception as exc:  # noqa: BLE001 - recorded, never raised here
+        caller_apartment = f"failed: {exc}"
 
-    result: dict = {}
-    lock_acquired = threading.Event()
-    done = threading.Event()
+    result: dict = {"caller_apartment": caller_apartment}
+    done = _COMPLETION_EVENT_FACTORY()
     worker_tid: list = []
+
+    # ONE decision per call, taken atomically under this lock, with exactly
+    # two outcomes: the caller ABANDONED the queued call, or the worker
+    # STARTED it. Whichever side reaches the decision first wins and the
+    # other is told it lost, so the two can never both be true (R7-1).
+    decision_lock = threading.Lock()
+    decision: list = []
+
+    def _elect(outcome: str) -> bool:
+        """Take this call's one decision, or lose it to the other side."""
+        with decision_lock:
+            if decision:
+                return False
+            decision.append(outcome)
+            return True
 
     def worker():
         worker_tid.append(threading.get_ident())
         try:
             with _serial.com_operation(name):
-                lock_acquired.set()
+                # THE GHOST WRITE STOPS HERE. Winning the serialization
+                # lock is not permission to run. The caller may have given
+                # up while this thread sat in the queue, and it was told
+                # the operation had not happened; running fn() now would
+                # perform that write anyway, so a retried non-idempotent
+                # edit would execute twice (two slide deletions removing
+                # two different slides). An abandoned call releases the
+                # lock and exits WITHOUT touching PowerPoint.
+                if not _elect("started"):
+                    return
                 result["value"] = fn()
         except BaseException as exc:  # noqa: BLE001 - re-raised in caller
             result["error"] = exc
         finally:
-            lock_acquired.set()
             done.set()
 
     t = threading.Thread(target=worker, daemon=True, name=f"ks4p-{name}")
@@ -268,7 +523,15 @@ def _run_bounded(name: str, timeout: float, fn):
         if "error" in result:
             raise result["error"]
         return result["value"]
-    if not lock_acquired.is_set():
+    if _elect("abandoned"):
+        # The worker had NOT started fn when this decision was taken, so it
+        # never will: it is still queued on the serialization lock, and
+        # when it reaches the front it loses this same decision, releases
+        # the lock and exits. Nothing ran and nothing was changed.
+        if "error" in result:
+            # It failed before it could reach the decision at all, so its
+            # own error is the honest answer, not a queue-contention one.
+            raise result["error"]
         snap = _serial.lock_snapshot()
         running = (snap.get("current_op") or {}).get(
             "name", "another COM operation"
@@ -277,32 +540,85 @@ def _run_bounded(name: str, timeout: float, fn):
             f"{name} waited {timeout:.0f}s for the COM serialization lock "
             f"({running} is still running); retry when it finishes. "
             "powerpoint_status reports the running operation."
+            " The queued call was abandoned before its operation ran; it "
+            "made no document changes. It is safe to retry after "
+            "powerpoint_status reports no COM operation in progress."
         )
-    killed = _kill_self_launched_for_thread(
-        worker_tid[0] if worker_tid else None
-    )
-    done.wait(10.0)
+    # The worker won the decision, so fn IS running, or has already
+    # finished. This is no longer queue contention and the caller must not
+    # be told to simply retry: the grace path decides from here, and an
+    # operation still running gets the uncancelled-operation refusal.
+    # The deadline has passed, but the work has NOT been cancelled, so the
+    # grace wait below is a real second chance rather than a formality. A
+    # worker that finishes during it finished, and reporting a timeout for
+    # an operation that succeeded is a false failure the caller would act
+    # on (final check, R6-1, 2026-09-22).
+    done.wait(TIMEOUT_GRACE_SECONDS)
+
+    def _completed():
+        """The worker's own answer, when it has one. TWO-STAGE by design:
+        asked once the moment the grace wait ends, BEFORE any process or
+        dialog inspection, so a completed success is never delayed behind
+        a process-table call, and once more after that inspection, which
+        can itself take long enough for the worker to finish inside it."""
+        if not done.is_set():
+            return False
+        if "error" in result:
+            raise result["error"]
+        return "value" in result
+
+    if _completed():
+        return result["value"]
+
     dialogs_seen = []
     with contextlib.suppress(Exception):
         from . import dialogs as _dialogs
 
         dialogs_seen = _dialogs.pending_dialogs()
-    detail = (
-        " (the PowerPoint instance it launched was terminated)"
-        if killed
-        else " (it was working against a PowerPoint this server did not "
-        "launch, so no process was touched)"
+
+    if _completed():
+        return result["value"]
+    # Evidence for the refusal is read HERE, at the moment the refusal is
+    # built, not before the wait: a token sampled earlier can have been
+    # cleared by a worker that finished and quit its instance meanwhile.
+    ours = _self_launched_pids_for_thread(
+        worker_tid[0] if worker_tid else None
     )
+    # STATE-NEUTRAL: this path reports what it OBSERVED and what it did not
+    # do. It does not know the process's current state, it did not
+    # re-check it, and an empty token is not evidence that PowerPoint was
+    # already running: the table may have been unreadable, the ownership
+    # gate may have refused, no token may have been recorded yet, or the
+    # worker may never have touched PowerPoint at all (R6-2).
+    if ours:
+        pids = ", ".join(str(p) for p in sorted(ours))
+        detail = (
+            f" (PowerPoint process pid {pids} was not running when this "
+            "call began; this call did not force-end it, and its current "
+            "state was not re-checked)"
+        )
+    else:
+        detail = (
+            " (no newly started PowerPoint process could be identified; no "
+            "process was force-ended)"
+        )
     if dialogs_seen:
         titles = ", ".join(
             d.get("title") or d.get("class", "?") for d in dialogs_seen[:3]
         )
         detail += f". PowerPoint has a dialog open: {titles}"
+    # NOTHING WAS CANCELLED. The old sentence said the operation "was
+    # aborted", which is false: the deadline bounds the caller's wait, the
+    # worker is still inside the COM call, and it can still finish and
+    # save. A caller told it was aborted retries, and a retry on top of a
+    # live operation is how a deck gets written twice (R5-1).
     raise PowerPointBlocked(
-        f"{name} did not finish within {timeout:.0f}s and was aborted"
+        f"PowerPoint did not answer within {timeout:.0f} s. The operation "
+        "was NOT cancelled: it may still be running and may still finish "
+        "and save its output. Do not retry yet: call powerpoint_status and "
+        "wait until it reports no COM operation in progress, then check the "
+        "output file before repeating the call."
         + detail
-        + ". The deck may be very large, or PowerPoint may be stuck. Check "
-        "powerpoint_status, and pass a larger timeout to raise the bound."
     )
 
 
@@ -345,6 +661,58 @@ class _PowerPointSession:
         self.opened: list = []
 
 
+def _acquisition_token(app, before_pids) -> set | None:
+    """The pids this call may claim to own, or None when it may not.
+
+    ALL of these must hold, and a read that fails is a no:
+
+    - the entry snapshot was READ and was empty, so nothing was up;
+    - the table read now names EXACTLY ONE new pid, so there is one
+      candidate rather than a crowd;
+    - the application itself looks like a just-created automation
+      instance: not visible, no presentations, no windows.
+
+    The last part is the only one a concurrent launch cannot fake. A
+    PowerPoint the user started is visible and, as soon as they open
+    anything, has a presentation and a window; a fresh DispatchEx instance
+    reports Visible 0, Presentations.Count 0 and Windows.Count 0 (measured
+    on PowerPoint 16, 2026-09-22). Doubt means NOT ours, and not ours
+    means this session behaves as an attach: nothing quit, nothing killed.
+    """
+    if before_pids is None or before_pids:
+        return None
+    after = powerpnt_pids()
+    if after is None:
+        return None
+    created = after - before_pids
+    if len(created) != 1:
+        return None
+    try:
+        if int(app.Visible) != 0:
+            return None
+        if int(app.Presentations.Count) != 0:
+            return None
+        if int(app.Windows.Count) != 0:
+            return None
+    except Exception:
+        return None
+    return created
+
+
+def _still_ours(app) -> bool:
+    """Whether the instance may still be quit, re-read AT RELEASE and after
+    this call's own presentations have been closed.
+
+    The user can arrive during the call: they open a deck in the instance
+    we started, or make it visible. Either way it is no longer ours to end,
+    so this call closes what it opened and leaves the application running.
+    """
+    try:
+        return int(app.Visible) == 0 and int(app.Presentations.Count) == 0
+    except Exception:
+        return False
+
+
 @contextlib.contextmanager
 def _powerpoint():
     """Singleton-safe PowerPoint context.
@@ -359,30 +727,127 @@ def _powerpoint():
     v1.1: the whole session runs under the process-wide COM lock, so callers
     that enter here directly (the com_gates scripts) are serialized without
     having to remember to be. When this call LAUNCHES PowerPoint its pid is
-    recorded for the timeout kill-switch; when it attaches to the user's
-    instance nothing is recorded, and the user's DisplayAlerts setting is
-    restored on the way out instead of being left suppressed.
+    recorded as evidence for a timeout refusal; when it attaches to the
+    user's instance nothing is recorded, and the user's DisplayAlerts
+    setting is restored on the way out instead of being left suppressed.
     """
     with _serial.com_operation("powerpoint_session"):
         yield from _powerpoint_locked()
 
 
+def _start_powerpoint(win32client, pythoncom, before_pids):
+    """DispatchEx with ONE bounded retry. NOTHING HERE ENDS A PROCESS.
+
+    The only action taken between the two attempts is re-arming this
+    thread's apartment, so only the faults that action repairs are retried
+    (STARTUP_RETRY_HRESULTS).
+
+    The previous version read the process table after a failed attempt and
+    force-ended every POWERPNT.EXE that had appeared since entry, on the
+    reasoning that an empty entry snapshot made any new process ours. It is
+    not evidence of ownership: the user or another session can launch
+    PowerPoint between that snapshot and this call's failure, and that
+    instance was then killed with no save prompt. The snapshot can also be
+    empty because `tasklist` itself failed, which turns "unknown" into
+    "nothing was running" (second review, G2, 2026-09-22).
+
+    So the difference is only LOOKED at, never acted on: a pid that appears
+    across a failed attempt is reported in the refusal as something left
+    running, and its appearance stops the retry, because launching again on
+    top of a state we cannot explain is how one unexplained process becomes
+    two.
+
+    `before_pids` is the entry snapshot, used only to tell an old process
+    from a new one in that report. When it is NON-empty an instance was
+    already up, we were attaching to it rather than starting one, and a
+    process appearing mid-call is not ours to reason about at all: the look
+    is skipped and the retry runs as before. When it is None the process
+    table could not be read, so "new" has no meaning and the look is
+    skipped for that reason instead (G2b).
+
+    Returns (app, pids_that_appeared)."""
+    watch = before_pids is not None and not before_pids
+    appeared: set = set()
+    last = None
+    for attempt in (0, 1):
+        try:
+            return win32client.DispatchEx("PowerPoint.Application"), appeared
+        except Exception as exc:  # noqa: BLE001 - re-raised classified below
+            last = exc
+            if watch:
+                with contextlib.suppress(Exception):
+                    now = powerpnt_pids()
+                    if now is not None:
+                        appeared |= now - before_pids
+            if (
+                attempt == 1
+                or appeared
+                or not (_hresults(exc) & STARTUP_RETRY_HRESULTS)
+            ):
+                break
+            with contextlib.suppress(Exception):
+                _ensure_apartment(pythoncom)
+            time.sleep(STARTUP_RETRY_DELAY)
+    _raise_startup(last, appeared)
+
+
+def _raise_startup(exc, appeared: set) -> None:
+    """Classify a start-up failure and report, without acting on it, any
+    PowerPoint process that appeared while it was failing."""
+    note = ""
+    if appeared:
+        pids = ", ".join(str(p) for p in sorted(appeared))
+        note = (
+            " A PowerPoint process appeared during the failed start: "
+            f"pid {pids}. This call did not force-end it; its current "
+            "state was not re-checked."
+        )
+    typed = _classify(exc)
+    if typed is not None:
+        if note:
+            typed = type(typed)(str(typed) + note)
+        raise typed from exc
+    raise PptMcpError(
+        f"PowerPoint could not be started on this thread: {exc}{note}"
+    ) from exc
+
+
 def _powerpoint_locked():
     pythoncom, win32client = _com_modules()
-    pythoncom.CoInitialize()  # no-op when already initialized; never paired
+    # CoInitializeEx on the thread that is about to make the COM calls.
+    # Tolerant of "already initialized" (S_FALSE) and of a thread another
+    # library put in the other threading model (RPC_E_CHANGED_MODE), both
+    # handled in _ensure_apartment; never paired with CoUninitialize.
+    state = _ensure_apartment(pythoncom)
+    if state.startswith("failed:"):
+        # N1: an apartment that genuinely could not be armed is not
+        # something Dispatch can recover from. Refusing here names the real
+        # cause instead of letting a second, vaguer COM failure speak for it.
+        raise PowerPointNotRunning(
+            "PowerPoint could not be started on this thread: the COM "
+            f"apartment could not be initialized ({state[len('failed: '):]}). "
+            "Nothing was opened and nothing was changed."
+        )
     tid = threading.get_ident()
     before_pids = powerpnt_pids()
-    launched = not before_pids
-    pre_count = len(before_pids)
-    try:
-        app = win32client.DispatchEx("PowerPoint.Application")
-    except Exception as exc:
-        _raise_classified(exc, "PowerPoint could not be started")
-    if launched:
-        # Arm the kill-switch for exactly the process WE just started.
-        created = powerpnt_pids() - before_pids
-        if created:
-            _SELF_LAUNCHED_PIDS[tid] = created
+    # OWNERSHIP NEEDS POSITIVE EVIDENCE, and an unreadable process table is
+    # not evidence of anything. before_pids is None when tasklist failed;
+    # treating that as "nothing was running" is what made a session quit
+    # the instance it had only attached to (G2b).
+    started_one = before_pids is not None and not before_pids
+    pre_count = len(before_pids) if before_pids is not None else 0
+    app, _appeared = _start_powerpoint(win32client, pythoncom, before_pids)
+    # OWNERSHIP IS A TOKEN READ OFF THE APPLICATION, not a difference of
+    # two process-table readings. PowerPoint is a single-instance
+    # automation server, so a user who starts it between the snapshot and
+    # DispatchEx is handed to us as if we had started it ourselves; the
+    # before/after difference then names THEIR pid and the cleanup quits
+    # THEIR PowerPoint (final check, R4-1, 2026-09-22).
+    created = _acquisition_token(app, before_pids)
+    if created:
+        # Record exactly the process we can show is ours, as evidence.
+        _SELF_LAUNCHED_PIDS[tid] = created
+    launched = created is not None
     session = _PowerPointSession(app, launched)
     completed = False
     try:
@@ -409,7 +874,11 @@ def _powerpoint_locked():
         with contextlib.suppress(NameError):
             del pres  # the loop variable is itself a COM reference
         zombie = False
-        if launched:
+        # Ownership is re-checked HERE, with this call's presentations
+        # already closed. If the user opened something in the instance we
+        # started, or made it visible, it is theirs now: we leave it
+        # running rather than quitting it out from under them.
+        if launched and _still_ours(app):
             # PowerPoint will not exit while external COM references are
             # outstanding: drop ours (ops del their locals before this
             # cleanup runs; see _release note in open_presentation) and
@@ -425,7 +894,14 @@ def _powerpoint_locked():
             zombie = True
             while time.monotonic() < deadline:
                 with contextlib.suppress(Exception):
-                    if powerpnt_count() <= pre_count:
+                    now = powerpnt_pids()
+                    if now is None:
+                        # The table went unreadable mid-poll. Unknown is not
+                        # evidence of a zombie, and polling it again cannot
+                        # become evidence either (G2b).
+                        zombie = False
+                        break
+                    if len(now) <= pre_count:
                         zombie = False
                         break
                 time.sleep(1.0)
@@ -714,9 +1190,11 @@ def com_export_slide_images(
 @_bounded_op("com_validate_opens_clean", default=600.0)
 def com_validate_opens_clean(path: str) -> dict:
     """Open in invisible PowerPoint (alerts disabled) and force a FULL content
-    load: Slides.Count, per-slide Shapes.Count, and one text read. Corruption
-    surfaces on access, not on open; with DisplayAlerts off it raises instead
-    of hanging on a modal repair dialog."""
+    load: every slide, every top-level shape, every group member, every table
+    cell, and a text read of every text frame among them. Corruption surfaces
+    on access, not on open; with DisplayAlerts off it raises instead of
+    hanging on a modal repair dialog. A busy or disconnected PowerPoint is
+    reported as itself, never as a verdict on the file."""
     p = _require_file(path, "validate opens clean")
     with _powerpoint() as session:
         try:
@@ -729,31 +1207,282 @@ def com_validate_opens_clean(path: str) -> dict:
             try:
                 # _full_load in its own frame so slide/shape proxies are
                 # released on return (outstanding proxies block app exit).
-                slide_count, shapes_total = _full_load(pres)
+                stats = _full_load(pres)
+            except (DocumentLocked, PowerPointBusy, PowerPointDisconnected):
+                # The APPLICATION went sideways mid-walk. Reporting that as
+                # a corrupt file would be an authoritative-looking lie about
+                # a deck that is fine (review finding M4).
+                raise
+            except FullLoadFailed as exc:
+                return _opens_clean_failure(exc)
             except Exception as exc:  # full-load failure = not clean
                 return {"opens_clean": False, "error": str(exc)}
         finally:
             del pres  # release the proxy so the launched instance can exit
-    return {"opens_clean": True, "slides": slide_count, "shapes": shapes_total}
+    return {"opens_clean": True, **stats}
 
 
-def _full_load(pres) -> tuple[int, int]:
-    """Force a full content load: Slides.Count, per-slide Shapes.Count, one
-    text read. Corruption surfaces on access, not on open."""
-    slide_count = int(pres.Slides.Count)
+class FullLoadFailed(Exception):
+    """A full content load that failed on a KNOWN slide, and where the XML
+    allowed it, a known shape.
+
+    Before this, a refusal came back as one string with no coordinates, and
+    finding the bad shape in a 45-slide deck was about 40 minutes of manual
+    bisection (field report 2026-09-21, P6).
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        slide_index: int | None = None,
+        slide_id: int | None = None,
+        shape_index: int | None = None,
+        shape_name: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.slide_index = slide_index
+        self.slide_id = slide_id
+        self.shape_index = shape_index
+        self.shape_name = shape_name
+
+
+def _opens_clean_failure(exc: FullLoadFailed) -> dict:
+    """The not-clean verdict, carrying whatever identity the load knew.
+    The validate tool returns this dict as its `powerpoint` block."""
+    out: dict = {"opens_clean": False, "error": str(exc)}
+    for key, value in (
+        ("failed_slide_index", exc.slide_index),
+        ("failed_slide_id", exc.slide_id),
+        ("failed_shape_index", exc.shape_index),
+        ("failed_shape_name", exc.shape_name),
+    ):
+        if value is not None:
+            out[key] = value
+    return out
+
+
+def _slide_id_of(slide) -> int | None:
+    """A slide's SlideID, or None when even that cannot be read (which is
+    itself a symptom, and must not mask the real failure).
+
+    A COM fault meaning the APPLICATION is busy or gone is classified and
+    re-raised first. Swallowing every exception here let a modal dialog or
+    a dead proxy pass as "this slide has no readable id", and the walk then
+    carried on and produced a verdict about the FILE (final check, R4-4,
+    2026-09-22). Only an ordinary read failure returns None."""
+    try:
+        return int(slide.SlideID)
+    except Exception as exc:
+        _reraise_environment(exc)
+        return None
+
+
+#: MsoTriState. msoTrue is -1; msoTriStateMixed is -2 and is NOT a yes.
+#: Truthiness treated mixed as true, which probed an unsupported TextFrame
+#: on an unusual shape and turned it into a false failure (review N3).
+MSO_TRUE = -1
+
+#: MsoShapeType msoGroup.
+MSO_GROUP = 6
+
+#: Ceiling on how many shapes one walk visits. A deck past this is walked
+#: as far as the cap and the result says so, rather than sitting inside
+#: the bounded operation until it times out and reports nothing at all.
+FULL_LOAD_MAX_SHAPES = 20000
+
+
+def _mso_true(value) -> bool:
+    """An MsoTriState that really is msoTrue."""
+    try:
+        return int(value) == MSO_TRUE
+    except (TypeError, ValueError):
+        return False
+
+
+def _optional(obj, name):
+    """A property that may not exist on this object at all. A COM fault
+    (busy, disconnected) still propagates; only a missing member is
+    swallowed, because that is the object saying 'not applicable'."""
+    try:
+        return getattr(obj, name)
+    except AttributeError:
+        return None
+
+
+class _WalkState:
+    """Running totals for one full-load walk."""
+
+    def __init__(self) -> None:
+        self.shapes_walked = 0
+        self.text_reads = 0
+        self.truncated = False
+
+    @property
+    def room(self) -> bool:
+        if self.shapes_walked >= FULL_LOAD_MAX_SHAPES:
+            self.truncated = True
+            return False
+        return True
+
+
+def _full_load(pres) -> dict:
+    """Force a full content load. Corruption surfaces on access, not on
+    open, so every slide and every shape is TOUCHED and every text frame
+    is READ.
+
+    Boundary, stated exactly because the old docstring promised more than
+    it did (review finding M3): top-level shapes on every slide, the
+    members of every group recursively, and the cells of every table.
+    Notes pages, layouts, masters, chart internals and SmartArt data
+    models are NOT walked; the layer 1 package check covers their text
+    bodies. The old walk read ONE text frame for the whole deck, so a
+    shape that raised on access after the first successful read was never
+    touched and the deck came back clean.
+
+    Every read sits inside its own try/except, so a refusal names WHERE it
+    happened: 1-based slide index, SlideID, 1-based top-level shape index,
+    shape name (and the nested path when the failure is inside a group or
+    a table). A COM fault that means the APPLICATION is busy or gone is
+    re-raised as itself rather than blamed on the file.
+    """
+    state = _WalkState()
+    try:
+        slide_count = int(pres.Slides.Count)
+    except Exception as exc:
+        # The FIRST access is a COM access like every other one in this
+        # walk, and it used to sit outside the classification: a busy or
+        # disconnected PowerPoint faulting here reached the generic
+        # validate catch and came back as opens_clean false on a deck
+        # nobody had looked at yet (second review, G5, 2026-09-22). No
+        # slide has been reached, so the refusal carries no coordinates.
+        _reraise_environment(exc)
+        raise FullLoadFailed(
+            f"the slide collection could not be read: {exc}"
+        ) from exc
     shapes_total = 0
-    text_read = False
     for i in range(1, slide_count + 1):
-        slide = pres.Slides.Item(i)
-        shapes_total += int(slide.Shapes.Count)
-        if not text_read:
-            for j in range(1, int(slide.Shapes.Count) + 1):
-                shp = slide.Shapes.Item(j)
-                if shp.HasTextFrame and shp.TextFrame.HasText:
-                    _ = shp.TextFrame.TextRange.Text
-                    text_read = True
-                    break
-    return slide_count, shapes_total
+        slide_id = None
+        try:
+            slide = pres.Slides.Item(i)
+            slide_id = _slide_id_of(slide)
+            shape_count = int(slide.Shapes.Count)
+        except Exception as exc:
+            _reraise_environment(exc)
+            raise FullLoadFailed(
+                f"slide {i} (id {slide_id}) failed to load: {exc}",
+                slide_index=i, slide_id=slide_id,
+            ) from exc
+        shapes_total += shape_count
+        for j in range(1, shape_count + 1):
+            if not state.room:
+                break
+            _walk_shape(slide.Shapes, j, i, slide_id, j, "", state)
+        if state.truncated:
+            break
+    out = {
+        "slides": slide_count,
+        "shapes": shapes_total,
+        "shapes_walked": state.shapes_walked,
+        "text_reads": state.text_reads,
+    }
+    if state.truncated:
+        out["walk_truncated"] = (
+            f"the walk stopped after {state.shapes_walked} shapes "
+            f"(cap {FULL_LOAD_MAX_SHAPES}); shapes past that point were "
+            "not checked"
+        )
+    return out
+
+
+def _reraise_environment(exc: BaseException) -> None:
+    """Re-raise a COM fault that means the APPLICATION is busy or gone.
+
+    Without this, PowerPoint showing a dialog halfway through the walk
+    came back as an authoritative corruption verdict naming an innocent
+    shape (review finding M4). The classifier and its HRESULT tables
+    already existed; the walk simply never consulted them.
+    """
+    if isinstance(
+        exc, (DocumentLocked, PowerPointBusy, PowerPointDisconnected)
+    ):
+        raise exc
+    typed = _classify(exc)
+    if typed is not None:
+        raise typed from exc
+
+
+def _walk_shape(
+    collection, index: int, slide_index: int, slide_id, top_index: int,
+    path: str, state: _WalkState,
+) -> None:
+    """Touch one shape, read its text, and descend into groups and tables."""
+    shape_name = None
+    where = f"slide {slide_index} (id {slide_id}) shape {top_index}"
+    try:
+        shp = collection.Item(index)
+        state.shapes_walked += 1
+        shape_name = _optional(shp, "Name")
+        shape_name = str(shape_name) if shape_name is not None else None
+        here = f"{path}/{shape_name}" if path else (shape_name or "")
+        if _mso_true(_optional(shp, "HasTextFrame")):
+            frame = shp.TextFrame
+            if _mso_true(_optional(frame, "HasText")):
+                _ = frame.TextRange.Text
+                state.text_reads += 1
+        if _mso_true(_optional(shp, "HasTable")):
+            _walk_table(shp.Table, slide_index, slide_id, top_index, here,
+                        state)
+        if _optional(shp, "Type") == MSO_GROUP:
+            members = shp.GroupItems
+            count = int(members.Count)
+            for k in range(1, count + 1):
+                if not state.room:
+                    return
+                _walk_shape(members, k, slide_index, slide_id, top_index,
+                            here, state)
+    except FullLoadFailed:
+        raise
+    except Exception as exc:
+        _reraise_environment(exc)
+        named = f" {shape_name!r}" if shape_name else ""
+        inside = f" inside {path!r}" if path else ""
+        raise FullLoadFailed(
+            f"{where}{named}{inside} failed to load: {exc}",
+            slide_index=slide_index, slide_id=slide_id,
+            shape_index=top_index, shape_name=shape_name,
+        ) from exc
+
+
+def _walk_table(
+    table, slide_index: int, slide_id, top_index: int, path: str,
+    state: _WalkState,
+) -> None:
+    """Read every cell of a table. A corrupt cell body is exactly the
+    shape of the failure this check exists to find."""
+    rows = int(table.Rows.Count)
+    cols = int(table.Columns.Count)
+    for r in range(1, rows + 1):
+        for c in range(1, cols + 1):
+            if not state.room:
+                return
+            try:
+                cell_shape = table.Cell(r, c).Shape
+                state.shapes_walked += 1
+                if _mso_true(_optional(cell_shape, "HasTextFrame")):
+                    frame = cell_shape.TextFrame
+                    if _mso_true(_optional(frame, "HasText")):
+                        _ = frame.TextRange.Text
+                        state.text_reads += 1
+            except Exception as exc:
+                _reraise_environment(exc)
+                raise FullLoadFailed(
+                    f"slide {slide_index} (id {slide_id}) shape {top_index} "
+                    f"{path!r} table cell (row {r}, column {c}) failed to "
+                    f"load: {exc}",
+                    slide_index=slide_index, slide_id=slide_id,
+                    shape_index=top_index, shape_name=path or None,
+                ) from exc
 
 
 def _installed_version() -> str | None:
@@ -809,6 +1538,12 @@ def powerpoint_status() -> dict:
         out["error"] = f"process table check failed: {exc}"
         out["com_serialization"] = _serial.lock_snapshot()
         return out
+    if pids is None:
+        # Unknown, which is not the same answer as "not running" and must
+        # not be dressed up as one (G2b).
+        out["error"] = "process table check failed: tasklist did not answer"
+        out["com_serialization"] = _serial.lock_snapshot()
+        return out
     out["powerpoint_running"] = bool(pids)
 
     # Window layer first: it works even when COM is wedged, so it is what
@@ -843,7 +1578,7 @@ def powerpoint_status() -> dict:
         except PptMcpError as exc:
             out["error"] = str(exc)
             return out
-        pythoncom.CoInitialize()
+        out["com_apartment"] = _ensure_apartment(pythoncom)
         with contextlib.suppress(Exception):
             rot = pythoncom.GetRunningObjectTable()
             for moniker in rot.EnumRunning():
@@ -869,5 +1604,6 @@ powerpoint_status._com_serialized = "powerpoint_status"
 
 
 def zombie_check() -> dict:
-    """Count POWERPNT.EXE processes (leak detection diagnostic)."""
+    """Count POWERPNT.EXE processes (leak detection diagnostic); -1 when
+    the process table could not be read."""
     return {"powerpnt_processes": powerpnt_count()}

@@ -209,6 +209,8 @@ def _carry_text_properties(
     could NOT preserve, because a `preserved` list that only ever says
     what survived is a half-truth on a body whose runs disagreed.
     """
+    from ._runmap import remove_children
+
     carried: set[str] = set()
     facts: dict = {}
 
@@ -255,20 +257,44 @@ def _carry_text_properties(
     # without saying so would be the carry claiming credit for a wreck.
     if any(_runs_disagree(p) for p in old_paras):
         facts["runs_collapsed_to_first"] = True
+    # Spreading the FIRST run's hyperlink across the whole replacement
+    # would silently relink text that pointed somewhere else, or nowhere.
+    # When the source runs did not agree on their link, no link is carried
+    # rather than the wrong one, and the caller is told.
+    #
+    # The decision is PER PARAGRAPH. It used to be one flag for the whole
+    # body, so a paragraph mixing linked and unlinked runs stripped the
+    # link off every OTHER paragraph, including ones where every run
+    # pointed at the same place (second review, G3, 2026-09-22).
+    disagrees = {id(p): _runs_disagree_on_links(p) for p in old_paras}
+    dropped_at: list[int] = []
+
+    # `carried` is body-global, so a paragraph whose level the caller
+    # overrode must not erase the accurate report from a paragraph that
+    # DID carry one (review finding N2). Counted, then folded in at the end.
+    levels_carried = 0
 
     for i, para in enumerate(new.findall(qn("a:p"))):
         # A replacement with MORE paragraphs than the original takes the
         # last one's shape, which is what pressing Enter in PowerPoint does.
         source = old_paras[min(i, len(old_paras) - 1)]
+        drop_links = disagrees[id(source)]
+        if drop_links:
+            dropped_at.append(i)
 
         old_ppr = source.find(qn("a:pPr"))
         new_ppr = para.find(qn("a:pPr"))
         if new_ppr is not None:
             kept_align = new_ppr.get("algn")
+            # An outline level stated by the caller outranks the one on the
+            # paragraph being replaced, the same way a named alignment does.
+            # Nothing in the single-style replace path sets lvl, so this is
+            # inert there; the placeholder path uses it.
+            kept_lvl = new_ppr.get("lvl")
             if old_ppr is None:
                 # The original inherited everything. Preserve that rather
                 # than pinning the default alignment onto it.
-                if "align" not in named:
+                if "align" not in named and kept_lvl is None:
                     para.remove(new_ppr)
             else:
                 replacement = _copy.deepcopy(old_ppr)
@@ -283,50 +309,163 @@ def _carry_text_properties(
                     replacement.find(qn(t)) is not None for t in _BULLET_TAGS
                 ):
                     carried.add("bullets")
-                if replacement.get("lvl"):
-                    carried.add("level")
+                old_lvl = old_ppr.get("lvl")
+                if kept_lvl is not None:
+                    replacement.set("lvl", kept_lvl)
+                if old_lvl and (kept_lvl is None or kept_lvl == old_lvl):
+                    levels_carried += 1
                 para.replace(new_ppr, replacement)
 
-        src_rpr = source.find(f"{qn('a:r')}/{qn('a:rPr')}")
-        if src_rpr is None:
-            src_rpr = source.find(qn("a:endParaRPr"))
-        if src_rpr is None:
-            continue
-        for tag in ("a:rPr", "a:endParaRPr"):
-            for rpr in para.findall(f"{qn('a:r')}/{qn(tag)}") + (
-                para.findall(qn(tag))
-            ):
+        src_run_rpr = _first_run_rpr(source)
+        src_end_rpr = source.find(qn("a:endParaRPr"))
+        # A destination endParaRPr is the paragraph's INSERTION style, so
+        # its source is the old paragraph's endParaRPr when there is one:
+        # taking the first visible run's style instead loses a 24 pt
+        # insertion point behind 10 pt body text (review finding M2).
+        sources = {
+            "a:rPr": src_run_rpr if src_run_rpr is not None else src_end_rpr,
+            "a:endParaRPr": (
+                src_end_rpr if src_end_rpr is not None else src_run_rpr
+            ),
+        }
+        for tag, src_rpr in sources.items():
+            if src_rpr is None:
+                continue
+            if tag == "a:rPr":
+                targets = [
+                    rpr
+                    for holder in _RUN_FAMILY
+                    for rpr in para.findall(f"{qn(holder)}/{qn('a:rPr')}")
+                ]
+            else:
+                targets = para.findall(qn("a:endParaRPr"))
+            for rpr in targets:
                 merged, got = _merge_rpr(src_rpr, rpr)
+                if drop_links:
+                    remove_children(merged, _HLINK_TAGS)
                 rpr.getparent().replace(rpr, merged)
                 carried |= got
+    if dropped_at:
+        facts["hyperlinks_dropped"] = (
+            "paragraph index "
+            + ", ".join(str(n) for n in dropped_at)
+            + ": the replaced runs did not share one hyperlink, so none was "
+            "carried onto that paragraph's new text; re-apply it with "
+            "set_hyperlink"
+        )
+    if levels_carried > 0:
+        carried.add("level")
     return sorted(carried), facts
 
 
-#: rPr attributes and child tags that make two runs visually different.
-_RUN_IDENTITY_ATTRS = ("sz", "b", "i", "u", "strike", "cap", "spc", "baseline")
+#: The a:p children that can carry character properties. a:fld (a slide
+#: number, a date) and a:br (a line break) hold a real a:rPr just as a:r
+#: does, and a paragraph can consist of nothing else (review finding B1).
+_RUN_FAMILY = ("a:r", "a:fld", "a:br")
+
+#: a:r and a:fld carry text; a:br does not.
+_TEXT_BEARING = ("a:r", "a:fld")
+
+#: The hyperlink elements a RUN carries. The hover one is a:hlinkMouseOver
+#: (a:hlinkHover is the SHAPE-level spelling, inside p:cNvPr, and is not a
+#: legal child of a:rPr). Comparing the wrong name made every hover link
+#: compare equal to every other, so a disagreeing one was spread over the
+#: replacement in silence (second review, G3, 2026-09-22). The names and
+#: their order match _runmap.RPR_ORDER.
+_HLINK_TAGS = ("a:hlinkClick", "a:hlinkMouseOver")
+
+#: rPr attributes that say nothing about how a run LOOKS. Office writes
+#: and rewrites these constantly, so two runs that differ only here are
+#: the same run as far as a reader is concerned.
+_RPR_NOISE_ATTRS = frozenset({"dirty", "smtClean", "smtId", "err"})
+
+
+def _first_run_rpr(para: etree._Element) -> etree._Element | None:
+    """The first character-property element in the paragraph, in DOCUMENT
+    order across a:r, a:fld and a:br.
+
+    Looking only at a:r meant a placeholder holding nothing but a slide
+    number field lost its size, colour and East Asian font the moment its
+    text was replaced, and reported nothing lost (review finding B1).
+    """
+    for child in para:
+        if f"a:{etree.QName(child).localname}" in _RUN_FAMILY:
+            rpr = child.find(qn("a:rPr"))
+            if rpr is not None:
+                return rpr
+    return None
+
+
+def _element_signature(el: etree._Element) -> tuple:
+    """A whole element subtree reduced to something comparable, with
+    attribute order normalized and Office's bookkeeping attributes
+    dropped. Recursive, so nothing inside a:rPr is invisible to it."""
+    attrs = tuple(
+        sorted(
+            (k, v)
+            for k, v in el.attrib.items()
+            if etree.QName(k).localname not in _RPR_NOISE_ATTRS
+        )
+    )
+    return (el.tag, attrs, tuple(_element_signature(c) for c in el))
 
 
 def _run_signature(run: etree._Element) -> tuple:
-    """What a run looks like, reduced to something comparable."""
+    """What a run looks like, reduced to something comparable.
+
+    The old version compared a hand-picked handful of attributes plus one
+    fill and a:latin, so runs differing in East Asian or complex-script
+    typeface, rtl, language, effects, highlight or hyperlink compared
+    EQUAL and were collapsed without a word (review finding M1). The whole
+    a:rPr subtree is compared now; over-reporting a collapse is a report,
+    under-reporting one is a silent loss.
+    """
     rpr = run.find(qn("a:rPr"))
     if rpr is None:
         return ()
-    attrs = tuple(
-        (a, rpr.get(a)) for a in _RUN_IDENTITY_ATTRS if rpr.get(a) is not None
-    )
-    fill = rpr.find(qn("a:solidFill"))
-    color = ""
-    if fill is not None and len(fill):
-        child = fill[0]
-        color = f"{etree.QName(child).localname}:{child.get('val')}"
-    latin = rpr.find(qn("a:latin"))
-    return attrs + (color, latin.get("typeface") if latin is not None else "")
+    return _element_signature(rpr)
 
 
 def _runs_disagree(para: etree._Element) -> bool:
-    """True when a paragraph's runs are not all formatted alike."""
-    sigs = {_run_signature(r) for r in para.findall(qn("a:r"))}
+    """True when a paragraph's runs are not all formatted alike.
+
+    a:r and a:fld count with or without properties: a text-bearing run
+    with no a:rPr renders from inherited properties, which is genuinely
+    different from an explicit one. A bare a:br does not, because it shows
+    no glyphs, so counting it would report a collapse on every ordinary
+    two-line paragraph.
+    """
+    sigs = {
+        _run_signature(r)
+        for holder in _TEXT_BEARING
+        for r in para.findall(qn(holder))
+    }
+    sigs |= {
+        _run_signature(b)
+        for b in para.findall(qn("a:br"))
+        if b.find(qn("a:rPr")) is not None
+    }
     return len(sigs) > 1
+
+
+def _runs_disagree_on_links(para: etree._Element) -> bool:
+    """True when the paragraph's text-bearing runs do not all point at the
+    same place (counting 'nowhere' as a place)."""
+    links = set()
+    for holder in _TEXT_BEARING:
+        for run in para.findall(qn(holder)):
+            rpr = run.find(qn("a:rPr"))
+            if rpr is None:
+                links.add(())
+                continue
+            links.add(
+                tuple(
+                    _element_signature(el)
+                    for tag in _HLINK_TAGS
+                    for el in rpr.findall(qn(tag))
+                )
+            )
+    return len(links) > 1
 
 
 def _apply_extra_run_props(body: etree._Element, extra: dict) -> None:

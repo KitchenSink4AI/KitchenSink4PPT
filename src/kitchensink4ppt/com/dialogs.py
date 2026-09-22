@@ -165,9 +165,13 @@ def _enumerate(pids: set, want_classes: set | None) -> list[dict]:
 
 
 def _powerpnt_pids() -> set:
+    """The POWERPNT pids, or an empty set when the process table could not
+    be read. Both enumerations below are read-only and attribute windows to
+    pids, so an unreadable table simply means nothing can be attributed; it
+    never becomes an instruction to touch a process (G2b)."""
     from .bridge import powerpnt_pids
 
-    return powerpnt_pids()
+    return powerpnt_pids() or set()
 
 
 def pending_dialogs(pids: set | None = None) -> list[dict]:

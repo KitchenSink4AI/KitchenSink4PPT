@@ -111,6 +111,10 @@ BRIDGE_EXEMPT = {
     "powerpnt_pids": "tasklist only, no COM",
     "powerpoint_installed": "registry read only, no COM",
     "zombie_check": "tasklist only, no COM",
+    "apartment_state": (
+        "reads the per-thread record _ensure_apartment leaves behind; an "
+        "in-memory dict lookup, no COM"
+    ),
     "open_presentation": (
         "session-scoped helper: it takes a _PowerPointSession, which only "
         "exists inside an already-locked _powerpoint()"
@@ -265,13 +269,20 @@ def test_run_bounded_fast_path_and_error_propagation():
         )
 
 
-def test_run_bounded_stuck_op_raises_powerpoint_blocked():
+def test_run_bounded_stuck_op_raises_powerpoint_blocked(monkeypatch):
     def stuck():
         time.sleep(3)
         return {}
 
     t0 = time.monotonic()
-    with pytest.raises(PowerPointBlocked, match="did not finish within"):
+    # R6-1: the deadline is followed by a grace period, and a worker that
+    # finishes inside it is a SUCCESS, not a timeout. This op has to be
+    # still running when the refusal is built, so the grace is shortened
+    # rather than letting the 3 second sleep finish inside the default 10.
+    monkeypatch.setattr(bridge, "TIMEOUT_GRACE_SECONDS", 0.1)
+    # R5-1: the refusal no longer says the operation was aborted, because
+    # nothing cancels it; it says PowerPoint did not answer in time.
+    with pytest.raises(PowerPointBlocked, match="did not answer within"):
         bridge._run_bounded("stuck-op", 0.3, stuck)
     assert time.monotonic() - t0 < 12
 
@@ -317,8 +328,8 @@ def test_kill_switch_never_fires_without_a_recorded_self_launched_pid():
     there is nothing this server is allowed to terminate."""
     tid = threading.get_ident()
     bridge._SELF_LAUNCHED_PIDS.pop(tid, None)
-    assert bridge._kill_self_launched_for_thread(tid) is False
-    assert bridge._kill_self_launched_for_thread(None) is False
+    assert bridge._self_launched_pids_for_thread(tid) == set()
+    assert bridge._self_launched_pids_for_thread(None) == set()
 
 
 def test_session_records_pid_only_when_it_launched_powerpoint(monkeypatch):
@@ -328,8 +339,18 @@ def test_session_records_pid_only_when_it_launched_powerpoint(monkeypatch):
     call created is recorded and armed."""
     calls = {"n": 0}
 
+    class _FakeCollection:
+        Count = 0
+
     class _FakeApp:
+        """A just-created automation instance, which since round 4 is what
+        the acquisition token actually checks: not visible, no
+        presentations, no windows."""
+
         DisplayAlerts = 2
+        Visible = 0
+        Presentations = _FakeCollection()
+        Windows = _FakeCollection()
 
         def Quit(self):
             pass

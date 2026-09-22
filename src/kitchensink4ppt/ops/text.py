@@ -29,6 +29,7 @@ recomputes; edits overlapping a field refuse rather than rewrite the cache.
 
 from __future__ import annotations
 
+import copy as _copy
 import math
 import re as _stdlib_re
 
@@ -43,6 +44,7 @@ from ..core.errors import (
 )
 from ..core.package import PptxPackage, qn
 from . import _regex
+from . import inherit as _inh
 from ._runmap import (
     BULLET_CHOICE_TAGS,
     FILL_CHOICE_TAGS,
@@ -351,6 +353,10 @@ def _require_txbody(
         body = etree.SubElement(elem, qn("p:txBody"))  # txBody is last in p:sp
         etree.SubElement(body, qn("a:bodyPr"))
         etree.SubElement(body, qn("a:lstStyle"))
+        # A p:txBody with zero a:p violates the content model and makes
+        # PowerPoint refuse the whole deck, naming nothing (field report
+        # 2026-09-21, P6). Same shape ops/masters.py builds.
+        etree.SubElement(body, qn("a:p"))
     return body
 
 
@@ -458,14 +464,19 @@ def _apply_paragraph_props(
 
 def _parse_text_paragraphs(text: str) -> list[dict]:
     """'\\n' separates paragraphs; leading tabs set the outline level
-    (one tab per level, 0..8)."""
+    (one tab per level, 0..8). No tab is a statement too: it is level 0."""
     out = []
     for line in text.split("\n"):
         level = 0
         while line.startswith("\t") and level < 8:
             level += 1
             line = line[1:]
-        out.append({"text": line, "level": level})
+        # EVERY line of this shorthand states its level, and a line with no
+        # tab states level 0. Treating "no tab" as "said nothing" let a
+        # replacement keep the nesting of the paragraph it replaced, so
+        # "Top level\n\tSecond level\nTop again" came back from PowerPoint
+        # at levels 1, 2, 2 (second review, G4, 2026-09-22).
+        out.append({"text": line, "level": level, "level_explicit": True})
     return out
 
 
@@ -482,13 +493,19 @@ def _normalize_paragraphs(paragraphs) -> list[dict]:
             raise PptMcpError(
                 f"paragraphs[{i}] level must be an int 0..8, got {level!r}"
             )
-        out.append({"text": str(item["text"]), "level": level})
+        out.append({
+            "text": str(item["text"]),
+            "level": level,
+            # A stated level, including a stated 0, is an instruction and
+            # outranks the level carried from the paragraph it replaces.
+            "level_explicit": "level" in item,
+        })
     return out
 
 
 def _build_paragraph(spec: dict, run_props: dict | None = None) -> etree._Element:
     p = etree.Element(qn("a:p"))
-    if spec["level"]:
+    if spec["level"] or spec.get("level_explicit"):
         ppr = etree.SubElement(p, qn("a:pPr"))
         ppr.set("lvl", str(spec["level"]))
     if spec["text"]:
@@ -500,14 +517,85 @@ def _build_paragraph(spec: dict, run_props: dict | None = None) -> etree._Elemen
     return p
 
 
+def _landing_spots(body: etree._Element) -> None:
+    """Give every freshly built paragraph the empty a:pPr / a:rPr /
+    a:endParaRPr that the carry needs to write the old properties INTO.
+
+    _carry_text_properties only fills elements that already exist (it was
+    written against geometry.txbody, which always emits them). A bare
+    paragraph built here has none, so without this the carry silently did
+    nothing and paragraph formatting kept dying. Anything the carry leaves
+    empty is removed again by _strip_empty_props.
+    """
+    from .shapes import _RUN_FAMILY
+
+    for p in body.findall(qn("a:p")):
+        if p.find(qn("a:pPr")) is None:
+            p.insert(0, etree.Element(qn("a:pPr")))
+        runs = [el for holder in _RUN_FAMILY for el in p.findall(qn(holder))]
+        for r in runs:
+            ensure_rPr(r)
+        if not runs and p.find(qn("a:endParaRPr")) is None:
+            # An empty line still has a height, and that lives on
+            # endParaRPr. endParaRPr is last in a:p.
+            p.append(etree.Element(qn("a:endParaRPr")))
+
+
+def _strip_empty_props(body: etree._Element) -> None:
+    """Drop the landing spots nothing was carried into, so a body that had
+    no formatting to keep comes out exactly as it used to."""
+    from .shapes import _RUN_FAMILY
+
+    for p in body.findall(qn("a:p")):
+        for tag in ("a:pPr", "a:endParaRPr"):
+            el = p.find(qn(tag))
+            if el is not None and not len(el) and not el.attrib:
+                p.remove(el)
+        for holder in _RUN_FAMILY:
+            for r in p.findall(qn(holder)):
+                rpr = r.find(qn("a:rPr"))
+                if rpr is not None and not len(rpr) and not rpr.attrib:
+                    r.remove(rpr)
+
+
 def _replace_body_paragraphs(
-    body: etree._Element, specs: list[dict], run_props: dict | None = None
-) -> int:
+    body: etree._Element,
+    specs: list[dict],
+    run_props: dict | None = None,
+    *,
+    preserve: bool = True,
+) -> tuple[int, list[str], dict]:
+    """Replace the body's paragraphs with `specs`, carrying the formatting
+    of the paragraphs being replaced onto the new ones.
+
+    Returns (paragraph count, preserved categories, facts). The rebuild
+    used to emit bare a:p / a:r, which threw away marL, indent, spcAft,
+    the bullet definition, defRPr and every run's size, colour and
+    typeface: a body whose formatting lived at paragraph level came back
+    unstyled (field report 2026-09-21, P5). The carry is the one in
+    ops/shapes.py, so both text-writing routes preserve the same things
+    and report them the same way.
+    """
+    from .shapes import _carry_text_properties
+
+    old = _copy.deepcopy(body) if preserve else None
     for p in body.findall(qn("a:p")):
         body.remove(p)
     for spec in specs:
         body.append(_build_paragraph(spec, run_props))
-    return len(specs)
+    if not specs:
+        # A text body with zero a:p is exactly what PowerPoint refuses to
+        # open; an empty replacement leaves one empty paragraph instead.
+        body.append(etree.Element(qn("a:p")))
+    preserved: list[str] = []
+    facts: dict = {}
+    if old is not None and old.findall(qn("a:p")):
+        _landing_spots(body)
+        preserved, facts = _carry_text_properties(
+            old, body, set(run_props or {})
+        )
+        _strip_empty_props(body)
+    return len(specs), preserved, facts
 
 
 # ========================================================== public API
@@ -528,8 +616,11 @@ def set_placeholder_text(
     idx (int; a p:ph without idx counts as 0). Content: `text` with '\\n'
     paragraph breaks and leading tabs for bullet levels, or
     `paragraphs=[{"text": ..., "level": 0..8}, ...]`. Existing paragraphs
-    are fully replaced; bodyPr and lstStyle are untouched. Several
-    matching placeholders refuse, listing candidates for idx addressing."""
+    are fully replaced, but their formatting is carried onto the new text
+    (indents, spacing, bullet definition, run size, colour and typeface)
+    and reported as `preserved`; bodyPr and lstStyle are untouched. A
+    stated level wins over the carried one. Several matching placeholders
+    refuse, listing candidates for idx addressing."""
     if (text is None) == (paragraphs is None):
         raise PptMcpError(
             "pass exactly one of text (str) or paragraphs (list of dicts)"
@@ -586,9 +677,9 @@ def set_placeholder_text(
         else _normalize_paragraphs(paragraphs)
     )
     body = _require_txbody(elem, "placeholder", rec, create=True)
-    count = _replace_body_paragraphs(body, specs)
+    count, preserved, facts = _replace_body_paragraphs(body, specs)
     pkg.mark_dirty(rec["part"])
-    return {
+    out = {
         "slide_index": rec["index"],
         "slide_id": rec["slide_id"],
         "shape_id": _shape_id(elem),
@@ -597,6 +688,10 @@ def set_placeholder_text(
         "paragraphs": count,
         "characters": sum(len(s["text"]) for s in specs),
     }
+    if preserved:
+        out["preserved"] = preserved
+    out.update(facts)
+    return out
 
 
 def insert_textbox(
@@ -1191,6 +1286,427 @@ def _first_run_size(body: etree._Element) -> int | None:
     return None
 
 
+def _first_run_style(body: etree._Element) -> tuple[bool, bool]:
+    """(bold, italic) from the first rPr/defRPr that states either."""
+    bold = italic = False
+    for tag in ("a:rPr", "a:defRPr"):
+        for el in body.iter(qn(tag)):
+            if el.get("b") is not None or el.get("i") is not None:
+                return el.get("b") == "1", el.get("i") == "1"
+    return bold, italic
+
+
+def _theme_font(pkg, part: str | None, token: str) -> str | None:
+    """The theme's real typeface behind a +mn-lt / +mj-lt reference."""
+    if pkg is None or not part:
+        return None
+    try:
+        from .design import _theme_part_of
+        from .inherit import layout_part_of, master_part_of
+
+        master = master_part_of(pkg, layout_part_of(pkg, part))
+        if not master:
+            return None
+        theme_part = _theme_part_of(pkg, master)
+        if not pkg.has_part(theme_part):
+            return None
+        tag = "a:majorFont" if token.startswith("+mj") else "a:minorFont"
+        latin = pkg.root(theme_part).find(
+            f"{qn('a:themeElements')}/{qn('a:fontScheme')}/{qn(tag)}/"
+            f"{qn('a:latin')}"
+        )
+    except Exception:
+        return None
+    if latin is None:
+        return None
+    face = latin.get("typeface")
+    return face or None
+
+
+def _latin_typeface(
+    body: etree._Element, pkg=None, part: str | None = None
+) -> str | None:
+    """The latin typeface this body's text is set in.
+
+    Run first, then paragraph/shape defRPr, then the theme's minor font.
+    A `+mn-lt` / `+mj-lt` reference resolves to the theme's actual face,
+    which is what a font file can be looked up by."""
+    face = None
+    for tag in ("a:rPr", "a:defRPr"):
+        for el in body.iter(qn(tag)):
+            latin = el.find(qn("a:latin"))
+            if latin is not None and latin.get("typeface"):
+                face = latin.get("typeface")
+                break
+        if face:
+            break
+    if face is None:
+        face = "+mn-lt"
+    if face.startswith("+"):
+        return _theme_font(pkg, part, face)
+    return face
+
+
+#: DrawingML caps marL/indent at 51206400 EMU (56 inches). A value outside
+#: that is malformed, and a malformed indent silently read as zero is a
+#: measurement of a frame nobody has (final check, R4-2, 2026-09-22).
+_MAR_LIMIT_EMU = 51206400
+
+
+class _Unmeasurable(Exception):
+    """A run the measured path cannot resolve WITH CERTAINTY.
+
+    The measured path is allowed to be unavailable; it is not allowed to
+    guess. Anything it cannot establish raises this, the whole body falls
+    back to the estimate, and `reason` becomes the method_reason the caller
+    reads, naming the run that forced it (second review, G1, 2026-09-22).
+    """
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+def _para_level(p: etree._Element) -> int:
+    """The paragraph's outline level, 0..8."""
+    ppr = p.find(qn("a:pPr"))
+    if ppr is None:
+        return 0
+    try:
+        return min(max(int(ppr.get("lvl") or 0), 0), 8)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _para_margins(p: etree._Element, chain=()) -> tuple[int, int]:
+    """(marL, indent) in EMU for one paragraph; indent is negative for a
+    hanging indent, which is how a bulleted list is written.
+
+    Resolved PER ATTRIBUTE: the paragraph's own a:pPr first, then the
+    a:lvlNpPr elements behind it (`chain`, from inherit.level_ppr_chain).
+    Reading only the paragraph meant a bulleted body whose marL lives in
+    the master measured as if it had the whole frame. Nothing in the chain
+    defining an attribute leaves the DrawingML default of zero, which is
+    what PowerPoint uses too."""
+    containers = []
+    own = p.find(qn("a:pPr"))
+    if own is not None:
+        containers.append(own)
+    containers.extend(chain)
+
+    def _int(name: str, low: int) -> int:
+        for container in containers:
+            raw = container.get(name)
+            if raw is None:
+                continue
+            try:
+                value = int(raw)
+            except (TypeError, ValueError):
+                raise _Unmeasurable(
+                    f"a paragraph states a {name} of {raw!r}, which is not a "
+                    "number of EMU"
+                ) from None
+            if not low <= value <= _MAR_LIMIT_EMU:
+                raise _Unmeasurable(
+                    f"a paragraph states a {name} of {value} EMU, outside "
+                    "the range DrawingML allows"
+                )
+            return value
+        return 0
+    # The two attributes do NOT share a range, and treating them as if they
+    # did accepted a negative marL as a confident measurement: marL is
+    # ST_TextMargin, which is NONNEGATIVE, while indent is ST_TextIndent,
+    # which is signed because a hanging indent is how every bulleted list
+    # is written (final check, R5-2, 2026-09-22). A negative marL is
+    # schema-invalid whether the paragraph states it or inherits it, so it
+    # is unmeasurable; a negative indent stays measurable.
+    return _int("marL", 0), _int("indent", -_MAR_LIMIT_EMU)
+
+
+def _body_typeface(
+    body: etree._Element, pkg=None, part: str | None = None
+) -> str | None:
+    """The typeface a run inherits when NOTHING in its own chain names one:
+    the theme's minor font, which is what DrawingML falls back to.
+
+    It used to take the first a:defRPr anywhere in the shape's a:lstStyle,
+    regardless of outline level, so a level-two run could be measured in
+    level one's face while the result still said font-metrics (final check,
+    R4-2, 2026-09-22). The list styles are read at the run's ACTUAL level
+    now, by _rpr_chain over inherit.level_ppr_chain, the same effective
+    chain the size resolver walks; this is only what is left when that
+    chain names nothing. Deliberately does NOT look at other runs."""
+    return _theme_font(pkg, part, "+mn-lt")
+
+
+def _rpr_chain(r: etree._Element, p: etree._Element, chain=()):
+    """The rPr sources for one run, nearest first: its own, the paragraph's
+    defRPr, then the defRPr of each a:lvlNpPr standing behind the paragraph
+    (`chain`, from inherit.level_ppr_chain)."""
+    out = [r.find(qn("a:rPr"))]
+    ppr = p.find(qn("a:pPr"))
+    out.append(ppr.find(qn("a:defRPr")) if ppr is not None else None)
+    for lvl in chain:
+        out.append(lvl.find(qn("a:defRPr")))
+    return [el for el in out if el is not None]
+
+
+def _certain_size_pt(
+    rpr, p: etree._Element, body: etree._Element, elem, level: int,
+    pkg=None, part: str | None = None,
+) -> float | None:
+    """The run's size in points, or None when it cannot be ESTABLISHED.
+
+    One resolver, not two: this is inherit.resolve_run_size_pt, the same
+    chain check_layout's "text too small" check acts on, which walks the
+    run's sz, the paragraph's defRPr, the shape's own lstStyle at this
+    level, the layout twin, the master twin, the master text style and the
+    presentation default. It reaches that last step only for a
+    placeholder, so a plain text box asks for the presentation default
+    separately rather than falling back to the body's first run."""
+    if elem is None and body is not None:
+        elem = body.getparent()
+    if elem is None:
+        return _inh._sz_pt(rpr.get("sz")) if rpr is not None else None
+    size, _src = _inh.resolve_run_size_pt(
+        pkg, part if pkg is not None else None, elem, p, rpr, level
+    )
+    if size is None:
+        size = _inh.presentation_default_size_pt(pkg, level)
+    return size
+
+
+def _resolve_run(
+    r: etree._Element, p: etree._Element, body: etree._Element,
+    inherited_face: str | None, default_pt: float, pkg=None,
+    part: str | None = None, elem=None, level: int = 0, chain=(),
+):
+    """(family, size_pt, bold, italic, spc_pt) for ONE run, each property
+    resolved from that run's own chain rather than from the first run in
+    the body. Raises _Unmeasurable when the size cannot be established: a
+    28pt run inherited from a level-one list style used to be measured at
+    the body default, which is large enough to reverse a verdict."""
+    rpr = r.find(qn("a:rPr"))
+    rpr_chain = _rpr_chain(r, p, chain)
+
+    size = _certain_size_pt(rpr, p, body, elem, level, pkg, part)
+    if size is None:
+        raise _Unmeasurable(
+            "the run's font size is inherited and could not be resolved"
+        )
+
+    spc_pt = 0.0
+    for el in rpr_chain:
+        raw = el.get("spc")
+        if raw:
+            try:
+                spc_pt = int(raw) / 100.0
+            except (TypeError, ValueError):
+                raise _Unmeasurable(
+                    "the run's character spacing (a:rPr/@spc) could not be "
+                    "read"
+                ) from None
+            break
+
+    def flag(name: str) -> bool:
+        for el in rpr_chain:
+            if el.get(name) is not None:
+                return el.get(name) == "1"
+        return False
+
+    face = None
+    for el in rpr_chain:
+        latin = el.find(qn("a:latin"))
+        if latin is not None and latin.get("typeface"):
+            face = latin.get("typeface")
+            break
+    if face is None:
+        face = inherited_face
+    elif face.startswith("+"):
+        face = _theme_font(pkg, part, face)
+    return face, size, flag("b"), flag("i"), spc_pt
+
+
+#: Run-level elements that carry text. a:fld (a slide number or date) holds
+#: cached text that renders like any other run and takes up the same space.
+_TEXT_RUN_TAGS = ("a:r", "a:fld")
+
+
+def _paragraph_runs(
+    p: etree._Element, body: etree._Element, inherited_face: str | None,
+    default_pt: float, pkg=None, part: str | None = None, elem=None,
+    chain=None,
+):
+    """The paragraph as a list of fontmetrics.StyledRun. a:br becomes a
+    hard newline carried on the preceding run's style.
+
+    Raises _Unmeasurable for a run whose typeface or size cannot be
+    established, naming that run rather than the first one in the body."""
+    from . import fontmetrics as _fm
+
+    level = _para_level(p)
+    if chain is None:
+        chain = _inh.level_ppr_chain(
+            pkg, part, elem if elem is not None else body.getparent(), level
+        )
+    runs: list = []
+    for child in p:
+        tag = etree.QName(child).localname
+        if tag == "br":
+            if runs:
+                last = runs[-1]
+                runs[-1] = last._replace(text=last.text + "\n")
+            else:
+                runs.append(_fm.StyledRun("\n", inherited_face or "",
+                                          default_pt))
+            continue
+        if f"a:{tag}" not in _TEXT_RUN_TAGS:
+            continue
+        t = child.find(qn("a:t"))
+        text = t.text or "" if t is not None else ""
+        if not text:
+            continue
+        family, size, bold, italic, spc_pt = _resolve_run(
+            child, p, body, inherited_face, default_pt, pkg, part,
+            elem, level, chain,
+        )
+        if not family:
+            raise _Unmeasurable(
+                "a run's typeface does not resolve through the theme"
+            )
+        runs.append(
+            _fm.StyledRun(text, family, size, bold, italic, spc_pt)
+        )
+    return runs
+
+
+def _measured_overflow(
+    body: etree._Element,
+    bodypr: etree._Element | None,
+    inner_w: int,
+    inner_h: int,
+    pt: float,
+    line_h: float,
+    pkg=None,
+    part: str | None = None,
+    lnspc_reduction_pct: float = 0.0,
+    font_scale_pct: float = 100.0,
+    elem=None,
+) -> dict | None:
+    """Lines and widest line measured PER RUN against each run's own font.
+
+    Every run is resolved separately (its own face, size, bold, italic and
+    character spacing), the wrap runs across run boundaries, and a line's
+    height comes from the largest point size ON THAT LINE. Returns None
+    when the metrics extra is not installed, and raises _Unmeasurable when
+    a run cannot be resolved with certainty; either way the caller falls
+    back to the estimate and says why. A body measured in one run's format,
+    or at a size nobody could establish, must never be labelled
+    font-metrics (review finding M1; second review G1, 2026-09-22)."""
+    from . import fontmetrics as _fm
+
+    if not _fm.available():
+        return None
+    if elem is None:
+        elem = body.getparent()
+    inherited = _body_typeface(body, pkg, part)
+    wrap = (bodypr.get("wrap") if bodypr is not None else None) or "square"
+    scale = font_scale_pct / 100.0
+    height_mult = 1.2 * (1.0 - lnspc_reduction_pct / 100.0) * EMU_PER_POINT
+
+    total_h = 0.0
+    lines = 0
+    widest_pt = 0.0
+    faces: dict[str, str] = {}
+    runs_measured = 0
+    for p in body.findall(qn("a:p")):
+        level = _para_level(p)
+        chain = _inh.level_ppr_chain(pkg, part, elem, level)
+        runs = _paragraph_runs(p, body, inherited, pt / scale if scale else pt,
+                               pkg, part, elem, chain)
+        runs = [r._replace(size_pt=r.size_pt * scale) for r in runs]
+        runs_measured += len(runs)
+        for run in runs:
+            # Readability first: metrics_readable is False only when a file
+            # WAS found and would not parse, which is a different errand for
+            # the reader than a font that is not installed (finding N3).
+            if _fm.metrics_readable(
+                run.family, bold=run.bold, italic=run.italic
+            ) is False:
+                raise _Unmeasurable(
+                    f"a font file for {run.family} was found but its metrics "
+                    "could not be read"
+                )
+            name = _fm.font_file_name(
+                run.family, bold=run.bold, italic=run.italic
+            )
+            if name is None:
+                raise _Unmeasurable(
+                    f"no font file for {run.family} was found on this machine"
+                )
+            faces[run.family] = name
+        if not runs:
+            lines += 1
+            total_h += pt * height_mult
+            continue
+        mar_l, indent = _para_margins(p, chain)
+        first_w = (inner_w - mar_l - indent) / EMU_PER_POINT
+        rest_w = (inner_w - mar_l) / EMU_PER_POINT
+        if wrap == "none":
+            # No wrapping: every hard break is a line and the width is what
+            # decides whether it fits.
+            laid = _fm.wrap_styled(runs, 10**9, 10**9)
+        else:
+            laid = _fm.wrap_styled(runs, first_w, rest_w)
+        if laid is None:
+            raise _Unmeasurable(
+                "a paragraph could not be laid out against its fonts"
+            )
+        for line in laid:
+            lines += 1
+            total_h += line.max_size_pt * height_mult
+            # The line's width as PowerPoint renders it: the advance sum
+            # plus the measured trailing allowance, then the indent it
+            # starts at. Judging a non-wrapping frame on the raw sum is
+            # what let a label 3 pt too wide report as fitting.
+            widest_pt = max(
+                widest_pt,
+                _fm.calibrated_line_pt(line.width_pt)
+                + (mar_l + indent) / EMU_PER_POINT,
+            )
+
+    height_ratio = total_h / inner_h if inner_h > 0 else 0.0
+    width_ratio = widest_pt / (inner_w / EMU_PER_POINT) if inner_w > 0 else 0.0
+    # A wrapping frame cannot overflow sideways: the wrap already accounted
+    # for the width. A frame with wrap="none" can, and that is the case the
+    # old model could not see at all.
+    overflow = height_ratio > 1.0 or (wrap == "none" and width_ratio > 1.0)
+    ratio = max(height_ratio, width_ratio) if wrap == "none" else height_ratio
+    used = sorted(set(faces.values()))
+    return {
+        "heuristic": False,
+        "method": "font-metrics",
+        "font_file": used[0] if len(used) == 1 else ", ".join(used),
+        "typeface": (
+            sorted(faces)[0] if len(faces) == 1 else ", ".join(sorted(faces))
+        ),
+        "runs_measured": runs_measured,
+        "likely_overflow": overflow,
+        "fill_ratio": round(ratio, 2),
+        "height_ratio": round(height_ratio, 2),
+        "width_ratio": round(width_ratio, 2),
+        "estimated_lines": lines,
+        "wrap": wrap,
+        "note": (
+            "every run measured against its own installed font; a "
+            f"{_fm.WIDTH_SAFETY_PAD_PT:g} pt allowance, calibrated on "
+            "tested PowerPoint layouts, is added to each line, so a line "
+            "that only just fits may be reported as wrapping; PowerPoint's "
+            "rendering is still the final authority"
+        ),
+    }
+
+
 def _overflow_heuristic(
     elem: etree._Element,
     body: etree._Element,
@@ -1199,16 +1715,25 @@ def _overflow_heuristic(
     lnspc_reduction_pct: float,
     box: tuple[float, float, float, float] | None = None,
     size_pt: float | None = None,
+    pkg=None,
+    part: str | None = None,
 ) -> dict | None:
-    """Rough fit estimate: average glyph width model against the frame's
-    inner box. Labeled heuristic because it uses no real font metrics; the
-    honest fit authority is PowerPoint's own renderer.
+    """Fit estimate against the frame's inner box.
+
+    Two models, and every result says which one produced it. When the
+    optional metrics extra is installed AND the run's font file can be
+    found on this machine, the text is measured against that font's own
+    advance widths and wrapped by word ("method": "font-metrics"). Failing
+    either condition it falls back to the original average-glyph-width
+    estimate ("method": "estimate", with the reason). The honest fit
+    authority is still PowerPoint's own renderer.
 
     `box` supplies (x, y, cx, cy) for a shape with no a:xfrm of its own,
     and `size_pt` a font size resolved through the layout/master chain.
     Callers that can resolve those pass them; without them a placeholder
     inheriting its geometry cannot be estimated at all and an unsized run
-    falls back to a flat guess."""
+    falls back to a flat guess. `pkg`/`part` let the typeface resolve
+    through the theme; without them the measured path is unavailable."""
     xfrm = elem.find(f"{qn('p:spPr')}/{qn('a:xfrm')}")
     ext = xfrm.find(qn("a:ext")) if xfrm is not None else None
     if ext is None and box is not None:
@@ -1216,6 +1741,8 @@ def _overflow_heuristic(
     elif ext is None:
         return {
             "heuristic": True,
+            "method": "estimate",
+            "method_reason": "no geometry to measure against",
             "likely_overflow": None,
             "note": (
                 "shape has no explicit geometry (inherited from the "
@@ -1229,6 +1756,8 @@ def _overflow_heuristic(
     if inner_w <= 0 or inner_h <= 0:
         return {
             "heuristic": True,
+            "method": "estimate",
+            "method_reason": "frame insets consume the whole shape",
             "likely_overflow": True,
             "note": "frame insets consume the whole shape",
         }
@@ -1242,6 +1771,24 @@ def _overflow_heuristic(
     pt = base_pt * (font_scale_pct / 100.0)
     char_w = 0.5 * pt * EMU_PER_POINT  # average glyph width model
     line_h = 1.2 * pt * EMU_PER_POINT * (1.0 - lnspc_reduction_pct / 100.0)
+
+    measured = None
+    unmeasurable = None
+    try:
+        measured = _measured_overflow(
+            body, bodypr, inner_w, inner_h, pt, line_h, pkg, part,
+            lnspc_reduction_pct=lnspc_reduction_pct,
+            font_scale_pct=font_scale_pct,
+            elem=elem,
+        )
+    except _Unmeasurable as exc:
+        # The measurement refused to guess, and it knows which run and why.
+        unmeasurable = exc.reason
+    except Exception:
+        measured = None  # measurement never becomes the thing that raises
+    if measured is not None:
+        return measured
+
     lines = 0
     for p in body.findall(qn("a:p")):
         plain = paragraph_text(p)
@@ -1251,6 +1798,8 @@ def _overflow_heuristic(
     ratio = est_h / inner_h
     return {
         "heuristic": True,
+        "method": "estimate",
+        "method_reason": unmeasurable or _estimate_reason(body, pkg, part),
         "likely_overflow": ratio > 1.0,
         "fill_ratio": round(ratio, 2),
         "estimated_lines": lines,
@@ -1261,7 +1810,37 @@ def _overflow_heuristic(
     }
 
 
-def _autofit_record(elem: etree._Element) -> dict:
+def _estimate_reason(body: etree._Element, pkg=None, part: str | None = None) -> str:
+    """Why this result is an estimate rather than a measurement.
+
+    Four closed reasons, and they are not interchangeable: an extra that is
+    not installed, a typeface that does not resolve, a typeface with no file
+    on this machine, and a file that exists but whose metrics will not parse
+    (review finding N3, 2026-09-22: the last one used to report the third,
+    which sends someone to install a font they already have)."""
+    from . import fontmetrics as _fm
+
+    if not _fm.available():
+        return _fm.unavailable_reason()
+    try:
+        face = _latin_typeface(body, pkg, part)
+    except Exception:
+        face = None
+    if not face:
+        return "the run's typeface does not resolve through the theme"
+    try:
+        readable = _fm.metrics_readable(face)
+    except Exception:
+        readable = None
+    if readable is False:
+        return (
+            f"a font file for {face} was found but its metrics could not "
+            "be read"
+        )
+    return f"no font file for {face} was found on this machine"
+
+
+def _autofit_record(elem: etree._Element, pkg=None, part: str | None = None) -> dict:
     body = elem.find(qn("p:txBody"))
     bodypr = body.find(qn("a:bodyPr")) if body is not None else None
     mode = "inherited"
@@ -1287,7 +1866,8 @@ def _autofit_record(elem: etree._Element) -> dict:
         rec["line_spacing_reduction_pct"] = lnspc_reduction
     if body is not None:
         rec["overflow"] = _overflow_heuristic(
-            elem, body, bodypr, font_scale, lnspc_reduction
+            elem, body, bodypr, font_scale, lnspc_reduction,
+            pkg=pkg, part=part,
         )
     return rec
 
@@ -1302,7 +1882,7 @@ def _autofit_slide_records(pkg: PptxPackage, rec: dict) -> list[dict]:
                 etree.QName(elem).localname == "sp"
                 and elem.find(qn("p:txBody")) is not None
             ):
-                shapes.append(_autofit_record(elem))
+                shapes.append(_autofit_record(elem, pkg, rec["part"]))
     return shapes
 
 
@@ -1345,7 +1925,7 @@ def get_autofit_state(pkg: PptxPackage, slide=None, shape=None, *,
     if shape is not None:
         elem, kind = _resolve_shape(pkg, rec, shape)
         _require_txbody(elem, kind, rec)
-        shapes = [_autofit_record(elem)]
+        shapes = [_autofit_record(elem, pkg, rec["part"])]
     else:
         shapes = _autofit_slide_records(pkg, rec)
     header = {
@@ -1400,7 +1980,8 @@ def _set_normautofit(
         bodypr.insert(0, norm)
 
 
-def _fit_one_shape(elem: etree._Element, min_size: float) -> dict | None:
+def _fit_one_shape(elem: etree._Element, min_size: float, pkg=None,
+                   part: str | None = None) -> dict | None:
     """Estimate and apply the largest uniform font scale that fits one
     shape's text in its frame. Returns a report dict, or None when the
     shape is not an estimable overflow case."""
@@ -1408,14 +1989,16 @@ def _fit_one_shape(elem: etree._Element, min_size: float) -> dict | None:
     if body is None:
         return None
     bodypr = body.find(qn("a:bodyPr"))
-    est0 = _overflow_heuristic(elem, body, bodypr, 100.0, 0.0)
+    est0 = _overflow_heuristic(elem, body, bodypr, 100.0, 0.0,
+                               pkg=pkg, part=part)
     if not est0 or est0.get("likely_overflow") is not True:
         return None
     sized = _explicit_size_elements(body)
     base_pt = (_first_run_size(body) or 1800) / 100.0
 
     def fits(scale_pct: float) -> tuple[bool, float | None]:
-        est = _overflow_heuristic(elem, body, bodypr, scale_pct, 0.0)
+        est = _overflow_heuristic(elem, body, bodypr, scale_pct, 0.0,
+                                  pkg=pkg, part=part)
         if not est or est.get("likely_overflow") is None:
             return True, None
         return not est["likely_overflow"], est.get("fill_ratio")
@@ -1463,12 +2046,15 @@ def _fit_one_shape(elem: etree._Element, min_size: float) -> dict | None:
         int(el.get("sz")) / 100.0 for el in _explicit_size_elements(body)
     })
     est_after = _overflow_heuristic(
-        elem, body, bodypr, written_scale or 100.0, 0.0
+        elem, body, bodypr, written_scale or 100.0, 0.0, pkg=pkg, part=part
     )
     return {
         "shape_id": _shape_id(elem),
         "name": _shape_name(elem),
         "applied": applied,
+        "method": est0.get("method"),
+        "method_reason": est0.get("method_reason"),
+        "font_file": est0.get("font_file"),
         "scale_pct": round(scale_pct, 1),
         "before": {
             "sizes_pt": before_sizes or "inherited",
@@ -1514,7 +2100,7 @@ def fit_text(
                 f"shape {_shape_id(elem)} on slide {rec['index']} has no "
                 "text to fit"
             )
-        report = _fit_one_shape(elem, min_size)
+        report = _fit_one_shape(elem, min_size, pkg, rec["part"])
         if report is None:
             skipped.append({
                 "shape_id": _shape_id(elem),
@@ -1536,11 +2122,13 @@ def fit_text(
                     continue
                 if not shape_text(elem).strip():
                     continue
-                report = _fit_one_shape(elem, min_size)
+                report = _fit_one_shape(elem, min_size, pkg, rec["part"])
                 if report is not None:
                     fitted.append(report)
     if fitted:
         pkg.mark_dirty(rec["part"])
+    methods = {r.get("method") for r in fitted if r.get("method")}
+    measured = methods == {"font-metrics"}
     return {
         "slide_index": rec["index"],
         "slide_id": rec["slide_id"],
@@ -1548,9 +2136,20 @@ def fit_text(
         "skipped": skipped,
         "min_size_pt": min_size,
         "estimate": True,
+        "method": "font-metrics" if measured else "estimate",
         "note": (
-            "average-glyph-width heuristic, no real font metrics; the fit "
-            "is an estimate, so render-to-verify with export_slide_images "
-            "(assembly-export pack) before presenting"
+            (
+                "measured against the installed font's own advance widths "
+                "(no kerning); the fit is still an estimate, so "
+                "render-to-verify with export_slide_images "
+                "(assembly-export pack) before presenting"
+            )
+            if measured
+            else (
+                "average-glyph-width heuristic, no real font metrics; the "
+                "fit is an estimate, so render-to-verify with "
+                "export_slide_images (assembly-export pack) before "
+                "presenting"
+            )
         ),
     }

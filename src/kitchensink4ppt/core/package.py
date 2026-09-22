@@ -88,6 +88,97 @@ SLIDE_ID_MAX = 2147483647
 #: cannot open such a deck, so payload_valid must never bless one.
 MAX_DRAWING_EMU = 2147483647
 
+#: The SmartArt cached-drawing namespace, whose dsp:txBody has the same
+#: content model as p:txBody and a:txBody (kept here so the payload check
+#: does not import ops/).
+_DSP_NS = "http://schemas.microsoft.com/office/drawing/2008/diagram"
+
+#: The chart-drawing namespace, whose cdr:txBody is the same text model.
+_CDR_NS = "http://schemas.openxmlformats.org/drawingml/2006/chartDrawing"
+
+#: Every text-body element that must carry at least one a:p. All of these
+#: are CT_TextBody in the schema (bodyPr, lstStyle, then one or more a:p),
+#: so one rule covers them: p:txBody on slides, layouts, masters and
+#: notes; a:txBody in table cells; dsp:txBody in a diagram's cached
+#: drawing; c:rich and c:txPr in a chart (titles, axis and data labels);
+#: cdr:txBody in a chart's own drawing layer.
+_TXBODY_TAGS = (
+    f"{{{NSMAP['p']}}}txBody",
+    f"{{{NSMAP['a']}}}txBody",
+    f"{{{_DSP_NS}}}txBody",
+    f"{{{NSMAP['c']}}}rich",
+    f"{{{NSMAP['c']}}}txPr",
+    f"{{{_CDR_NS}}}txBody",
+)
+
+#: Markup Compatibility. A body's paragraphs may be supplied through an
+#: mc:AlternateContent wrapper rather than sitting as direct children, and
+#: PowerPoint selects one branch at load time.
+_MC_NS = "http://schemas.openxmlformats.org/markup-compatibility/2006"
+_MC_ALTERNATE = f"{{{_MC_NS}}}AlternateContent"
+_MC_BRANCHES = (f"{{{_MC_NS}}}Choice", f"{{{_MC_NS}}}Fallback")
+
+#: How deep AlternateContent may nest before the check stops looking and
+#: accepts. Refusing a legitimate save is the worst thing this gate can
+#: do, so pathological nesting gets the benefit of the doubt.
+_MC_MAX_DEPTH = 8
+
+
+def _supplies_paragraph(container: etree._Element, depth: int = 0) -> bool:
+    """Does this text body have a paragraph, however it is supplied?
+
+    A direct a:p is the ordinary case. The other legal shape is
+    mc:AlternateContent: PowerPoint selects ONE branch, so the wrapper is
+    a guarantee only when EVERY branch it offers supplies a paragraph. A
+    blind descendant search would let one valid Fallback hide an empty
+    Choice, which is the corruption this gate exists to catch.
+    """
+    if depth > _MC_MAX_DEPTH:
+        return True
+    if container.find(qn("a:p")) is not None:
+        return True
+    for alt in container.findall(_MC_ALTERNATE):
+        branches = [b for tag in _MC_BRANCHES for b in alt.findall(tag)]
+        if branches and all(
+            _supplies_paragraph(b, depth + 1) for b in branches
+        ):
+            return True
+    return False
+
+#: Where to look for the name and id of the shape a text body belongs to,
+#: relative to the body's PARENT (p:sp, dsp:sp) or its grandparent.
+_CNVPR_PATHS = (
+    # p:sp/p:nvSpPr/p:cNvPr on a slide, layout, master or notes slide.
+    (f"{{{NSMAP['p']}}}nvSpPr", f"{{{NSMAP['p']}}}cNvPr"),
+    # dsp:sp/dsp:nvSpPr/a:cNvPr in a cached SmartArt drawing.
+    (f"{{{_DSP_NS}}}nvSpPr", f"{{{NSMAP['a']}}}cNvPr"),
+)
+
+
+def _txbody_owner(body: etree._Element) -> str:
+    """The shape a text body hangs off, named as well as the XML allows:
+    'shape 7 "Agenda Body"' for a p:sp, 'a table cell' for a:txBody, and
+    the bare parent tag when there is no cNvPr to read."""
+    parent = body.getparent()
+    if parent is None:
+        return "an unattached element"
+    local = etree.QName(parent).localname
+    if local == "tc":
+        return "a table cell"
+    for nv_tag, cnvpr_tag in _CNVPR_PATHS:
+        nv = parent.find(nv_tag)
+        if nv is None:
+            continue
+        cnvpr = nv.find(cnvpr_tag)
+        if cnvpr is None:
+            continue
+        name = cnvpr.get("name")
+        shape_id = cnvpr.get("id")
+        named = f' "{name}"' if name else ""
+        return f"shape {shape_id}{named}" if shape_id else f"a shape{named}"
+    return f"a {local} element"
+
+
 #: Schema-fixed order of p:presentation children. Inserting sldIdLst after
 #: sldSz corrupts the file, so new children go in by rank, never appended.
 _PRESENTATION_ORDER = (
@@ -630,6 +721,28 @@ class PptxPackage:
                                     f"{MAX_DRAWING_EMU} EMU limit; the deck "
                                     "would not open cleanly"
                                 )
+
+                # Every text body needs at least one a:p. A p:txBody with
+                # none is schema-clean and relationship-clean, so it sailed
+                # through every check here, and PowerPoint then refused the
+                # whole deck naming nothing: about 40 minutes of manual
+                # bisection on a 45-slide build (field report 2026-09-21,
+                # P6). The content model says a body HAS paragraphs, so a
+                # payload carrying an empty one is invalid.
+                for name, root in roots.items():
+                    if not name.startswith("ppt/") or name.endswith(".rels"):
+                        continue
+                    for body in root.iter(*_TXBODY_TAGS):
+                        if _supplies_paragraph(body):
+                            continue
+                        raise ValidationFailed(
+                            f"empty text body in {name}: "
+                            f"{etree.QName(body).localname} on "
+                            f"{_txbody_owner(body)} has no a:p paragraph, "
+                            "directly or through an AlternateContent "
+                            "branch; PowerPoint refuses to open a deck "
+                            "with one. Leave one empty paragraph instead."
+                        )
 
                 # Every internal relationship target must exist in the package.
                 rel_tag = f"{{{NSMAP['rel']}}}Relationship"

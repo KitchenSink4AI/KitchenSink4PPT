@@ -69,6 +69,23 @@ RPR_ORDER = (
     "a:extLst",
 )
 
+#: Every hyperlink element a DrawingML tree can carry, in ONE place.
+#: a:hlinkClick and a:hlinkHover are the SHAPE-level pair (inside p:cNvPr);
+#: a:hlinkClick and a:hlinkMouseOver are the RUN-level pair (inside a:rPr).
+#: Whole-tree sweeps that removed a relationship used to name the first two
+#: only, so a run's mouse-over link kept an r:id pointing at a rel that was
+#: gone, and list_hyperlinks did not report the link at all (second review
+#: follow-up, 2026-09-22). Reading all three is correct everywhere: a
+#: container can only hold the ones its own schema allows.
+HLINK_ELEMENTS = ("a:hlinkClick", "a:hlinkHover", "a:hlinkMouseOver")
+
+#: The hover spellings, for a reader deciding what to call a trigger.
+HLINK_HOVER_ELEMENTS = ("a:hlinkHover", "a:hlinkMouseOver")
+
+#: The same two lists as qnames, which is what element scans want.
+HLINK_QNAMES = tuple(qn(t) for t in HLINK_ELEMENTS)
+HLINK_HOVER_QNAMES = tuple(qn(t) for t in HLINK_HOVER_ELEMENTS)
+
 #: a:pPr child sequence (also a:lvl1pPr..lvl9pPr, same complex type).
 PPR_ORDER = (
     "a:lnSpc",

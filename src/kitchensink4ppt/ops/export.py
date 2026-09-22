@@ -36,6 +36,27 @@ SOFFICE_WELL_KNOWN = Path(r"C:\Program Files\LibreOffice\program\soffice.exe")
 SOFFICE_TIMEOUT = 300  # seconds; big decks convert slowly
 PDFTOPPM_TIMEOUT = 300
 
+#: Where poppler lands when a user installs it without putting it on PATH.
+#: Same shape as SOFFICE_WELL_KNOWN, for the same reason: an installed tool
+#: the server cannot see reads to the caller as a missing tool.
+PDFTOPPM_WELL_KNOWN = (
+    Path(r"C:\Program Files\poppler\Library\bin\pdftoppm.exe"),
+    Path(r"C:\Program Files\poppler\bin\pdftoppm.exe"),
+    Path(r"C:\Program Files (x86)\poppler\bin\pdftoppm.exe"),
+    Path("/usr/bin/pdftoppm"),
+    Path("/usr/local/bin/pdftoppm"),
+    Path("/opt/homebrew/bin/pdftoppm"),
+)
+
+#: The remedy sentence for a LibreOffice install with no rasterizer. One
+#: copy, used by the engine report and by the refusal, so the two cannot
+#: drift apart.
+PDFTOPPM_REMEDY = (
+    " LibreOffice is installed but slide images also need "
+    "pdftoppm (poppler) for PDF rasterization; install "
+    "poppler or use PowerPoint COM."
+)
+
 DEFAULT_IMAGE_WIDTH = 1280
 
 
@@ -52,9 +73,35 @@ def _find_soffice() -> Path | None:
     return Path(hit) if hit else None
 
 
+def _runnable(path: Path) -> bool:
+    """A usable executable: a FILE, and on POSIX one we may execute.
+
+    Path.exists() alone accepted a DIRECTORY named pdftoppm, and on Unix a
+    non-executable file. Either is reported as an available renderer and
+    then fails at subprocess launch, which moves the error from detection
+    (where it is actionable) to the middle of an export (where it is not).
+    Review finding N4, 2026-09-22."""
+    try:
+        if not path.is_file():
+            return False
+    except OSError:
+        return False
+    if os.name == "posix":
+        return os.access(path, os.X_OK)
+    return True
+
+
 def _find_pdftoppm() -> Path | None:
+    env = os.environ.get("KS4P_PDFTOPPM")
+    if env and _runnable(Path(env)):
+        return Path(env)
     hit = shutil.which("pdftoppm")
-    return Path(hit) if hit else None
+    if hit:
+        return Path(hit)
+    for cand in PDFTOPPM_WELL_KNOWN:
+        if _runnable(cand):
+            return cand
+    return None
 
 
 def _com_available() -> bool:
@@ -89,7 +136,10 @@ def get_export_engines() -> dict:
             "note": (
                 "headless fallback; fidelity drifts on theme colors, effects, "
                 "fonts. Slide images additionally need pdftoppm (poppler): "
-                + ("found" if pdftoppm else "NOT found")
+                + ("found" if pdftoppm else "NOT found.")
+                # The remedy belongs where the caller reads the verdict, not
+                # only in the refusal they hit ten minutes later.
+                + ("" if pdftoppm or soffice is None else PDFTOPPM_REMEDY)
             ),
         },
     }
@@ -328,11 +378,7 @@ def export_slide_images(
         if chosen is None:
             hint = ""
             if _find_soffice() is not None and _find_pdftoppm() is None:
-                hint = (
-                    " LibreOffice is installed but slide images also need "
-                    "pdftoppm (poppler) for PDF rasterization; install "
-                    "poppler or use PowerPoint COM."
-                )
+                hint = PDFTOPPM_REMEDY
             raise PptMcpError(
                 "no slide-image engine is available on this machine. Options: "
                 "Microsoft PowerPoint (COM) or LibreOffice + poppler "

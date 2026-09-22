@@ -67,6 +67,7 @@ from ..core.package import (
     resolve_target,
 )
 from ..core.sandbox import check_path
+from ._runmap import HLINK_QNAMES
 from .comments import RT_LEGACY_AUTHORS, RT_MODERN_AUTHORS
 from .interdeck import (
     RT_SLIDE_MASTER,
@@ -376,9 +377,7 @@ def _fix_pending_jumps(
             rels_root.remove(rel_el)
             slide_root = dst.root(p["part"])
             removed = 0
-            for el in list(
-                slide_root.iter(qn("a:hlinkClick"), qn("a:hlinkHover"))
-            ):
+            for el in list(slide_root.iter(*HLINK_QNAMES)):
                 if el.get(qn("r:id")) == p["rid"]:
                     el.getparent().remove(el)
                     removed += 1
@@ -1004,6 +1003,11 @@ def _fill_agenda_body(
         body.remove(p)
     for entry in entries:
         body.append(_build_paragraph({"text": entry["label"], "level": 0}))
+    if not entries:
+        # A text body with zero a:p makes PowerPoint refuse the whole deck
+        # (field report 2026-09-21, P6). Both callers refuse an empty entry
+        # list, so this is the floor under them, not a behaviour change.
+        etree.SubElement(body, qn("a:p"))
     cnvpr = body_elem.find(f"{qn('p:nvSpPr')}/{qn('p:cNvPr')}")
     shape_id = int(cnvpr.get("id")) if cnvpr is not None else None
     rec = resolve_slide(pkg, slide_sel)
@@ -1151,7 +1155,7 @@ def refresh_agenda_slide(pkg: PptxPackage) -> dict:
     old_rids: set[str] = set()
     body = body_elem.find(qn("p:txBody"))
     if body is not None:
-        for el in body.iter(qn("a:hlinkClick"), qn("a:hlinkHover")):
+        for el in body.iter(*HLINK_QNAMES):
             rid = el.get(qn("r:id"))
             if rid:
                 old_rids.add(rid)
