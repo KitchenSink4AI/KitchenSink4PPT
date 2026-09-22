@@ -86,6 +86,7 @@ from ..core.package import (
     resolve_target,
 )
 from ..core.sandbox import check_path
+from ._runmap import HLINK_QNAMES
 from .media import _ensure_media_default, _find_media_by_bytes
 from .slides import (
     CT_NOTES_SLIDE,
@@ -1128,9 +1129,7 @@ def copy_slide_between(
                 rid = rel.get("Id")
                 rels_root.remove(rel)
                 removed = 0
-                for el in list(
-                    new_root.iter(qn("a:hlinkClick"), qn("a:hlinkHover"))
-                ):
+                for el in list(new_root.iter(*HLINK_QNAMES)):
                     if el.get(qn("r:id")) == rid:
                         el.getparent().remove(el)
                         removed += 1
