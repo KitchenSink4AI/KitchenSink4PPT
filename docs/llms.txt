@@ -21,7 +21,7 @@ Sessions start in a lite core of 25 tools (about 7,200 tokens; the full surface 
 
 Environment pins for clients without list_changed support, or for power users:
 - `KS4P_MODE=lite` (default) | `KS4P_MODE=full` | `KS4P_MODE=graphics,design` (comma-separated pack list)
-- `KS4P_PACK_POLICY=locked` prevents runtime pack changes (administrator setting)
+- `KS4P_PACK_POLICY=locked` is a launch setting that prevents runtime pack changes
 - `KS4P_ALL_TOOLS` loads every pack at startup
 - `KS4P_LOCK_TOOLS` freezes the resulting surface
 - `KS4P_UPDATE_CHECK=off` disables the disclosed weekly version check. A version check never installs an update.

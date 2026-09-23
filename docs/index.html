@@ -1000,7 +1000,7 @@ footer .colophon{text-align:center}
       <div class="dept"><div class="chiprow"><span data-i18n="pk4.chip">VERDIGRIS</span><span class="pot" data-i18n="state.pot">SAMPLE POT</span></div><h3><span data-i18n="pk4.t">Design</span> <span class="num" data-i18n="pk4.n">WALLPAPER AND PAINT</span></h3><p data-i18n="pk4.p">Create presentations FROM your own template, list and apply layouts and masters, read the theme, and fill shapes with theme-color references so they follow the palette when the theme changes. Themes are the wallpaper and the paint; layouts are where the furniture goes.</p><p class="ex" data-i18n="pk4.e">e.g. start a deck from the house template · apply the right layout by name · fill a shape with accent 2, not a hex guess</p><span class="count" data-i18n="pk.ships">SHIPS IN v1.1</span></div>
       <div class="dept"><div class="chiprow"><span data-i18n="pk5.chip">FRESH COAT</span><span class="pot" data-i18n="state.pot">SAMPLE POT</span></div><h3><span data-i18n="pk5.t">Assembly plus Export</span> <span class="num" data-i18n="pk5.n">OUT THE DOOR</span></h3><p data-i18n="pk5.p">Speaker notes, sections, footers and slide numbers, hide slide, PDF export, per-slide PNG export so the agent can look at its own work, a check that the deck opens with no repair prompt, and a report of text that overflows its box. Slide transitions with millisecond timing, click and by-paragraph entrance builds, and the tested behavior that edits never strip the animations a deck already has.</p><p class="ex" data-i18n="pk5.e">e.g. write the speaker notes · export slide 7 as a PNG to check the layout · confirm the deck opens with no repair prompt · build the lineage slide one panel per click</p><span class="count" data-i18n="pk.ships">SHIPS IN v1.1</span></div>
       <div class="dept"><div class="chiprow"><span data-i18n="pk6.chip">SECOND COAT</span><span class="pot" data-i18n="state.pot">SAMPLE POT</span></div><h3><span data-i18n="pk6.t">Review plus Sweeps</span> <span class="num" data-i18n="pk6.n">THE DEEP CLEAN</span></h3><p data-i18n="pk6.p">Modern threaded comments with REPLIES, which exist in no other PowerPoint MCP server, resolve and cascade delete, a whole-deck review report, structural deck compare, and anonymize-for-review. Deck-wide operations that reach where PowerPoint itself cannot: font inventory and replacement including charts and phantom declarations, color remapping with literal-to-theme unification, proofing language, whole-deck logo replacement preserving crops, and compress with an offender report.</p><p class="ex" data-i18n="pk6.e">e.g. reply to the reviewer in the thread · diff two versions of the deck · strip authorship before blind review · swap the old logo everywhere, crops intact</p><span class="count" data-i18n="pk.ships">SHIPS IN v1.1</span></div>
-      <div class="dept"><div class="chiprow"><span data-i18n="pk7.chip">WET EDGE</span><span class="pot" data-i18n="state.pot">SAMPLE POT</span></div><h3><span data-i18n="pk7.t">Live Editing</span> <span class="num" data-i18n="pk7.n">OPEN DECK? FINE.</span></h3><p data-i18n="pk7.p">Edit the deck while it is open in the user's PowerPoint: the same tools route automatically, edits stay unsaved until asked, the cursor is never touched, and the undo guarantee is reported honestly. Every call runs through one queue, so agents working the same open deck cannot interleave, and a dialog waiting on a human is caught at the window level. PowerPoint status and a zombie-process check come along.</p><p class="ex" data-i18n="pk7.e">e.g. fix a typo in the deck you are presenting from tomorrow · see unsaved edits the file on disk does not have · check whether a stray PowerPoint is still running</p><span class="count" data-i18n="pk.ships">SHIPS IN v1.1</span></div>
+      <div class="dept"><div class="chiprow"><span data-i18n="pk7.chip">WET EDGE</span><span class="pot" data-i18n="state.pot">SAMPLE POT</span></div><h3><span data-i18n="pk7.t">Live Editing</span> <span class="num" data-i18n="pk7.n">OPEN DECK? FINE.</span></h3><p data-i18n="pk7.p">Editing tools change a deck while it is open in the user's PowerPoint, with or without this pack. Edits stay unsaved until asked, the cursor is never touched, and the undo guarantee is reported honestly. Calls share one queue, so agents working on the same open deck cannot interleave, and a window-level check catches dialogs waiting for a person. This pack adds explicit save, scroll-to-slide, session status, PowerPoint status and a zombie-process check.</p><p class="ex" data-i18n="pk7.e">e.g. fix a typo in the deck you are presenting from tomorrow · see unsaved edits the file on disk does not have · check whether a stray PowerPoint is still running</p><span class="count" data-i18n="pk.ships">SHIPS IN v1.1</span></div>
     </div>
   </div>
 </section>
@@ -1040,7 +1040,7 @@ footer .colophon{text-align:center}
          Run enable_tools(["tables-charts"]) to switch it on.
 <span class="p">&gt;</span> enable_tools(["tables-charts"])
 <span class="g">OK:</span> pack enabled, tools registered, token cost reported.</div></div>
-    <p class="foot-note" style="margin-top:18px" data-i18n="eff.note">Power users who want everything loaded from the start can pin it: <b>KS4P_MODE=full</b> in the server environment, or a comma-separated pack list. Administrators can lock the selection with KS4P_PACK_POLICY=locked.</p>
+    <p class="foot-note" style="margin-top:18px" data-i18n="eff.note">Power users who want everything loaded from the start can set <b>KS4P_MODE=full</b> in the server environment, or use a comma-separated pack list. To keep that startup tool list unchanged while the server runs, set KS4P_PACK_POLICY=locked in its launch environment.</p>
   </div>
 </section>
 
@@ -1375,7 +1375,7 @@ en: {
 "pk6.p": "Modern threaded comments with REPLIES, which exist in no other PowerPoint MCP server, resolve and cascade delete, a whole-deck review report, structural deck compare, and anonymize-for-review. Deck-wide operations that reach where PowerPoint itself cannot: font inventory and replacement including charts and phantom declarations, color remapping with literal-to-theme unification, proofing language, whole-deck logo replacement preserving crops, and compress with an offender report.",
 "pk6.e": "e.g. reply to the reviewer in the thread · diff two versions of the deck · strip authorship before blind review · swap the old logo everywhere, crops intact",
 "pk7.t": "Live Editing", "pk7.n": "OPEN DECK? FINE.",
-"pk7.p": "Edit the deck while it is open in the user's PowerPoint: the same tools route automatically, edits stay unsaved until asked, the cursor is never touched, and the undo guarantee is reported honestly. Every call runs through one queue, so agents working the same open deck cannot interleave, and a dialog waiting on a human is caught at the window level. PowerPoint status and a zombie-process check come along.",
+"pk7.p": "Editing tools change a deck while it is open in the user's PowerPoint, with or without this pack. Edits stay unsaved until asked, the cursor is never touched, and the undo guarantee is reported honestly. Calls share one queue, so agents working on the same open deck cannot interleave, and a window-level check catches dialogs waiting for a person. This pack adds explicit save, scroll-to-slide, session status, PowerPoint status and a zombie-process check.",
 "pk7.e": "e.g. fix a typo in the deck you are presenting from tomorrow · see unsaved edits the file on disk does not have · check whether a stray PowerPoint is still running",
 "h2.cmp": "Other tools on this shelf <span class=\"gloss\">(the other PowerPoint MCP servers)</span>",
 "cmp.lead": "Feature grids flatter everybody. Here it is instead as seven things you would actually ask an agent for, and what happens next.",
@@ -1408,7 +1408,7 @@ en: {
 "eff.s1": "Tools in the lite core",
 "eff.s2": "Tokens, lite core up front",
 "eff.s3": "Call to the whole sink",
-"eff.note": "Power users who want everything loaded from the start can pin it: <b>KS4P_MODE=full</b> in the server environment, or a comma-separated pack list. Administrators can lock the selection with KS4P_PACK_POLICY=locked.",
+"eff.note": "Power users who want everything loaded from the start can set <b>KS4P_MODE=full</b> in the server environment, or use a comma-separated pack list. To keep that startup tool list unchanged while the server runs, set KS4P_PACK_POLICY=locked in its launch environment.",
 "h2.install": "Wiring it in",
 "setup.platform": "Windows, macOS and Linux for file editing. Features that control Microsoft PowerPoint require Windows and PowerPoint.",
 "platform.hero": "Windows · macOS · Linux",
@@ -1545,7 +1545,7 @@ ko: {
 "pk6.p": "다른 어떤 PowerPoint MCP 서버에도 없는 답글 지원 최신 스레드형 메모, 해결 처리와 연쇄 삭제, 슬라이드 전체 검토 보고서, 구조 비교, 그리고 심사용 익명화. PowerPoint 자신도 못 닿는 곳까지 닿는 슬라이드 전체 작업: 차트와 유령 선언까지 포함한 글꼴 목록화와 교체, 리터럴 색을 테마 색으로 통일하는 색 재매핑, 교정 언어, 자르기를 보존하는 전체 로고 교체, 그리고 용량 주범 보고서가 딸린 압축.",
 "pk6.e": "예: 스레드에서 검토자에게 답글 달기 · 두 버전의 슬라이드 비교 · 블라인드 심사 전에 작성자 정보 제거 · 오래된 로고를 자르기 그대로 모든 곳에서 교체",
 "pk7.t": "라이브 편집", "pk7.n": "열려 있어도 됩니다",
-"pk7.p": "사용자의 PowerPoint에 열려 있는 슬라이드를 그대로 편집합니다: 같은 도구가 자동으로 라우팅되고, 편집은 요청 전까지 저장되지 않은 상태로 남으며, 커서는 절대 건드리지 않고, 실행 취소 보증은 정직하게 보고됩니다. 모든 호출은 하나의 큐를 지나가므로 같은 문서를 다루는 에이전트들이 서로 끼어들 수 없고, 사람을 기다리는 대화상자는 창 수준에서 잡아냅니다. PowerPoint 상태 확인과 좀비 프로세스 점검도 함께 들어 있습니다.",
+"pk7.p": "편집 도구는 이 팩이 있든 없든 사용자의 PowerPoint에 열려 있는 덱을 그대로 바꿉니다. 편집은 요청 전까지 저장되지 않은 상태로 남고, 커서는 절대 건드리지 않으며, 실행 취소 보증은 정직하게 보고됩니다. 호출은 하나의 큐를 함께 쓰므로 같은 열린 덱을 다루는 에이전트들이 서로 끼어들 수 없고, 창 수준의 점검이 사람을 기다리는 대화상자를 잡아냅니다. 이 팩은 명시적 저장, 슬라이드로 스크롤, 세션 상태, PowerPoint 상태, 좀비 프로세스 점검을 더합니다.",
 "pk7.e": "예: 내일 발표할 슬라이드의 오타를 바로 수정 · 디스크의 파일에는 없는 미저장 편집 확인 · 떠도는 PowerPoint 프로세스가 남아 있는지 확인",
 "h2.cmp": "이 진열대의 다른 도구들 <span class=\"gloss\">(다른 PowerPoint MCP 서버들)</span>",
 "cmp.lead": "기능 비교표는 모두를 좋게 보이게 만듭니다. 그래서 실제로 에이전트에게 시킬 법한 일곱 가지 부탁과, 그다음에 벌어지는 일로 대신 보여 드립니다.",
@@ -1578,7 +1578,7 @@ ko: {
 "eff.s1": "라이트 코어의 도구 수",
 "eff.s2": "토큰, 라이트 코어 선로드",
 "eff.s3": "싱크대 전체까지 호출 수",
-"eff.note": "처음부터 전부 로드하고 싶은 파워 유저는 고정할 수 있습니다: 서버 환경 변수에 <b>KS4P_MODE=full</b>, 또는 쉼표로 구분한 팩 목록. 관리자는 KS4P_PACK_POLICY=locked로 선택을 잠글 수 있습니다.",
+"eff.note": "처음부터 전부 로드하고 싶은 파워 유저는 서버 환경에 <b>KS4P_MODE=full</b>을 설정하거나, 쉼표로 구분한 팩 목록을 쓸 수 있습니다. 서버가 실행되는 동안 시작 시의 도구 목록을 그대로 유지하려면, 서버 실행 환경에 KS4P_PACK_POLICY=locked를 설정하면 됩니다.",
 "h2.install": "설치와 배선",
 "setup.platform": "파일 편집은 Windows, macOS, Linux를 지원합니다. Microsoft PowerPoint를 직접 제어하는 기능에는 Windows와 PowerPoint가 필요합니다.",
 "platform.hero": "Windows · macOS · Linux",
@@ -1715,7 +1715,7 @@ ja: {
 "pk6.p": "他のどの PowerPoint MCP サーバーにも存在しない返信付きモダンスレッドコメント、解決とカスケード削除、デッキ全体のレビューレポート、構造比較、査読用匿名化。 PowerPoint 自身も届かない場所へ届くデッキ全体の操作:グラフや幽霊宣言まで含むフォントの棚卸しと置換、リテラル色をテーマ色へ統一する色の再マッピング、校正言語、トリミングを保ったままの全デッキロゴ差し替え、そして容量犯人レポート付きの圧縮。",
 "pk6.e": "例:スレッドで校閲者に返信 · デッキの2バージョンを比較 · ブラインドレビュー前に作成者情報を剥がす · 古いロゴをトリミングそのままに全部差し替え",
 "pk7.t": "ライブ編集", "pk7.n": "開いたままでも結構",
-"pk7.p": "ユーザーの PowerPoint で開いたままのデッキを編集:同じツールが自動でルーティングされ、編集は頼まれるまで未保存のまま、カーソルには一切触れず、元に戻す保証は正直に報告されます。 すべての呼び出しは一つの列を通るので、同じデッキを扱うエージェントどうしが割り込むことはなく、人を待っているダイアログはウィンドウの層で検知します。PowerPoint の状態確認とゾンビプロセスの点検も付いています。",
+"pk7.p": "編集ツールは、このパックがあってもなくても、ユーザーの PowerPoint で開いたままのデッキを変更します。編集は頼まれるまで未保存のまま、カーソルには一切触れず、元に戻す保証は正直に報告されます。呼び出しは一つの列を共有するので、同じ開いたデッキを扱うエージェントどうしが割り込むことはなく、人を待っているダイアログはウィンドウ単位の点検で検知します。このパックは、明示的な保存、スライドへのスクロール、セッション状態、PowerPoint の状態、ゾンビプロセスの点検を加えます。",
 "pk7.e": "例:明日発表するデッキの誤字をその場で修正 · ディスク上のファイルにはない未保存の編集を確認 · 居残っている PowerPoint がないか確認",
 "h2.cmp": "この棚の他のツール <span class=\"gloss\">(ほかの PowerPoint MCP サーバー)</span>",
 "cmp.lead": "機能マトリクスは誰でも良く見せます。ですので代わりに、実際にエージェントへ頼みそうな7つのお願いと、その後に起きることで並べます。",
@@ -1748,7 +1748,7 @@ ja: {
 "eff.s1": "ライトコアのツール数",
 "eff.s2": "トークン(ライトコア先読み)",
 "eff.s3": "流し一式までの呼び出し",
-"eff.note": "最初から全部読み込みたいパワーユーザーは固定できます:サーバー環境に <b>KS4P_MODE=full</b>、またはカンマ区切りのパック一覧。管理者は KS4P_PACK_POLICY=locked で選択をロックできます。",
+"eff.note": "最初から全部読み込みたいパワーユーザーは、サーバー環境に <b>KS4P_MODE=full</b> を設定するか、カンマ区切りのパック一覧を指定できます。サーバーが動いている間も起動時のツール一覧をそのまま保つには、サーバーの起動環境に KS4P_PACK_POLICY=locked を設定してください。",
 "h2.install": "取り付けと配線",
 "setup.platform": "ファイル編集は Windows、macOS、Linux に対応。Microsoft PowerPoint を直接操作する機能には Windows と PowerPoint が必要です。",
 "platform.hero": "Windows · macOS · Linux",
@@ -1885,7 +1885,7 @@ zh: {
 "pk6.p": "带回复的现代多层批注,其他任何 PowerPoint MCP 服务器都没有;解决与级联删除、整套幻灯片的审阅报告、结构对比,以及评审匿名化。 够到 PowerPoint 自己都够不到的地方的全套操作:字体盘点与替换(连图表和幽灵声明一起),把散落的字面色统一成主题色的颜色重映射,校对语言,保留裁剪的全套 logo 替换,以及附带元凶报告的压缩。",
 "pk6.e": "例:在批注线程里回复审阅人 · 对比两个版本的幻灯片 · 盲审前抹去作者信息 · 旧 logo 全场换新,裁剪不动",
 "pk7.t": "实时编辑", "pk7.n": "文件开着?没事。",
-"pk7.p": "在用户的 PowerPoint 里开着照样编辑:同一批工具自动改道,改动在你开口之前保持未保存,光标绝不被碰,撤销保证如实报告。 所有调用都走同一条队列,同时动一份文件的多个代理不会互相插队,等着人点的对话框会在窗口层面被发现。另外还附带 PowerPoint 状态查询和僵尸进程检查。",
+"pk7.p": "无论有没有这个包,编辑工具都能直接修改在用户的 PowerPoint 里开着的幻灯片。改动在你开口之前保持未保存,光标绝不被碰,撤销保证如实报告。所有调用共用一条队列,同时动同一份打开文件的多个代理不会互相插队,窗口层面的检查会发现等着人点的对话框。这个包再加上显式保存、滚动到指定幻灯片、会话状态、PowerPoint 状态和僵尸进程检查。",
 "pk7.e": "例:改掉明天要讲的幻灯片里的错别字 · 查看磁盘文件里还没有的未保存改动 · 查一查是不是还有 PowerPoint 没退干净",
 "h2.cmp": "这个货架上的其他工具 <span class=\"gloss\">(其他 PowerPoint MCP 服务器)</span>",
 "cmp.lead": "功能对比表人人都好看。所以这里换个摆法:七件你真会开口让智能体做的事,以及接下来发生什么。",
@@ -1918,7 +1918,7 @@ zh: {
 "eff.s1": "精简内核的工具数",
 "eff.s2": "token,精简内核预载",
 "eff.s3": "到整台水槽的调用数",
-"eff.note": "想一开始就全部载入的重度用户可以钉死它:在服务器环境里设 <b>KS4P_MODE=full</b>,或给出逗号分隔的包列表。管理员可用 KS4P_PACK_POLICY=locked 锁定选择。",
+"eff.note": "想一开始就全部载入的重度用户,可以在服务器环境里设 <b>KS4P_MODE=full</b>,或给出逗号分隔的包列表。要让启动时的工具列表在服务器运行期间保持不变,请在服务器的启动环境里设 KS4P_PACK_POLICY=locked。",
 "h2.install": "装上,接好",
 "setup.platform": "文件编辑支持 Windows、macOS 和 Linux。直接控制 Microsoft PowerPoint 的功能需要 Windows 和 PowerPoint。",
 "platform.hero": "Windows · macOS · Linux",
@@ -2055,7 +2055,7 @@ de: {
 "pk6.p": "Moderne Kommentar-Threads mit ANTWORTEN, die es in keinem anderen PowerPoint-MCP-Server gibt, Erledigen und kaskadierendes Löschen, ein Review-Bericht über den ganzen Foliensatz, struktureller Foliensatz-Vergleich und Anonymisierung für die Begutachtung. Foliensatzweite Operationen, die dorthin reichen, wo PowerPoint selbst nicht hinkommt: Schriften-Inventur und -Ersetzung samt Diagrammen und Phantom-Deklarationen, Farb-Neuzuordnung mit Vereinheitlichung von Literalwerten auf Themenfarben, Korrektursprache, Logo-Austausch im ganzen Foliensatz unter Erhalt der Zuschnitte, und Komprimieren mit Sünderbericht.",
 "pk6.e": "z. B. dem Prüfer im Thread antworten · zwei Versionen des Foliensatzes vergleichen · Urheberangaben vor der Blindbegutachtung entfernen · das alte Logo überall tauschen, Zuschnitte intakt",
 "pk7.t": "Live-Bearbeitung", "pk7.n": "OFFENER FOLIENSATZ? GUT.",
-"pk7.p": "Den Foliensatz bearbeiten, während er im PowerPoint des Nutzers geöffnet ist: dieselben Werkzeuge routen automatisch, Änderungen bleiben ungespeichert, bis man es verlangt, der Cursor bleibt unberührt, und die Rückgängig-Garantie wird ehrlich gemeldet. Jeder Aufruf läuft durch eine einzige Warteschlange, sodass Agenten am selben offenen Foliensatz sich nicht ins Wort fallen, und ein Dialog, der auf einen Menschen wartet, wird auf Fensterebene erkannt. PowerPoint-Status und eine Zombie-Prozess-Prüfung gehören dazu.",
+"pk7.p": "Bearbeitungswerkzeuge ändern einen Foliensatz, während er im PowerPoint des Nutzers geöffnet ist, mit oder ohne dieses Paket. Änderungen bleiben ungespeichert, bis man es verlangt, der Cursor bleibt unberührt, und die Rückgängig-Garantie wird ehrlich gemeldet. Aufrufe teilen sich eine einzige Warteschlange, sodass Agenten am selben offenen Foliensatz sich nicht ins Wort fallen, und eine Prüfung auf Fensterebene erkennt Dialoge, die auf einen Menschen warten. Dieses Paket ergänzt explizites Speichern, Scrollen zur Folie, Sitzungsstatus, PowerPoint-Status und eine Zombie-Prozess-Prüfung.",
 "pk7.e": "z. B. einen Tippfehler im Foliensatz für morgen beheben · ungespeicherte Änderungen sehen, die die Datei auf der Platte nicht hat · prüfen, ob noch ein verirrtes PowerPoint läuft",
 "h2.cmp": "Andere Werkzeuge in diesem Regal <span class=\"gloss\">(die anderen PowerPoint-MCP-Server)</span>",
 "cmp.lead": "Feature-Tabellen schmeicheln jedem. Deshalb hier stattdessen sieben Dinge, um die man einen Agenten wirklich bitten würde, und was dann passiert.",
@@ -2088,7 +2088,7 @@ de: {
 "eff.s1": "Werkzeuge im Lite-Kern",
 "eff.s2": "Token, Lite-Kern im Voraus",
 "eff.s3": "Aufruf bis zur ganzen Spüle",
-"eff.note": "Poweruser, die von Anfang an alles geladen haben wollen, können es festnageln: <b>KS4P_MODE=full</b> in der Serverumgebung, oder eine kommagetrennte Paketliste. Administratoren sperren die Auswahl mit KS4P_PACK_POLICY=locked.",
+"eff.note": "Poweruser, die von Anfang an alles geladen haben wollen, können <b>KS4P_MODE=full</b> in der Serverumgebung setzen oder eine kommagetrennte Paketliste verwenden. Damit die beim Start gewählte Werkzeugliste unverändert bleibt, solange der Server läuft, setzen Sie KS4P_PACK_POLICY=locked in seiner Startumgebung.",
 "h2.install": "Montage und Anschluss",
 "setup.platform": "Dateibearbeitung unter Windows, macOS und Linux. Funktionen zur Steuerung von Microsoft PowerPoint benötigen Windows und PowerPoint.",
 "platform.hero": "Windows · macOS · Linux",
@@ -2225,7 +2225,7 @@ fr: {
 "pk6.p": "Des commentaires modernes en fil avec RÉPONSES, qui n'existent dans aucun autre serveur MCP PowerPoint, résolution et suppression en cascade, un rapport de révision du jeu entier, comparaison structurelle de jeux, et anonymisation pour évaluation. Des opérations sur tout le jeu qui atteignent là où PowerPoint lui-même ne va pas : inventaire et remplacement des polices, graphiques et déclarations fantômes compris, recartographie des couleurs avec unification des valeurs littérales vers le thème, langue de vérification, remplacement du logo dans tout le jeu en préservant les recadrages, et compression avec rapport des coupables.",
 "pk6.e": "p. ex. répondre au relecteur dans le fil · comparer deux versions du jeu · retirer la paternité avant l'évaluation en aveugle · remplacer l'ancien logo partout, recadrages intacts",
 "pk7.t": "Édition en direct", "pk7.n": "JEU OUVERT ? TRÈS BIEN.",
-"pk7.p": "Modifier le jeu pendant qu'il est ouvert dans le PowerPoint de l'utilisateur : les mêmes outils se routent automatiquement, les modifications restent non enregistrées jusqu'à la demande, le curseur n'est jamais touché, et la garantie d'annulation est rapportée honnêtement. Chaque appel passe par une seule file, si bien que des agents travaillant le même jeu ouvert ne peuvent pas s'entremêler, et une boîte de dialogue qui attend un humain est repérée au niveau de la fenêtre. L'état de PowerPoint et une vérification des processus fantômes sont inclus.",
+"pk7.p": "Les outils d'édition modifient un jeu pendant qu'il est ouvert dans le PowerPoint de l'utilisateur, avec ou sans ce pack. Les modifications restent non enregistrées jusqu'à la demande, le curseur n'est jamais touché, et la garantie d'annulation est rapportée honnêtement. Les appels partagent une seule file, si bien que des agents travaillant sur le même jeu ouvert ne peuvent pas s'entremêler, et une vérification au niveau de la fenêtre repère les boîtes de dialogue qui attendent un humain. Ce pack ajoute l'enregistrement explicite, le défilement jusqu'à une diapositive, l'état de la session, l'état de PowerPoint et une vérification des processus fantômes.",
 "pk7.e": "p. ex. corriger une coquille dans le jeu que vous présentez demain · voir des modifications non enregistrées que le fichier sur disque n'a pas · vérifier qu'aucun PowerPoint égaré ne tourne encore",
 "h2.cmp": "Les autres outils de ce rayon <span class=\"gloss\">(les autres serveurs MCP pour PowerPoint)</span>",
 "cmp.lead": "Les grilles de fonctionnalités flattent tout le monde. Voici plutôt sept choses que vous demanderiez vraiment à un agent, et ce qui se passe ensuite.",
@@ -2258,7 +2258,7 @@ fr: {
 "eff.s1": "Outils dans le noyau allégé",
 "eff.s2": "Tokens, noyau allégé chargé d'avance",
 "eff.s3": "Appel jusqu'à l'évier complet",
-"eff.note": "Les utilisateurs avancés qui veulent tout charger dès le départ peuvent l'épingler : <b>KS4P_MODE=full</b> dans l'environnement du serveur, ou une liste de packs séparés par des virgules. Les administrateurs peuvent verrouiller la sélection avec KS4P_PACK_POLICY=locked.",
+"eff.note": "Les utilisateurs avancés qui veulent tout charger dès le départ peuvent définir <b>KS4P_MODE=full</b> dans l'environnement du serveur, ou utiliser une liste de packs séparés par des virgules. Pour que la liste d'outils choisie au démarrage reste inchangée pendant que le serveur tourne, définissez KS4P_PACK_POLICY=locked dans son environnement de lancement.",
 "h2.install": "Montage et raccordement",
 "setup.platform": "Édition de fichiers sous Windows, macOS et Linux. Les fonctions qui pilotent Microsoft PowerPoint nécessitent Windows et PowerPoint.",
 "platform.hero": "Windows · macOS · Linux",
@@ -2395,7 +2395,7 @@ es: {
 "pk6.p": "Comentarios modernos en hilo con RESPUESTAS, que no existen en ningún otro servidor MCP de PowerPoint, resolver y borrado en cascada, un informe de revisión de toda la presentación, comparación estructural y anonimización para revisión. Operaciones sobre toda la presentación que llegan adonde el propio PowerPoint no llega: inventario y sustitución de fuentes incluyendo gráficos y declaraciones fantasma, reasignación de colores con unificación de literales al tema, idioma de revisión, sustitución del logotipo en toda la presentación conservando los recortes, y compresión con informe de culpables.",
 "pk6.e": "p. ej. responder al revisor en el hilo · comparar dos versiones de la presentación · quitar la autoría antes de la revisión ciega · cambiar el logotipo viejo en todas partes, recortes intactos",
 "pk7.t": "Edición en vivo", "pk7.n": "¿ABIERTA? DA IGUAL.",
-"pk7.p": "Editar la presentación mientras está abierta en el PowerPoint del usuario: las mismas herramientas se enrutan solas, las ediciones quedan sin guardar hasta que se pida, el cursor nunca se toca y la garantía de deshacer se informa con honestidad. Cada llamada pasa por una sola cola, de modo que varios agentes sobre la misma presentación abierta no pueden entrelazarse, y un cuadro de diálogo que espera a una persona se detecta a nivel de ventana. Se incluyen el estado de PowerPoint y una comprobación de procesos zombis.",
+"pk7.p": "Las herramientas de edición cambian una presentación mientras está abierta en el PowerPoint del usuario, con o sin este paquete. Las ediciones quedan sin guardar hasta que se pida, el cursor nunca se toca y la garantía de deshacer se informa con honestidad. Las llamadas comparten una sola cola, de modo que varios agentes sobre la misma presentación abierta no pueden entrelazarse, y una comprobación a nivel de ventana detecta los cuadros de diálogo que esperan a una persona. Este paquete añade guardado explícito, desplazamiento a una diapositiva, estado de la sesión, estado de PowerPoint y una comprobación de procesos zombis.",
 "pk7.e": "p. ej. corregir una errata en la presentación de mañana · ver ediciones sin guardar que el archivo en disco no tiene · comprobar si queda algún PowerPoint suelto en ejecución",
 "h2.cmp": "Otras opciones de este estante <span class=\"gloss\">(los otros servidores MCP de PowerPoint)</span>",
 "cmp.lead": "Las tablas de funciones favorecen a todos. Así que aquí va en su lugar: siete cosas que de verdad le pediría a un agente, y lo que pasa después.",
@@ -2428,7 +2428,7 @@ es: {
 "eff.s1": "Herramientas en el núcleo ligero",
 "eff.s2": "Tokens, núcleo ligero por adelantado",
 "eff.s3": "Llamada hasta el fregadero entero",
-"eff.note": "Los usuarios avanzados que quieran todo cargado desde el principio pueden fijarlo: <b>KS4P_MODE=full</b> en el entorno del servidor, o una lista de paquetes separada por comas. Los administradores pueden bloquear la selección con KS4P_PACK_POLICY=locked.",
+"eff.note": "Los usuarios avanzados que quieran todo cargado desde el principio pueden establecer <b>KS4P_MODE=full</b> en el entorno del servidor, o usar una lista de paquetes separada por comas. Para que la lista de herramientas elegida al arrancar no cambie mientras el servidor se ejecuta, establezca KS4P_PACK_POLICY=locked en el entorno de arranque del servidor.",
 "h2.install": "Montaje y conexión",
 "setup.platform": "Edición de archivos en Windows, macOS y Linux. Las funciones que controlan Microsoft PowerPoint requieren Windows y PowerPoint.",
 "platform.hero": "Windows · macOS · Linux",
