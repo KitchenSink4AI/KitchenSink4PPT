@@ -57,7 +57,13 @@ The checks and their heuristics:
   ftr) and object placeholders that hold non-text content never fire.
 - missing_title: no title/ctrTitle placeholder carrying text. Severity
   info, not warning: section breaks and full-bleed visuals legitimately
-  have no title, but screen readers and Outline view want one.
+  have no title, but screen readers and Outline view want one. Only a
+  title placeholder with text counts, or a shape the CALLER declares a
+  title through title_shape_names. Text near the top of the slide does
+  not: it used to pass as a de-facto title, which hid exactly the defect
+  this check exists for (a deleted title placeholder whose first bullet
+  sits near the top; punch-list #928). Such text is reported as
+  candidate_shape_ids instead.
 - contrast: effective text color vs the color the text is READ AGAINST,
   WCAG-ish ratio. schemeClr resolves through the slide's clrMap override
   chain and the master's theme; lumMod/lumOff/tint/shade are approximated
@@ -195,11 +201,15 @@ CHECKS: dict[str, tuple[dict, str]] = {
         "holding their content never fire",
     ),
     "missing_title": (
-        {},
-        "accessibility nudge (screen readers and Outline view read the "
-        "title placeholder); slides carrying a de-facto title (a text "
-        "shape starting in the top quarter of the slide) are not flagged, "
-        "so textbox-styled decks do not drown the report",
+        {"title_shape_names": []},
+        "screen readers and Outline view identify a slide by its title "
+        "placeholder, so only a title or ctrTitle placeholder with text "
+        "counts (a hidden or off-slide one included, which is how "
+        "PowerPoint hides a title); a text box or bullet near the top of "
+        "the slide does NOT, and is named in candidate_shape_ids. A deck "
+        "that titles its slides with text boxes by design can declare "
+        "their shape names in title_shape_names (case-insensitive exact "
+        "match); screen readers still do not treat those as titles",
     ),
     "contrast": (
         {"min_ratio": 4.5, "large_min_ratio": 3.0},
@@ -1406,16 +1416,30 @@ def _check_missing_title(ctx: _SlideCtx, opts: dict) -> list[dict]:
         if shape_text(s["elem"]).strip():
             return []
         empty_title_id = s["id"]
-    # De-facto title: a visible text shape starting in the top quarter of
-    # the slide. Textbox-styled decks title every slide this way; flagging
-    # all of them would drown the report in noise.
-    for s in ctx.all:
-        if s["hidden"] or s["box"] is None:
-            continue
-        if etree.QName(s["elem"]).localname != "sp":
-            continue
-        if s["box"][1] < ctx.slide_cy * 0.25 and shape_text(s["elem"]).strip():
-            return []
+    # A title the CALLER declared: textbox-styled decks name their title
+    # boxes consistently, and saying so is an explicit statement, unlike
+    # the position guess this replaced.
+    declared = {n.casefold() for n in opts.get("title_shape_names") or []}
+    if declared:
+        for s in ctx.all:
+            if s["hidden"] or (s["name"] or "").casefold() not in declared:
+                continue
+            if shape_text(s["elem"]).strip():
+                return []
+    # Text near the top used to count as a de-facto title and silence the
+    # finding. That hid the commonest real defect: a slide whose title
+    # placeholder was deleted, leaving its first bullet near the top
+    # (punch-list #928). Such text is now reported as the likely title
+    # instead, and the slide is flagged.
+    candidates = [
+        s
+        for s in ctx.all
+        if not s["hidden"]
+        and s["box"] is not None
+        and etree.QName(s["elem"]).localname == "sp"
+        and s["box"][1] < ctx.slide_cy * 0.25
+        and shape_text(s["elem"]).strip()
+    ]
     if empty_title_id is not None:
         fix = (
             f"set_placeholder_text(slide={ctx.rec['index']}, "
@@ -1423,17 +1447,28 @@ def _check_missing_title(ctx: _SlideCtx, opts: dict) -> list[dict]:
         )
     else:
         fix = (
-            f"apply_layout(slide={ctx.rec['index']}, layout=...) to a "
-            "layout with a title placeholder, then set_placeholder_text"
+            "this slide has no title placeholder, and apply_layout never "
+            "adds one: insert_slide on a layout with a title gives a slide "
+            'that has it, set_placeholder_text(placeholder="title", '
+            "text=...) fills it, and this slide's content moves there"
+        )
+    message = (
+        "slide has no title text; screen readers and Outline view "
+        "identify slides by their title"
+    )
+    if candidates:
+        message += (
+            f"; {', '.join(_label(s) for s in candidates)} near the top "
+            "may look like a title but is not one to a screen reader"
         )
     return [
         ctx.finding(
             "missing_title",
             "info",
-            "slide has no title text; screen readers and Outline view "
-            "identify slides by their title",
+            message,
             fix,
             shape_ids=[empty_title_id] if empty_title_id is not None else [],
+            candidate_shape_ids=[s["id"] for s in candidates],
         )
     ]
 

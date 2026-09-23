@@ -2,3 +2,7 @@
 # GitHub's license detection identifies it. Never convert it on checkout or on
 # commit: a CRLF copy is no longer byte-exact.
 LICENSE -text
+
+# Test fixtures are binary packages: never let a checkout touch their bytes
+# (the P1/P2 deck is pinned by MD5 in its test).
+tests/fixtures/*.pptx binary

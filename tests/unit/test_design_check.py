@@ -221,14 +221,25 @@ def test_empty_placeholder_and_missing_title(tmp_path):
     )
 
 
-def test_missing_title_defacto_suppression(blank_deck):
+def test_missing_title_near_top_text_is_not_a_title(blank_deck):
+    """Reversed on purpose (punch-list #928). Text in the top quarter used
+    to silence this check as a de-facto title, which hid a deleted title
+    placeholder whose first bullet sat near the top. Screen readers and
+    Outline view read only the title placeholder, so the text is now named
+    as the likely title and the slide is still flagged."""
     # No placeholders at all -> fires...
     assert len(_findings(blank_deck, "missing_title")) == 1
-    # ...until a text shape in the top quarter acts as the de-facto title.
-    shapes.insert_shape(
-        blank_deck, 0, "rectangle", 1, 0.5, 8, 1, text="De-Facto Title"
+    # ...and still fires with a text shape in the top quarter.
+    s = shapes.insert_shape(
+        blank_deck, 0, "rectangle", 1, 0.5, 8, 1, text="Looks Like A Title"
     )
-    assert _findings(blank_deck, "missing_title") == []
+    [f] = _findings(blank_deck, "missing_title")
+    assert f["candidate_shape_ids"] == [s["shape_id"]]
+    # A deck that titles its slides with text boxes by design says so.
+    shapes.set_shape(blank_deck, 0, s["shape_id"], name="Slide Title")
+    assert _findings(
+        blank_deck, "missing_title", title_shape_names=["slide title"]
+    ) == []
 
 
 # ------------------------------------------------------------------ contrast
@@ -343,7 +354,12 @@ def test_corpus_decks_yield_short_plausible_lists(name):
     hand-verified as plausible: unglued hand-drawn diagrams, sub-WCAG
     grey/amber/green text, off-slide bleeds, 12-13pt body text. The bound
     is a noise ceiling (2.5 findings/slide, the densest real deck sits at
-    ~2.3), deliberately loose enough for the synthetic CI stand-ins."""
+    ~2.3), deliberately loose enough for the synthetic CI stand-ins.
+    2026-09-24 (punch-list #928): the de-facto-title suppression is gone,
+    because it hid deleted titles. The proposal deck titles its slides with
+    text boxes, so it now carries 22 more missing_title infos (34 -> 56
+    findings on 26 slides, 2.15/slide), each one true to a screen reader,
+    and the deck stays under the ceiling."""
     pkg = PptxPackage(CORPUS / name)
     res = dc.check_layout(pkg)
     n_slides = res["slides_checked"]

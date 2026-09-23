@@ -23,6 +23,14 @@ Honesty rules (binding, same as design_check):
   sort); it flags gross mismatches only, says so in the finding, and its
   suggested order is a starting point, not truth (multi-column layouts
   legitimately read column-first).
+- One reading-order rule is NOT a gross-mismatch vote: the slide title is
+  read first. A title placeholder that a screen reader reaches after a
+  content shape sitting visually below or beside it is flagged on any
+  slide, two shapes included (punch-list #928: the vote needed three
+  shapes and two inverted pairs, so the commonest case, a title moved
+  behind its body, never fired). Shapes the title is painted over and
+  shapes marked decorative are exempt: the first cannot move after the
+  title without covering it, and screen readers skip the second.
 - Shapes whose geometry cannot be resolved are skipped, never guessed.
 - Autoshapes and text boxes are NOT flagged for alt text: screen readers
   read their text content; untexted autoshapes are treated as decorative.
@@ -78,7 +86,12 @@ _CAVEATS = {
         "untexted decorative autoshapes are ignored - counting them cried "
         "wolf on real decks); only gross mismatches are flagged, and "
         "multi-column layouts that legitimately read column-first can "
-        "still trip it - review before reordering"
+        "still trip it - review before reordering. Separately, and on any "
+        "slide, two shapes included: a title placeholder read AFTER a "
+        "content shape that sits visually below or beside it is flagged "
+        "as a warning (rule title_first), because screen readers announce "
+        "a slide by reading its title first; shapes the title is painted "
+        "over and shapes marked decorative are exempt"
     ),
 }
 
@@ -112,7 +125,10 @@ def _top_level_records(pkg: PptxPackage, part: str) -> list[dict]:
     return out
 
 
-def _label(rec: dict) -> str:
+#: Named apart from generators._label on purpose: the read-only guard
+#: (test_readonly_annotations) walks the call graph by function NAME, and
+#: that one draws shapes.
+def _rec_label(rec: dict) -> str:
     name = rec.get("name") or ""
     return f"shape {rec['id']}" + (f" ({name!r})" if name else "")
 
@@ -251,6 +267,68 @@ def _is_content_shape(rec: dict) -> bool:
     return bool(shape_text(rec["elem"]).strip())
 
 
+#: Title placeholder types: the shape a screen reader should announce first.
+_TITLE_PH = ("title", "ctrTitle")
+
+#: Office's "Mark as decorative" flag (cNvPr/a:extLst). Screen readers skip
+#: a shape carrying it.
+_DECORATIVE = "{http://schemas.microsoft.com/office/drawing/2017/decorative}decorative"
+
+
+def _is_decorative(elem: etree._Element) -> bool:
+    cnvpr = _cnvpr(elem)
+    if cnvpr is None:
+        return False
+    return any(
+        (d.get("val") or "").lower() in ("1", "true")
+        for d in cnvpr.iter(_DECORATIVE)
+    )
+
+
+def _boxes_intersect(a, b) -> bool:
+    ax, ay, acx, acy = a
+    bx, by, bcx, bcy = b
+    return ax < bx + bcx and bx < ax + acx and ay < by + bcy and by < ay + acy
+
+
+def _title_read_late(
+    records: list[dict], visual: list[int]
+) -> tuple[dict | None, list[dict]]:
+    """(the slide's title record, the content shapes read BEFORE it that
+    sit visually after it). The title is the first title/ctrTitle
+    placeholder with text among the content records.
+
+    A shape read before the title is only a defect when it sits below or
+    beside the title: text ABOVE the title (a kicker line) reads in the
+    order the eye takes. Two kinds are exempt, because reordering cannot
+    or need not help: a shape the title is painted over (a background
+    picture or panel has to stay earlier in spTree, which is also
+    z-order, or it would cover the title) and a shape marked decorative
+    (screen readers skip it)."""
+    title = None
+    for r in records:
+        if r["kind"] != "placeholder":
+            continue
+        ph = _ph(r["elem"])
+        if ph is not None and ph.get("type") in _TITLE_PH:
+            title = r
+            break
+    if title is None:
+        return None, []
+    rank = {sid: i for i, sid in enumerate(visual)}
+    early = []
+    for r in records:
+        if r is title:
+            break
+        if _is_decorative(r["elem"]):
+            continue
+        if _boxes_intersect(r["box"], title["box"]):
+            continue
+        if rank[r["id"]] > rank[title["id"]]:
+            early.append(r)
+    return title, early
+
+
 def _check_reading_order(pkg: PptxPackage, srec: dict) -> list[dict]:
     all_records = [
         r
@@ -265,43 +343,65 @@ def _check_reading_order(pkg: PptxPackage, srec: dict) -> list[dict]:
         and r["kind"] != "connector"
         and _is_content_shape(r)
     ]
-    if len(records) < 3:
-        return []  # too few shapes for order to be judged meaningfully
+    if len(records) < 2:
+        return []  # one shape has no order to get wrong
     doc_order = [r["id"] for r in records]
     visual = [r["id"] for r in _visual_order(records)]
-    rank = {sid: i for i, sid in enumerate(visual)}
-    inversions = 0
-    pairs = 0
-    for i in range(len(doc_order)):
-        for j in range(i + 1, len(doc_order)):
-            pairs += 1
-            if rank[doc_order[i]] > rank[doc_order[j]]:
-                inversions += 1
-    if pairs == 0:
+    title, early = _title_read_late(records, visual)
+
+    # The gross-mismatch vote needs enough shapes for a fraction to mean
+    # anything; the title rule does not.
+    gross = False
+    inversions = pairs = 0
+    if len(records) >= 3:
+        rank = {sid: i for i, sid in enumerate(visual)}
+        for i in range(len(doc_order)):
+            for j in range(i + 1, len(doc_order)):
+                pairs += 1
+                if rank[doc_order[i]] > rank[doc_order[j]]:
+                    inversions += 1
+        gross = (
+            pairs > 0
+            and inversions >= _MIN_INVERSIONS
+            and inversions / pairs >= _INVERSION_FRACTION
+        )
+    if not gross and not early:
         return []
-    frac = inversions / pairs
-    if inversions < _MIN_INVERSIONS or frac < _INVERSION_FRACTION:
-        return []
-    # set_reading_order needs a COMPLETE permutation, so the suggestion
-    # keeps non-content shapes (decorations, connectors, hidden) at their
-    # current relative positions ahead of the reordered content: earliest
-    # in spTree = painted behind, which is where decoration belongs.
-    content = set(doc_order)
-    suggested = [r["id"] for r in all_records if r["id"] not in content]
-    suggested.extend(visual)
-    return [
-        {
+
+    early_ids = [r["id"] for r in early]
+    title_note = ""
+    if early:
+        title_note = (
+            f"the slide title, {_rec_label(title)}, is read AFTER "
+            f"{', '.join(_rec_label(r) for r in early)}, which "
+            f"{'sits' if len(early) == 1 else 'sit'} below or beside it, "
+            "so a screen reader announces the body before the title"
+        )
+
+    if gross:
+        # set_reading_order needs a COMPLETE permutation, so the suggestion
+        # keeps non-content shapes (decorations, connectors, hidden) at
+        # their current relative positions ahead of the reordered content:
+        # earliest in spTree = painted behind, which is where decoration
+        # belongs.
+        content = set(doc_order)
+        suggested = [r["id"] for r in all_records if r["id"] not in content]
+        suggested.extend(visual)
+        message = (
+            f"spTree reading order of the content shapes {doc_order} "
+            f"disagrees grossly with the visual top-left order {visual} "
+            f"({inversions}/{pairs} pairs inverted); screen readers "
+            "follow spTree order. HEURISTIC: a multi-column layout may "
+            "legitimately read this way - review before reordering"
+        )
+        if title_note:
+            message += f". Also, {title_note}"
+        finding = {
             "check": "reading_order",
-            "severity": "info",
+            "severity": "warning" if early else "info",
             "slide_index": srec["index"],
             "slide_id": srec["slide_id"],
-            "message": (
-                f"spTree reading order of the content shapes {doc_order} "
-                f"disagrees grossly with the visual top-left order {visual} "
-                f"({inversions}/{pairs} pairs inverted); screen readers "
-                "follow spTree order. HEURISTIC: a multi-column layout may "
-                "legitimately read this way - review before reordering"
-            ),
+            "message": message,
             "fix": (
                 f"set_reading_order(slide={srec['index']}, "
                 f"order={suggested}) rewrites spTree order (decorative "
@@ -309,6 +409,7 @@ def _check_reading_order(pkg: PptxPackage, srec: dict) -> list[dict]:
                 "z-order)"
             ),
             "shape_ids": doc_order,
+            "rule": "visual_order",
             "document_order": doc_order,
             "visual_order": visual,
             "suggested_order": suggested,
@@ -316,7 +417,45 @@ def _check_reading_order(pkg: PptxPackage, srec: dict) -> list[dict]:
             "pair_count": pairs,
             "heuristic": True,
         }
-    ]
+    else:
+        # Minimal repair: every shape read too early moves to just after
+        # the title, in its current relative order; nothing else moves.
+        # None of them overlaps the title (overlapping shapes are exempt),
+        # so the title's own painting cannot change.
+        suggested = []
+        for r in all_records:
+            if r["id"] in early_ids:
+                continue
+            suggested.append(r["id"])
+            if r["id"] == title["id"]:
+                suggested.extend(early_ids)
+        finding = {
+            "check": "reading_order",
+            "severity": "warning",
+            "slide_index": srec["index"],
+            "slide_id": srec["slide_id"],
+            "message": (
+                f"{title_note[0].upper()}{title_note[1:]}; screen readers "
+                "follow spTree order and expect the title first"
+            ),
+            "fix": (
+                f"set_reading_order(slide={srec['index']}, "
+                f"order={suggested}) moves the title ahead of "
+                f"{'it' if len(early_ids) == 1 else 'them'} "
+                "(spTree order is also z-order; none of the moved shapes "
+                "overlaps the title)"
+            ),
+            "shape_ids": [title["id"], *early_ids],
+            "rule": "title_first",
+            "document_order": doc_order,
+            "visual_order": visual,
+            "suggested_order": suggested,
+            "heuristic": False,
+        }
+    if early:
+        finding["title_id"] = title["id"]
+        finding["read_before_title"] = early_ids
+    return [finding]
 
 
 # =============================================================== public API
