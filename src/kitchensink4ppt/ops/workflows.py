@@ -384,7 +384,8 @@ WORKFLOWS: dict[str, dict] = {
                     "the deck-wide sweeps"},
             {"tool": "extract_brand",
              "why": "read the SOURCE deck's palette: theme slots, fonts, "
-                    "and the most-used literal hex fills"},
+                    "the most-used literal hex fills, and the typefaces "
+                    "written directly on slide text"},
             {"tool": "apply_brand",
              "why": "write the palette onto the target's theme(s); "
                     "theme-linked content re-resolves, literals do not"},

@@ -25,7 +25,10 @@ Structural rules baked in:
   +mj-ea/+mn-ea through it and an empty ea typeface silently falls back.
 - Explicit srgbClr fills on shapes do NOT follow theme edits; that is why
   extract_brand reports them separately instead of pretending the theme
-  covers them.
+  covers them. The same holds for typefaces written directly on slide
+  runs, which extract_brand reports as explicit_fonts (punch-list #929:
+  an assistant auditing fonts read the theme's font scheme here, saw one
+  typeface, and reported a deck carrying eight as consistent).
 """
 
 from __future__ import annotations
@@ -37,6 +40,7 @@ from lxml import etree
 
 from ..core.errors import PptMcpError, UnsupportedStructure
 from ..core.package import PptxPackage, qn
+from . import _traverse as tv
 from .design import COLOR_SLOTS, _resolve_master, _theme_part_of, get_theme
 
 _FONT_KEYS = ("latin", "ea", "cs")
@@ -246,12 +250,14 @@ def set_theme_fonts(
 
 
 def extract_brand(pkg_or_path, top_fills: int = 8) -> dict:
-    """Read a deck's effective palette: the first master's theme colors
-    (12 slots) and fonts, PLUS the most-used explicit srgbClr solid-fill
-    colors across the slides with usage counts. The explicit list is the
-    honest half: shapes filled with literal hex do NOT follow theme edits,
-    so a brand transfer that only copies the theme misses them. Read-only;
-    accepts an open PptxPackage or a file path."""
+    """Read a deck's effective palette and type: the first master's theme
+    colors (12 slots) and fonts, PLUS the most-used explicit srgbClr
+    solid-fill colors across the slides and every typeface written
+    directly on slide text, each with usage counts. The explicit lists are
+    the honest half: literal hex fills and literal typefaces do NOT follow
+    theme edits, so a brand transfer (or a font audit) that only reads the
+    theme misses them. Read-only; accepts an open PptxPackage or a file
+    path."""
     if isinstance(pkg_or_path, (str, os.PathLike)):
         pkg = PptxPackage(pkg_or_path)
     elif isinstance(pkg_or_path, PptxPackage):
@@ -273,6 +279,7 @@ def extract_brand(pkg_or_path, top_fills: int = 8) -> dict:
             srgb = solid.find(qn("a:srgbClr"))
             if srgb is not None and srgb.get("val"):
                 counts[srgb.get("val").upper()] += 1
+    fonts = _explicit_slide_fonts(pkg, slide_parts, theme["fonts"])
     return {
         "source": pkg.path.name,
         "theme_name": theme["name"],
@@ -283,9 +290,67 @@ def extract_brand(pkg_or_path, top_fills: int = 8) -> dict:
             for hexval, n in counts.most_common(top_fills)
         ],
         "explicit_fill_total": sum(counts.values()),
+        **fonts,
         "scope": f"{len(slide_parts)} slide part(s); explicit-fill counts "
         "cover a:solidFill/a:srgbClr on slides (shape, line, and text "
-        "fills alike), not layouts or masters",
+        "fills alike), not layouts or masters. explicit_fonts counts slide "
+        "text runs (tables and groups included) whose typeface is written "
+        "on the run itself, with the 0-based slides it appears on; "
+        "theme_slots names the theme font it matches, empty when it "
+        "matches none. Layouts, masters, charts, SmartArt, bullet fonts "
+        "and declarations on empty runs are in font_inventory "
+        "(review-sweeps pack)",
+    }
+
+
+def _explicit_slide_fonts(
+    pkg: PptxPackage, slide_parts: list[str], theme_fonts: dict
+) -> dict:
+    """Typefaces written directly on slide text runs: explicit_fonts
+    (most-used first), explicit_font_total (text runs naming at least one
+    typeface), and runs_without_explicit_font (text runs naming none,
+    which take theirs from the placeholder, layout, master or theme). Counted per run: a run naming the same
+    typeface in two slots (latin and ea) counts once. Theme references
+    (+mj-lt, +mn-ea) are not literal typefaces and are not listed."""
+    slide_index = {part: i for i, part in enumerate(slide_parts)}
+    theme_slots: dict[str, set[str]] = {}
+    for slot in ("major", "minor"):
+        for face in (theme_fonts.get(slot) or {}).values():
+            if face:
+                theme_slots.setdefault(face, set()).add(slot)
+    runs: Counter[str] = Counter()
+    where: dict[str, set[int]] = {}
+    plain = explicit = 0
+    for ctx in tv.iter_runs(pkg, "slides"):
+        if ctx.kind != "run" or not ctx.has_text:
+            continue
+        faces = set()
+        if ctx.rpr is not None:
+            for tag in tv.FONT_TAGS:
+                node = ctx.rpr.find(qn(tag))
+                face = node.get("typeface") if node is not None else None
+                if face and not face.startswith("+"):
+                    faces.add(face)
+        if not faces:
+            plain += 1
+            continue
+        explicit += 1
+        for face in faces:
+            runs[face] += 1
+            if ctx.part in slide_index:
+                where.setdefault(face, set()).add(slide_index[ctx.part])
+    return {
+        "explicit_fonts": [
+            {
+                "typeface": face,
+                "count": n,
+                "slides": sorted(where.get(face, ())),
+                "theme_slots": sorted(theme_slots.get(face, ())),
+            }
+            for face, n in sorted(runs.items(), key=lambda kv: (-kv[1], kv[0]))
+        ],
+        "explicit_font_total": explicit,
+        "runs_without_explicit_font": plain,
     }
 
 
