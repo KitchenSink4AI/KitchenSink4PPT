@@ -1,5 +1,8 @@
 # Changelog
 
+### Unreleased
+- [[COPY: changelog-933. Customer-facing wording for Codex; facts only, and no administrator-control or security claim. (1) Fixed: an enabled pack's tools no longer drop out of a conversation a day after the pack was switched on. In releases before this fix (verified on 1.3.1), 24 hours after enable_tools the pack's tools left the tool list, calls to them failed as unknown tools, and enable_tools answered that the pack was already enabled without bringing them back. (2) Packs are kept per conversation (per MCP session): enabling or disabling a pack in one conversation no longer changes what another conversation on the same server process sees or what its get_server_info reports, and a second conversation's enable_tools really enables the pack for itself. stdio clients (Claude Desktop, Claude Code, Codex) run one conversation per server process, so what one conversation sees is otherwise unchanged. (3) enable_tools and disable_tools now send only tools/list_changed; they no longer also send resources/list_changed and prompts/list_changed (this server has no resources or prompts). (4) A call to a tool whose pack is off now returns the standard refusal (isError, error code NOT_FOUND, with message and hint) instead of a bare tool error; the message and hint say what the old error said (the tool exists, which pack it belongs to, and the enable_tools call that turns it on). Excel already refused this way.]]
+
 ### 1.3.1
 
 KitchenSink4PPT 1.3.1 is a fix release shaped by a real 45-slide deck build, with safer validation, clearer refusals, and more control over text fitting and table layout.

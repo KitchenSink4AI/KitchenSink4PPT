@@ -56,7 +56,6 @@ def _restore_surface():
     yield
     packs._ENABLED.clear()
     packs._ENABLED.update(before)
-    server._PENDING_VISIBILITY.clear()
 
 
 def _assert_refused(out, deck=None, before=None, code="BAD_PARAMS"):

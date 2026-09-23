@@ -44,7 +44,6 @@ def _restore_surface():
     yield
     packs._ENABLED.clear()
     packs._ENABLED.update(before)
-    server._PENDING_VISIBILITY.clear()
 
 
 # ------------------------------------------------- C1/C2/M3: coordinate ceiling
