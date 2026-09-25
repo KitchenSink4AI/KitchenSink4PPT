@@ -1095,6 +1095,7 @@ def get_server_info() -> dict:
         "tools_lite": len(names["lite"]),
         "tests": _shipped.TESTS,
         "surface": _packs.surface_report(),
+        "saved_packs": _packs.saved_packs_report(),
         "packs_available": _packs.pack_names(),
         "platform": _platform.platform(),
         "python": _sys.version.split()[0],
