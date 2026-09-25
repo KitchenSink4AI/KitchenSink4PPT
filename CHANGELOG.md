@@ -1,5 +1,11 @@
 # Changelog
 
+### Unreleased
+
+- [[COPY: #928, accessibility audit, missing slide title. Facts: a slide now counts as titled only when a title placeholder on it has text (a hidden or off-slide one included). Text near the top of the slide no longer counts; it is named in the finding (candidate_shape_ids). check_layout gains the missing_title option title_shape_names for decks that title slides with text boxes by design; the audit takes no declarations. Behaviour change: decks whose titles are text boxes now get one missing_title info per slide, in check_layout and in audit_accessibility.]]
+- [[COPY: #928, accessibility audit, reading order. Facts: a slide title that screen readers reach after a content shape sitting below or beside it is flagged on any slide, two shapes included, as a warning (rule title_first) with a set_reading_order fix. Shapes the title sits on (backgrounds) and shapes marked decorative are exempt. When the older whole-slide check also fires, the two are one finding, raised to a warning.]]
+- [[COPY: #929, extract_brand (design pack) now lists the typefaces written directly on slide text: explicit_fonts (typeface, run count, 0-based slides, theme_slots it matches), explicit_font_total and runs_without_explicit_font. Layouts, masters, charts, bullets and empty-run declarations stay in font_inventory (review-sweeps pack).]]
+
 ### 1.3.1
 
 KitchenSink4PPT 1.3.1 is a fix release shaped by a real 45-slide deck build, with safer validation, clearer refusals, and more control over text fitting and table layout.

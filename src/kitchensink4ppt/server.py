@@ -2705,12 +2705,13 @@ def set_theme_fonts(
 
 @_tool("design")
 def extract_brand(file_path: str, top_fills: int = 8) -> dict:
-    """Read a deck's effective palette for brand transfer: the theme's 12
-    color slots and font scheme, PLUS the most-used explicit srgbClr solid
-    fills with usage counts (the honest half: literal-hex shapes do NOT
-    follow theme edits, so copying only the theme misses them). Feed the
-    result to apply_brand on another deck. top_fills caps the explicit
-    list. Read-only; the file is never modified."""
+    """Read a deck's effective palette and fonts, for brand transfer or a
+    font/color audit: the theme's 12 color slots and font scheme, PLUS the
+    most-used explicit srgbClr fills and the typefaces set directly on
+    slide text, with usage counts and slides (literal values do NOT follow
+    theme edits, so reading only the theme misses them). Feed the result
+    to apply_brand on another deck. top_fills caps the fill list.
+    Read-only; the file is never modified."""
     return _thm.extract_brand(_load(file_path), top_fills=top_fills)
 
 
