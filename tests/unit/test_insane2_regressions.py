@@ -44,7 +44,6 @@ def _restore_surface():
     yield
     packs._ENABLED.clear()
     packs._ENABLED.update(before)
-    server._PENDING_VISIBILITY.clear()
 
 
 # ---------------------------------------------------- H1: float overflow

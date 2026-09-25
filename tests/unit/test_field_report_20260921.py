@@ -723,7 +723,7 @@ def test_the_note_is_emitted_on_a_no_op_re_enable(pristine_packs):
     again = packs.enable(["graphics"])
     assert again["enabled"] == []
     assert again["already_enabled"] == ["graphics"]
-    # N1: _sync fires the visibility hook only when a tool actually
+    # N1: enable_tools announces a list change only when a tool actually
     # flipped, so claiming a notification here was a plain falsehood.
     assert again["note"] == _NOOP_NOTE
     assert "tools/list_changed was sent" not in again["note"]
