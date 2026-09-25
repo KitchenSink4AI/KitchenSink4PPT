@@ -2167,20 +2167,12 @@ _CHECK_FNS = {
 _SEV_RANK = {"error": 0, "warning": 1, "info": 2}
 
 
-# ================================================================ public API
-
-
-def check_layout(pkg: PptxPackage, slide=None, checks=None, *,
-                 limit=None, offset: int = 0) -> dict:
-    """Run the design guardrail battery over `slide` (a selector, a list of
-    selectors, or None for the whole deck). `checks` selects and tunes the
-    battery: None = everything with defaults; entries are check names
-    ("overlap") or option dicts ({"check": "tiny_text", "body_min_pt": 12}).
-
-    Returns per-check findings with shape ids, severities (error > warning
-    > info), and a fix hint naming the exact tool call that repairs the
-    problem, plus per-check caveats stating what each heuristic can and
-    cannot see. Read-only; nothing is modified."""
+def _run_battery(pkg: PptxPackage, slide, checks):
+    """(plan, slide records, EVERY finding sorted, stats): the battery with
+    no output budget applied. check_layout pages the list for its caller;
+    audit_accessibility merges the whole list, so its counts cannot come
+    up short on a deck whose findings overflow one page (VERIFY #53
+    P-M1: military_brief merged 106 of 479)."""
     plan = _normalize_checks(checks)
     recs = slides_in_scope(pkg, slide)
     findings: list[dict] = []
@@ -2196,6 +2188,24 @@ def check_layout(pkg: PptxPackage, slide=None, checks=None, *,
     findings.sort(
         key=lambda f: (_SEV_RANK.get(f["severity"], 3), f["slide_index"])
     )
+    return plan, recs, findings, stats
+
+
+# ================================================================ public API
+
+
+def check_layout(pkg: PptxPackage, slide=None, checks=None, *,
+                 limit=None, offset: int = 0) -> dict:
+    """Run the design guardrail battery over `slide` (a selector, a list of
+    selectors, or None for the whole deck). `checks` selects and tunes the
+    battery: None = everything with defaults; entries are check names
+    ("overlap") or option dicts ({"check": "tiny_text", "body_min_pt": 12}).
+
+    Returns per-check findings with shape ids, severities (error > warning
+    > info), and a fix hint naming the exact tool call that repairs the
+    problem, plus per-check caveats stating what each heuristic can and
+    cannot see. Read-only; nothing is modified."""
+    plan, recs, findings, stats = _run_battery(pkg, slide, checks)
     summary: dict[str, int] = {}
     for f in findings:
         summary[f["check"]] = summary.get(f["check"], 0) + 1
