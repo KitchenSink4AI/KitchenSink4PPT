@@ -83,3 +83,12 @@ def make_deck(tmp_path):
         )
 
     return _make
+
+
+@pytest.fixture(autouse=True)
+def _pack_store_per_test(tmp_path_factory, monkeypatch):
+    """Saved pack choices (packstore.py) go to a fresh directory for every
+    test, never to the developer's own state directory, so no test starts
+    from a choice another test (or a real session) saved."""
+    monkeypatch.setenv(
+        "KS4P_PACK_STORE_DIR", str(tmp_path_factory.mktemp("pack-store")))
