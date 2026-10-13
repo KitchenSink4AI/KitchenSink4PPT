@@ -2,7 +2,7 @@
 
 > Everything plus the kitchen sink for Microsoft PowerPoint: the KitchenSink-family .pptx MCP server. 142 tools organized as capability packs with tiered loading from day one. Headline capability: native tweakable graphics, meaning SVG converted to grouped native PowerPoint shapes with glued connectors, editable afterward by shape identity (move the node, the arrows follow). Also file-based structural table operations (merge cells, insert/delete rows and columns), slide CRUD done right (insert, deep duplicate, delete with cleanup, reorder, hide), create-from-template with theme-color-referenced fills, and render-to-verify export. Engineered not to corrupt: atomic validated saves, automatic backups before every mutation, byte-identical passthrough of untouched parts.
 
-Release: v1.3.1
+Release: v1.3.2
 Platform: file-based tools (the large majority) are cross-platform and need no PowerPoint installation; the export and validation tools (PDF, per-slide PNG, opens-clean check) use a local Microsoft PowerPoint via COM on Windows when present.
 MCP transport: stdio.
 
@@ -30,7 +30,7 @@ Environment pins for clients without list_changed support, or for power users:
 
 ## Capabilities by pack
 
-Lite core (always on, ~20 tools):
+Lite core (always on, 25 tools):
 `get_presentation_view` (anchored markdown projection of the deck: slides, shapes with ids, tables, notes), `apply_edits` (batched, every anchor validated first, one backup and one save per batch), `get_text`, `find_text`, `search_and_replace`, `insert_slide`, `delete_slide`, `duplicate_slide`, `reorder_slides`, placeholder/text setters, `get_slide_info`, `list_elements`, `copy_document`, `create_snapshot`, `manage_backups`, `diagnose`, `get_workflows`, `enable_tools`
 
 graphics (the centerpiece):
@@ -89,7 +89,7 @@ After replacing text, inspect the result for the formatting that was preserved a
 - Presentation writes are serialized across processes. A live lock is not reclaimed merely because it is more than ten minutes old, and a lock written by another host is not reclaimed locally. Wait for the lock or report the refusal.
 - A timeout may end only a PowerPoint process started by this server. It must not end a PowerPoint process that was already running when the call began.
 - Saves preserve each embedded media file's existing compression. A text or structure edit must not recompress unrelated media.
-- Release evidence for v1.2: 1,640 tests, over 1,500 adversarial calls through the raw MCP stdio transport, zero corruptions, verified by opening outputs in invisible PowerPoint and failing on any repair prompt.
+- The test suite has about 1,600 tests.
 
 ## Documented refusals
 
@@ -114,7 +114,7 @@ what was wrong, leaves the file untouched, and carries the next call in
 
 ## The KitchenSink family
 
-- KitchenSink4Word (the original fixture, 221 operations across 110 tools for .docx): https://kitchensink4.ai/KitchenSink4Word/
+- KitchenSink4Word (the original fixture, 222 operations across 110 tools for .docx): https://kitchensink4.ai/KitchenSink4Word/
 - KitchenSink4XL (the electrical aisle, 69 tools for .xlsx, every value labeled calculated, cached, or absent): https://kitchensink4.ai/KitchenSink4XL/
 - KitchenSink4Web (the garden section, browser automation with budget-priced page reads and a consent ladder): https://kitchensink4.ai/KitchenSink4Web/
 - Family storefront: https://kitchensink4.ai/products/

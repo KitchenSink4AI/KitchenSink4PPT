@@ -1,6 +1,6 @@
 """Workflow guidance: recommended tool sequences for common multi-step tasks.
 
-Discoverability rule 4: get_workflows ships in lite and every
+Discoverability rule 4 (PLAN section 2): get_workflows ships in lite and every
 recipe NAMES the packs it needs, so a fresh session learns both the sequence
 and the exact enable_tools call before touching a deck. Every tool named in a
 step MUST be a registered tool on the server (tests assert this against the

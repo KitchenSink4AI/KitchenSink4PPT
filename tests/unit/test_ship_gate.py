@@ -1,0 +1,265 @@
+"""THE PRE-SHIP GREP GATE: a check that reads the artifact.
+
+Publishing defects are catchable by one grep, as long as what gets
+checked is the file itself rather than a report about the file. This is the
+check that opens the manifest.
+
+Five patterns, all of them things that mean "somebody was still working
+here" and none of them things a stranger should ever read:
+
+- ``COPY PENDING`` and ``FACTS TO CONVEY``, the build's own instructions to
+  a future writer.
+- ``PLACEHOLDER``, the marker this product was printing at users out of its
+  update-check strings.
+- The em dash, banned across every public surface in every language.
+- A ``user_config`` entry typed anything but ``boolean``. The install screen
+  is checkboxes; a free-text box is a typo waiting to break somebody's
+  install, and the manifest schema has no enum type that would make one
+  safe. ``EXEMPT_TYPED_FIELDS`` names the one field the design ruled an
+  exception, and naming it here is what keeps the exception from spreading.
+- An absolute ``C:\\Users\\`` path, which is a build that only runs on the
+  machine that built it.
+
+SCOPE. Everything in ``ENFORCED`` is clean of all five as of the commit
+that adds this file, so the gate is green the day it lands and every hit
+after that is a regression. ``docs/index.html`` joined that list
+after four landing pages shipped figures their own READMEs
+contradicted; the published-figure guard at the bottom of this file
+covers the same class from the other direction. The ``src/`` trees used to
+sit outside this gate, because em dashes in their refusal strings were
+once allowed. No em dash belongs in any served text, so
+``test_copy_guards.py`` now holds that tree to
+the same rule at the source level.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[2]
+
+#: Text surfaces scanned. Every one is clean at the commit that adds this
+#: gate. A surface a stranger reads belongs here; add it rather than
+#: trusting that nobody edits it.
+ENFORCED = (
+    "bundle/manifest.json",
+    "README.md",
+    "docs/llms.txt",
+    "docs/QUICKSTART.md",
+    "docs/index.html",
+)
+
+#: (needle, what it means) for the plain-text patterns. Written as literals
+#: rather than a regex so the failure message can quote the needle back.
+FORBIDDEN_TEXT = (
+    ("COPY PENDING", "a copy marker aimed at a future writer"),
+    ("FACTS TO CONVEY", "build instructions, not product copy"),
+    ("PLACEHOLDER", "an unfilled string"),
+    ("\u2014", "an em dash, banned on every public surface"),
+)
+
+#: The absolute-path pattern, in both the spellings a JSON file can hold it.
+HOME_PATHS = ("C:\\Users\\", "C:\\\\Users\\\\")
+
+#: The typed install-screen fields the design ruled exceptions, with the
+#: type each is allowed to be. Empty for every product but KS4XL, whose
+#: folder picker was ruled in by name because a directory chooser is a
+#: picker rather than a free-text box.
+EXEMPT_TYPED_FIELDS: dict[str, str] = {}
+
+
+def _read(rel: str) -> str:
+    return (ROOT / rel).read_text(encoding="utf-8")
+
+
+def _sources() -> dict[str, str]:
+    return {rel: _read(rel) for rel in ENFORCED}
+
+
+@pytest.mark.parametrize("needle,why", FORBIDDEN_TEXT)
+def test_no_working_state_reaches_a_shipping_surface(needle, why):
+    for where, text in _sources().items():
+        assert needle not in text, (
+            f"{where} carries {needle!r}: {why}. This is a pattern that "
+            f"must never ship; fix "
+            f"the surface, do not loosen the gate.")
+
+
+def test_no_absolute_home_path_reaches_a_shipping_surface():
+    """A hardcoded user directory means the artifact runs on exactly one
+    machine. A release candidate once launched
+    ``C:\\Users\\...\\venv\\Scripts\\...exe`` and could not have installed
+    for anybody else."""
+    for where, text in _sources().items():
+        for pattern in HOME_PATHS:
+            assert pattern not in text, (
+                f"{where} hardcodes {pattern!r}. The bundle has to launch on "
+                f"a machine nobody here owns.")
+
+
+def test_every_install_screen_field_is_a_checkbox():
+    """No typed field on the install screen except the ones ruled in by
+    name. The rule is stated as a scan rather than as a parity assertion,
+    so it holds for the manifest a human installs from."""
+    for where in ENFORCED:
+        if not where.endswith(".json"):
+            continue
+        config = json.loads(_read(where)).get("user_config", {})
+        typed = sorted(
+            key for key, entry in config.items()
+            if entry.get("type") != "boolean"
+            and entry.get("type") != EXEMPT_TYPED_FIELDS.get(key))
+        assert not typed, (
+            f"{where} ships typed install-screen fields {typed}. The install "
+            f"screen is checkboxes; a value a user has to spell correctly "
+            f"belongs in a launch file, not on this screen. An exception is "
+            f"added to EXEMPT_TYPED_FIELDS by a design ruling, never by a "
+            f"release that found the gate inconvenient.")
+
+
+def test_every_enforced_surface_is_still_a_real_file():
+    """A row pointing at a renamed file would quietly turn into no gate at
+    all, which is how a total scope stops being total."""
+    for rel in ENFORCED:
+        assert (ROOT / rel).is_file(), rel
+
+
+#: Surfaces cut from a measured source. Every figure below is published on
+#: all three, so a change that restamps one and forgets another turns this
+#: red. Stale landing pages once lived in exactly that gap: the
+#: README said one number and docs/index.html said another, and nothing
+#: checked either against the other.
+FIGURE_SURFACES = (
+    "README.md",
+    "docs/index.html",
+    "docs/llms.txt",
+)
+
+#: (figure, what it measures, the script that produces it). Values are the
+#: measurement at the commit that adds this guard. Change one only together
+#: with a re-run of the named script.
+PUBLISHED_FIGURES = (
+    ('142', 'tools', 'scripts/measure_surface.py'),
+    ('1,600', 'tests', 'scripts/stamp_figures.py'),
+    ('7.2k', 'tokens in the lite core', 'scripts/measure_surface.py'),
+)
+
+#: (string, what it used to mean). Absent from every FIGURE_SURFACES file at
+#: this commit. A hit means a surface went backwards.
+SUPERSEDED_FIGURES = (
+    ('885 tests', 'the pre-1.2.0 test count'),
+    ('1,238 tests', 'the test count before the gate gained its figure guard'),
+    ('1,241 tests', 'the pre-1.2.2 test count'),
+    ('885 Tests', 'the same count in german'),
+    ('885 pruebas', 'the same count in spanish'),
+    ('138 tools', 'the pre-1.2.0 tool count'),
+    ('138-tool', 'the same count in the meta description'),
+    ('5.5k', 'the lite bill from the description-plus-schema estimator'),
+    ('29.9k', 'the full-surface bill from the same old estimator'),
+    ('5,500 tokens', 'the same lite bill written out'),
+    ('29,900', 'the same full bill written out'),
+    ('№ 138', 'the same count as a catalog number'),
+    ('141 tools', 'the pre-1.2.2 tool count'),
+    ('141-tool', 'the same count in the meta description'),
+    ('№ 141', 'the same count as a catalog number'),
+    ('4.7k', 'the pre-1.2.0 lite core cost'),
+    ('5.3k', 'the pre-1.2.2 lite core cost'),
+    ('7.1k', 'the pre-1.3.1 lite core cost'),
+    ('1,251 tests', 'the pre-1.3.1 test count'),
+)
+
+
+def test_every_published_figure_reads_the_same_on_every_surface():
+    """A figure published on three surfaces has to be the same figure on all
+    three. Checking presence rather than equality keeps the guard honest
+    about locale number formatting, which differs by design.
+
+    Looped rather than parametrized on purpose: this repo's collected test
+    count is one of the figures below, so a parametrized table would move
+    the number it is guarding every time somebody added a row to it."""
+    missing = []
+    for figure, what, source in PUBLISHED_FIGURES:
+        for rel in FIGURE_SURFACES:
+            if figure not in _read(rel):
+                missing.append(f"{rel} does not carry {figure!r} ({what}, "
+                               f"measured by {source})")
+    assert not missing, (
+        "\n".join(missing) + "\nEither a surface was missed by a restamp or "
+        "the figure moved and this table was not updated. Re-run the script "
+        "that produces it; do not guess the number.")
+
+
+#: Lines that carry a PER-PACK bill rather than a headline figure. The
+#: superseded list retires lite and full bills by bare number, and a pack bill
+#: is free to land on a number a headline once used: tables-charts measures
+#: ~5.3k on the current estimator, which is also a lite bill this repo
+#: retired before 1.2.2. Pack bills move with every re-measure and are read
+#: off packs.pack_cost, so excluding them here loses no coverage.
+_PACK_BILL_LINE = re.compile(
+    r"^\|\s*(lite core|graphics|tables-charts|design|assembly-export|"
+    r"review-sweeps|com)\b|^Six packs plus the lite core"
+)
+
+
+def _without_pack_bills(text: str) -> str:
+    return "\n".join(
+        line for line in text.splitlines() if not _PACK_BILL_LINE.match(line)
+    )
+
+
+def test_no_superseded_figure_survives_on_a_published_surface():
+    """The regression guard for the defect this file was widened over."""
+    found = []
+    for stale, what in SUPERSEDED_FIGURES:
+        for rel in FIGURE_SURFACES:
+            if stale in _without_pack_bills(_read(rel)):
+                found.append(f"{rel} still carries {stale!r}, {what}")
+    assert not found, (
+        "\n".join(found) + "\nRestamp from the measuring script rather than "
+        "deleting the row.")
+
+
+def test_every_figure_surface_is_still_a_real_file():
+    for rel in FIGURE_SURFACES:
+        assert (ROOT / rel).is_file(), rel
+
+
+def test_the_server_reports_the_same_tool_total_it_publishes():
+    """The gate above holds three text surfaces to each other. This holds
+    the RUNNING SERVER to them, which is the surface an agent actually
+    reads: get_server_info counts the live registry, so a restamp that
+    forgets a page turns this red rather than shipping a server that
+    contradicts its own README."""
+    import sys
+
+    sys.path.insert(0, str(ROOT / "src"))
+    from kitchensink4ppt import packs, server  # noqa: F401
+
+    live = sum(len(v) for v in packs.tool_names().values())
+    published = next(f for f, what, _ in PUBLISHED_FIGURES if what == 'tools')
+    assert str(live) == published, (
+        f"the registry has {live} tools, the published figure is "
+        f"{published}. Re-run scripts/measure_surface.py and restamp "
+        f"{', '.join(FIGURE_SURFACES)} plus PUBLISHED_FIGURES.")
+
+
+def test_the_server_reports_the_same_test_count_it_publishes():
+    """shipped.TESTS is what get_server_info hands an agent. It cannot be
+    derived at runtime, so this is the join that keeps it from drifting
+    away from the number on the page. Re-stamp with
+    scripts/stamp_figures.py --write, never by hand."""
+    import sys
+
+    sys.path.insert(0, str(ROOT / "src"))
+    from kitchensink4ppt import shipped
+
+    published = next(f for f, what, _ in PUBLISHED_FIGURES if what == 'tests')
+    # Public copy says "about 1,600" (hundreds, rounded down).
+    assert f"{shipped.TESTS // 100 * 100:,}" == published, (
+        f"the server reports {shipped.TESTS:,} tests, the published figure "
+        f"is {published}. Run scripts/stamp_figures.py --write, then "
+        f"restamp {', '.join(FIGURE_SURFACES)} and PUBLISHED_FIGURES.")
