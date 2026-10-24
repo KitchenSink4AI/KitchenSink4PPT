@@ -1,8 +1,7 @@
-"""Accessibility (ops/access.py), SmartArt text visibility (read.py
-append-only block), and per-slide backgrounds (slides.py append-only
-block): audits against the corpus, mutation round-trips through the
-real ops, the synthetic legacy-SmartArt specimen, and a gated COM
-opens-clean validation of a deck exercising every new mutation."""
+"""Accessibility (ops/access.py), SmartArt text visibility (read.py), and
+per-slide backgrounds (slides.py): audits against the real corpus, mutation
+round-trips through the real ops, the synthetic legacy-SmartArt specimen, and
+a gated COM opens-clean validation of a deck exercising every new mutation."""
 
 from __future__ import annotations
 
@@ -151,6 +150,31 @@ def test_set_alt_text_any_shape_type(blank_deck, tmp_path):
         blank_deck, blank_deck.slide_parts()[0], sp["shape_id"]
     )
     assert read._cnvpr(elem).get("descr") is None
+
+
+def test_set_alt_text_can_mark_and_unmark_office_decorative(blank_deck, tmp_path):
+    from kitchensink4ppt.ops import media
+
+    img_path = tmp_path / "ornament.png"
+    img_path.write_bytes(png_bytes())
+    pic = media.insert_image(blank_deck, 0, str(img_path), 1, 1)
+    sid = pic["shape_id"]
+
+    marked = access.set_alt_text(blank_deck, 0, sid, "", decorative=True)
+    assert marked["decorative"] is True
+    assert _findings(blank_deck, "alt_text", 0) == []
+
+    with pytest.raises(PptMcpError, match="cannot also carry alt text"):
+        access.set_alt_text(blank_deck, 0, sid, "spoken", decorative=True)
+
+    described = access.set_alt_text(blank_deck, 0, sid, "Company mark")
+    assert described["previous_decorative"] is True
+    assert described["decorative"] is False
+    assert _findings(blank_deck, "alt_text", 0) == []
+
+    cleared = access.set_alt_text(blank_deck, 0, sid, "", decorative=False)
+    assert cleared["decorative"] is False
+    assert len(_findings(blank_deck, "alt_text", 0)) == 1
 
 
 def test_autoshapes_not_flagged_for_alt_text(blank_deck):
@@ -385,7 +409,7 @@ def test_diagram_text_extraction_synthetic_specimen(blank_deck, tmp_path):
     # the doc point (empty text) is excluded
     assert all(n["text"].strip() for n in item["nodes"])
 
-    # the wire-in helper the mini-integration will call
+    # the helper that wires SmartArt text into the readers
     sp_tree = _sp_tree(pkg, pkg.slide_parts()[0])
     frame = next(
         el for el, kind, _z, _p in read.iter_shapes(sp_tree) if kind == "diagram"
@@ -396,7 +420,7 @@ def test_diagram_text_extraction_synthetic_specimen(blank_deck, tmp_path):
 
 
 def test_diagram_text_visible_to_get_text_and_find_text(blank_deck):
-    """get_text and find_text now see SmartArt text; find_text matches carry
+    """get_text and find_text see SmartArt text; find_text matches carry
     where='diagram' with no paragraph key. diagram_text stays the
     structured per-node read."""
     part = blank_deck.slide_parts()[0]

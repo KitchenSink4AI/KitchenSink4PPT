@@ -17,7 +17,8 @@ is already running and reads, so those tools stay read-only. The export
 tools all write a file, so none of them qualify however read-shaped they
 feel.
 
-The discipline: an honest hint buys client-side permission lenience, and an
+The sibling web server (kitchensink4web) set the pattern and the
+discipline: an honest hint buys client-side permission lenience, and an
 optimistic one would be a false safety claim in metadata.
 """
 
@@ -49,13 +50,14 @@ MUTATING: frozenset[str] = frozenset({
     "add_layout_placeholder", "align_shapes", "anonymize_deck",
     "apply_brand", "apply_edits", "apply_layout", "apply_table_style",
     "clear_animations", "compress_deck", "copy_format", "copy_position",
-    "copy_presentation", "copy_slide_between", "create_chart",
+    "copy_presentation", "copy_shape_between", "copy_slide_between",
+    "create_chart",
     "create_layout", "create_presentation", "create_snapshot",
     "create_table", "delete_comment", "delete_master_shape",
     "delete_notes", "delete_shape", "delete_slide", "delete_table_cols",
-    "delete_table_rows", "disable_tools", "distribute_shapes",
-    "duplicate_slide", "enable_tools", "export_handout", "export_pdf",
-    "export_slide_image", "export_table", "fit_text", "format_chart",
+    "delete_table_rows", "distribute_shapes", "duplicate_slide",
+    "export_handout", "export_pdf",
+    "export_shape_image", "export_slide_image", "export_table", "fit_text", "format_chart",
     "format_table_cells", "format_text", "generate_agenda_slide",
     "generate_diagram", "group_shapes", "import_table", "insert_audio",
     "insert_connector", "insert_equation", "insert_image",
@@ -74,11 +76,12 @@ MUTATING: frozenset[str] = frozenset({
     "set_master_placeholder", "set_media_playback", "set_notes",
     "set_placeholder_text",
     "set_reading_order", "set_row_heights", "set_shape",
-    "set_show_properties", "set_slide_background", "set_slide_hidden",
+    "set_shape_adjustments", "set_show_properties",
+    "set_slide_background", "set_slide_hidden",
     "set_slide_size", "set_table_cells", "set_theme_colors",
     "set_theme_fonts", "set_transition", "set_z_order", "split_deck",
     "svg_to_shapes", "ungroup_shapes", "unmerge_cells",
-    "update_chart_data", "validate",
+    "update_chart_data", "update_notices", "update_now", "validate",
 })
 
 

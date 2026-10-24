@@ -1,13 +1,11 @@
-"""Calibration and per-run behavior of the measured text-fit model.
+"""Edge cases of the measured text-fit model.
 
-- the conservative calibration must sit INSIDE the measurement, because
-    the overflow boolean is decided against 1.0 before any suppression
-    threshold is consulted;
-- a mixed-format body must be measured run by run, or not called measured;
-- a font collection holds several unrelated families and face zero is not
-    an answer;
-- a font file that exists but will not parse is a different fallback
-    reason from a font file that is absent.
+The conservative calibration must sit INSIDE the measurement, because the
+overflow boolean is decided against 1.0 before any suppression threshold is
+consulted. A mixed-format body must be measured run by run, or not called
+measured. A font collection holds several unrelated families and face zero
+is not an answer. A font file that exists but will not parse is a different
+fallback reason from a font file that is absent.
 
 The near-boundary cases state the expected ratio of rendered width to frame
 width (`true_ratio`) for each label.
@@ -82,15 +80,15 @@ def test_the_calibration_is_a_per_line_allowance_not_a_per_token_one():
 def test_text_width_pt_itself_stays_uncalibrated():
     """The per-token measure must not carry the line allowance, or a wrap
     over N words would over-count the line by N pads."""
-    raw = fm.raw_text_width_pt("Carter (1997)", "Calibri", 12)
-    assert fm.text_width_pt("Carter (1997)", "Calibri", 12) == raw
+    raw = fm.raw_text_width_pt("Fowler (1997)", "Calibri", 12)
+    assert fm.text_width_pt("Fowler (1997)", "Calibri", 12) == raw
 
 
 @needs_calibri
 def test_the_wrap_takes_the_allowance_off_the_line():
     """A string that fits the raw width but not the calibrated width must
     wrap, because PowerPoint wraps it."""
-    text = "abandonment entrapment"
+    text = "onboarding retention"
     raw = fm.raw_text_width_pt(text, "Calibri", 12)
     # A frame exactly as wide as the raw sum: uncalibrated this is one line.
     lines = fm.wrap_styled(
@@ -107,16 +105,16 @@ def test_the_wrap_takes_the_allowance_off_the_line():
 #: non-wrapping labels, so width alone decides.
 _BAND = [
     ("Whitfield (2015)", 1.4453, 12, 0.9868),
-    ("Ortiz and Lane (2024)", 1.6695, 12, 1.0179),
+    ("Ortiz and Hale (2024)", 1.6543, 12, 1.0179),
     ("Brooks (2022)", 1.1349, 12, 1.0504),
     ("Nguyen (2012)", 1.1728, 12, 1.0671),
     ("Patel and Reyes (2025)", 1.6869, 12, 1.0660),
     ("Hughes (1990)", 1.1432, 12, 1.1013),
     ("Kerr (1990)", 0.9065, 12, 1.1329),
     ("Budget transfer", 1.1632, 12, 1.1287),
-    ("Regional Sales Committee", 1.7629, 12, 1.1405),
+    ("Regional Sales Network", 1.6147, 12, 1.1405),
     ("Master Service Agreement", 1.7799, 12, 1.1525),
-    ("Carter (1997)", 0.744, 12, 1.797),
+    ("Fowler (1997)", 0.744, 12, 1.797),
 ]
 
 
@@ -124,7 +122,7 @@ _BAND = [
 @pytest.mark.parametrize("text,box_in,pt,true_ratio", _BAND)
 def test_no_false_negative_in_the_boundary_band(deck, text, box_in, pt,
                                                 true_ratio):
-    """a real overflow must never come back as
+    """The whole point: a real overflow must never come back as
     "fits" because the model measures narrow."""
     sid = _add(deck, box_in, 0.5, text, pt, wrap="none")
     rec = _overflow(deck, sid)
@@ -143,10 +141,10 @@ def test_no_false_negative_in_the_boundary_band(deck, text, box_in, pt,
 
 @needs_calibri
 def test_a_real_overflow_just_over_the_edge_survives_check_layout(deck):
-    """At the old 1.05 gate a label a few
+    """The concrete failure scenario: at the old 1.05 gate a label a few
     percent over its frame was discarded twice, once by the uncalibrated
     boolean and once by the threshold."""
-    sid = _add(deck, 1.6695, 0.5, "Ortiz and Lane (2024)", 12, wrap="none")
+    sid = _add(deck, 1.6543, 0.5, "Ortiz and Hale (2024)", 12, wrap="none")
     deck.save()
     out = dc.check_layout(deck, slide=0, checks=["overflow"])
     hits = [f for f in out["findings"] if sid in f.get("shape_ids", [])]
@@ -185,7 +183,7 @@ def _set_runs(pkg, sid, runs):
 
 @needs_calibri
 def test_a_later_bigger_run_is_what_overflows_and_is_seen(deck):
-    """A 10 pt label followed by a 30 pt value. Read
+    """The concrete failure: a 10 pt label followed by a 30 pt value. Read
     in the first run's format the body fits comfortably; read honestly it
     does not."""
     sid = _add(deck, 2.0, 0.55, "placeholder", 10)

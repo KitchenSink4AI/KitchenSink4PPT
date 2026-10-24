@@ -35,12 +35,48 @@ from collections import Counter
 
 from lxml import etree
 
-from ..core.errors import PptMcpError, UnsupportedStructure
+from ..core.errors import OpError, PptMcpError, UnsupportedStructure
 from ..core.package import PptxPackage, qn
 from .design import COLOR_SLOTS, _resolve_master, _theme_part_of, get_theme
 
 _FONT_KEYS = ("latin", "ea", "cs")
 _FONT_TAGS = {"latin": "a:latin", "ea": "a:ea", "cs": "a:cs"}
+
+#: Longest typeface a theme font slot takes. A Windows face name holds at
+#: most 31 characters (LOGFONT's LF_FACESIZE of 32 counts the terminator)
+#: and Office stores that face name, so no installed font has a longer one.
+#: A longer value only bloats the theme and every answer that echoes it.
+MAX_TYPEFACE_CHARS = 31
+
+
+def _check_typeface(typeface: str, label: str) -> str:
+    """Refuse a typeface no installed font could have, before any write."""
+    if len(typeface) > MAX_TYPEFACE_CHARS:
+        raise OpError(
+            "BAD_ARGS",
+            f"{label} typeface is {len(typeface):,} characters, but a font name has at "
+            f"most {MAX_TYPEFACE_CHARS} (the Windows face-name limit), so no installed "
+            "font has it. Nothing was changed.",
+            details={
+                "field": label,
+                "chars": len(typeface),
+                "max_chars": MAX_TYPEFACE_CHARS,
+            },
+        )
+    return typeface
+
+
+_RUN_FONT_TAGS = ("a:latin", "a:ea", "a:cs", "a:sym")
+_BRAND_FONT_KEYS = {
+    f"{family}_{script}": (family, script)
+    for family in ("major", "minor")
+    for script in _FONT_KEYS
+}
+_COLOR_MAP_KEYS = (
+    "bg1", "tx1", "bg2", "tx2", "accent1", "accent2", "accent3",
+    "accent4", "accent5", "accent6", "hlink", "folHlink",
+)
+_COLOR_MAP_VALUES = set(COLOR_SLOTS)
 
 
 # ---------------------------------------------------------------- helpers
@@ -131,7 +167,7 @@ def _norm_font_spec(spec, name: str) -> dict[str, str]:
     if isinstance(spec, str):
         if not spec.strip():
             raise PptMcpError(f"{name} typeface must be a non-empty string")
-        return {"latin": spec.strip()}
+        return {"latin": _check_typeface(spec.strip(), name)}
     if isinstance(spec, dict):
         unknown = sorted(set(spec) - set(_FONT_KEYS))
         if unknown:
@@ -146,7 +182,7 @@ def _norm_font_spec(spec, name: str) -> dict[str, str]:
                     f"{name}.{k} typeface must be a non-empty string, got "
                     f"{v!r}"
                 )
-            out[k] = v.strip()
+            out[k] = _check_typeface(v.strip(), f"{name}.{k}")
         if not out:
             raise PptMcpError(f"{name} font dict is empty; nothing to set")
         return out
@@ -156,10 +192,194 @@ def _norm_font_spec(spec, name: str) -> dict[str, str]:
     )
 
 
+def _explicit_font_runs_in_master_scope(
+    pkg: PptxPackage, master_part: str
+) -> dict:
+    """Visible slide runs with literal fonts under ``master_part``.
+
+    Theme references (for example ``+mn-lt``) continue to resolve through
+    the font scheme and are therefore not overrides. A run is counted once
+    even when it declares literal typefaces for more than one script.
+    """
+    from .masters import _layout_of_slide
+    from .read import _layouts_of_master, slide_table
+
+    layout_parts = set(_layouts_of_master(pkg, master_part))
+    scoped_slides = []
+    details = []
+    total = 0
+
+    for rec in slide_table(pkg):
+        if _layout_of_slide(pkg, rec["part"]) not in layout_parts:
+            continue
+        scoped_slides.append(rec)
+        run_count = 0
+        typeface_runs: Counter[str] = Counter()
+        root = pkg.root(rec["part"])
+        for run in root.iter(qn("a:r"), qn("a:fld")):
+            text = run.find(qn("a:t"))
+            if text is None or not text.text:
+                continue
+            rpr = run.find(qn("a:rPr"))
+            if rpr is None:
+                continue
+            literal_faces = set()
+            for tag in _RUN_FONT_TAGS:
+                face = rpr.find(qn(tag))
+                typeface = (
+                    face.get("typeface", "").strip()
+                    if face is not None
+                    else ""
+                )
+                if typeface and not typeface.startswith("+"):
+                    literal_faces.add(typeface)
+            if not literal_faces:
+                continue
+            run_count += 1
+            for typeface in literal_faces:
+                typeface_runs[typeface] += 1
+
+        if run_count:
+            total += run_count
+            details.append(
+                {
+                    "slide_index": rec["index"],
+                    "slide_id": rec["slide_id"],
+                    "part": rec["part"],
+                    "explicit_font_run_count": run_count,
+                    "typefaces": [
+                        {"typeface": face, "run_count": typeface_runs[face]}
+                        for face in sorted(typeface_runs)
+                    ],
+                }
+            )
+
+    return {
+        "affected_slides": {
+            "count": len(scoped_slides),
+            "slide_ids": [rec["slide_id"] for rec in scoped_slides],
+        },
+        "explicit_font_run_count": total,
+        "explicit_font_affected_slides": {
+            "count": len(details),
+            "slide_ids": [rec["slide_id"] for rec in details],
+            "details": details,
+        },
+    }
+
+
+def _normalize_color_map(mapping: dict) -> dict[str, str]:
+    if not isinstance(mapping, dict) or not mapping:
+        raise PptMcpError(
+            "color_map must be a non-empty dict of semantic token to theme "
+            f"slot; keys: {', '.join(_COLOR_MAP_KEYS)}"
+        )
+    unknown = sorted(set(mapping) - set(_COLOR_MAP_KEYS))
+    if unknown:
+        raise PptMcpError(
+            f"unknown color_map key(s): {', '.join(unknown)}; valid: "
+            + ", ".join(_COLOR_MAP_KEYS)
+        )
+    out = {}
+    for key, value in mapping.items():
+        if value not in _COLOR_MAP_VALUES:
+            raise PptMcpError(
+                f"color_map.{key} must name a theme slot; got {value!r}; "
+                f"valid: {', '.join(COLOR_SLOTS)}"
+            )
+        out[key] = value
+    return out
+
+
+def _master_color_map(pkg: PptxPackage, master_part: str) -> dict[str, str]:
+    node = pkg.root(master_part).find(qn("p:clrMap"))
+    if node is None:
+        raise UnsupportedStructure(f"{master_part} has no p:clrMap")
+    return {key: node.get(key, "") for key in _COLOR_MAP_KEYS}
+
+
+def _layout_master(pkg: PptxPackage, layout_part: str) -> str:
+    from ..core.package import resolve_target
+    from .masters import RT_SLIDE_MASTER
+
+    for rel in pkg.rels_for(layout_part).getroot():
+        if rel.get("Type") == RT_SLIDE_MASTER and rel.get("TargetMode") != "External":
+            return resolve_target(layout_part, rel.get("Target", ""))
+    raise UnsupportedStructure(f"{layout_part} has no slideMaster relationship")
+
+
+def _effective_layout_color_map(
+    pkg: PptxPackage, layout_part: str
+) -> dict[str, str]:
+    root = pkg.root(layout_part)
+    override = root.find(f"{qn('p:clrMapOvr')}/{qn('a:overrideClrMapping')}")
+    if override is not None:
+        return {key: override.get(key, "") for key in _COLOR_MAP_KEYS}
+    return _master_color_map(pkg, _layout_master(pkg, layout_part))
+
+
+def _set_color_map(pkg, *, master, layout, mapping):
+    from . import masters as _masters
+    from .slides import _resolve_layout
+
+    if layout is not None and master is not None:
+        raise PptMcpError("pass either master= or layout= for color_map, not both")
+    if layout is None:
+        master_part, _all = _resolve_master(pkg, master)
+        normalized = _normalize_color_map(mapping)
+        node = pkg.root(master_part).find(qn("p:clrMap"))
+        if node is None:
+            raise UnsupportedStructure(f"{master_part} has no p:clrMap")
+        final = _master_color_map(pkg, master_part)
+        final.update(normalized)
+        for key, value in final.items():
+            node.set(key, value)
+        pkg.mark_dirty(master_part)
+        return {
+            "scope": "master", "part": master_part,
+            "color_map": final,
+            "affected_slides": _masters._affected(pkg, "master", master_part),
+        }
+
+    layout_part = _resolve_layout(pkg, layout)
+    root = pkg.root(layout_part)
+    previous_effective = _effective_layout_color_map(pkg, layout_part)
+    ovr = root.find(qn("p:clrMapOvr"))
+    if ovr is None:
+        ovr = etree.Element(qn("p:clrMapOvr"))
+        csld = root.find(qn("p:cSld"))
+        if csld is None:
+            raise UnsupportedStructure(f"{layout_part} has no p:cSld")
+        csld.addnext(ovr)
+    for child in list(ovr):
+        ovr.remove(child)
+    if mapping == "inherit":
+        etree.SubElement(ovr, qn("a:masterClrMapping"))
+        final = _master_color_map(pkg, _layout_master(pkg, layout_part))
+        inherited = True
+    else:
+        normalized = _normalize_color_map(mapping)
+        final = previous_effective
+        final.update(normalized)
+        node = etree.SubElement(ovr, qn("a:overrideClrMapping"))
+        for key, value in final.items():
+            node.set(key, value)
+        inherited = False
+    pkg.mark_dirty(layout_part)
+    return {
+        "scope": "layout", "part": layout_part, "inherited": inherited,
+        "color_map": final,
+        "affected_slides": _masters._affected(pkg, "layout", layout_part),
+    }
+
+
 # ================================================================ public API
 
 
-def set_theme_colors(pkg: PptxPackage, master=None, colors: dict | None = None) -> dict:
+def set_theme_colors(
+    pkg: PptxPackage, master=None, colors: dict | None = None,
+    *, color_map=None, layout=None,
+) -> dict:
     """Set any subset of the 12 theme color slots (dk1, lt1, dk2, lt2,
     accent1..accent6, hlink, folHlink) to RRGGBB hex values on one master's
     theme (master: None = first master, 0-based index, or name). Every
@@ -167,6 +387,22 @@ def set_theme_colors(pkg: PptxPackage, master=None, colors: dict | None = None) 
     against the new values; explicit srgbClr fills do not move (see
     extract_brand). sysClr slots are rewritten as srgbClr, matching
     PowerPoint's own customize behavior."""
+    if colors is None and color_map is None:
+        raise PptMcpError(
+            "nothing to do: pass colors= and/or color_map="
+        )
+    if layout is not None and colors is not None:
+        raise PptMcpError(
+            "layout= applies only to color_map; theme palette colors belong "
+            "to a master"
+        )
+    map_result = None
+    if color_map is not None:
+        map_result = _set_color_map(
+            pkg, master=master, layout=layout, mapping=color_map
+        )
+    if colors is None:
+        return map_result
     if not isinstance(colors, dict) or not colors:
         raise PptMcpError(
             f"colors must be a non-empty dict of slot -> RRGGBB hex; valid "
@@ -186,12 +422,15 @@ def set_theme_colors(pkg: PptxPackage, master=None, colors: dict | None = None) 
     for slot, hexval in normalized.items():
         _write_slot(scheme, slot, hexval)
     pkg.mark_dirty(theme_part)
-    return {
+    result = {
         "master": master_part,
         "theme_part": theme_part,
         "set": normalized,
         "colors": get_theme(pkg, master)["colors"],
     }
+    if map_result is not None:
+        result["color_map_set"] = map_result
+    return result
 
 
 def set_theme_fonts(
@@ -212,8 +451,9 @@ def set_theme_fonts(
     if ea is not None:
         if not isinstance(ea, str) or not ea.strip():
             raise PptMcpError("ea typeface must be a non-empty string")
-        major_spec.setdefault("ea", ea.strip())
-        minor_spec.setdefault("ea", ea.strip())
+        face = _check_typeface(ea.strip(), "ea")
+        major_spec.setdefault("ea", face)
+        minor_spec.setdefault("ea", face)
     if not major_spec and not minor_spec:
         raise PptMcpError(
             "nothing to do: pass major=, minor= (typeface string or "
@@ -221,6 +461,7 @@ def set_theme_fonts(
         )
 
     master_part, _all = _resolve_master(pkg, master)
+    override_report = _explicit_font_runs_in_master_scope(pkg, master_part)
     theme_part = _theme_part_of(pkg, master_part)
     scheme = _font_scheme(pkg, theme_part)
     written: dict[str, dict] = {}
@@ -237,12 +478,20 @@ def set_theme_fonts(
             _set_typeface(font_el, key, typeface)
         written[label] = spec
     pkg.mark_dirty(theme_part)
-    return {
+    result = {
         "master": master_part,
         "theme_part": theme_part,
         "set": written,
         "fonts": get_theme(pkg, master)["fonts"],
+        **override_report,
     }
+    if result["explicit_font_run_count"]:
+        result["warnings"] = [
+            "text with its own font set directly kept that font: "
+            "explicit_font_run_count counts those runs and "
+            "explicit_font_affected_slides lists the slides they are on"
+        ]
+    return result
 
 
 def extract_brand(pkg_or_path, top_fills: int = 8) -> dict:
@@ -333,30 +582,59 @@ def apply_brand(pkg: PptxPackage, brand: dict) -> dict:
             "brand fonts must be a dict with major/minor entries, got "
             f"{type(fonts_in).__name__}"
         )
+    allowed_font_keys = {"major", "minor"} | set(_BRAND_FONT_KEYS)
+    unknown_fonts = sorted(set(fonts_in) - allowed_font_keys)
+    if unknown_fonts:
+        raise PptMcpError(
+            f"unknown brand font key(s): {', '.join(unknown_fonts)}; valid: {', '.join(sorted(allowed_font_keys))}; nothing was "
+            "changed"
+        )
+
     font_specs: dict[str, dict[str, str]] = {}
     for label in ("major", "minor"):
-        spec = fonts_in.get(label) or {}
-        if isinstance(spec, str):
-            # Parity with set_theme_fonts: a hand-written brand naturally
-            # says {"fonts": {"major": "Arial"}}.
-            if not spec.strip():
-                raise PptMcpError(
-                    f"brand fonts.{label} typeface must be a non-empty string"
+        if label in fonts_in:
+            spec = fonts_in[label]
+            if isinstance(spec, dict):
+                unknown_nested = sorted(set(spec) - set(_FONT_KEYS))
+                if unknown_nested:
+                    raise PptMcpError(
+                        f"unknown brand fonts.{label} font key(s): "
+                        f"{', '.join(unknown_nested)}; valid: latin, ea, cs"
+                    )
+                # extract_brand represents unresolved script slots as empty
+                # strings. They remain intentionally absent on transfer.
+                cleaned = {
+                    key: value
+                    for key, value in spec.items()
+                    if not (isinstance(value, str) and not value.strip())
+                }
+                if cleaned:
+                    font_specs[label] = _norm_font_spec(
+                        cleaned, f"brand fonts.{label}"
+                    )
+            else:
+                normalized_family = _norm_font_spec(
+                    spec, f"brand fonts.{label}"
                 )
-            spec = {"latin": spec}
-        if not isinstance(spec, dict):
+                if normalized_family:
+                    font_specs[label] = normalized_family
+    for flat_key, (label, script) in _BRAND_FONT_KEYS.items():
+        if flat_key not in fonts_in:
+            continue
+        if script in font_specs.get(label, {}):
             raise PptMcpError(
-                f"brand fonts.{label} must be a typeface string or a dict "
-                "of latin/ea/cs"
+                f"brand fonts sets both {label}.{script} and {flat_key}, which name "
+                "the same font; pass only one. Nothing was changed."
             )
-        cleaned = {
-            k: v.strip()
-            for k, v in spec.items()
-            if k in _FONT_KEYS and isinstance(v, str) and v.strip()
-        }
-        if cleaned:
-            font_specs[label] = cleaned
+        normalized_flat = _norm_font_spec(
+            {script: fonts_in[flat_key]}, f"brand fonts.{flat_key}"
+        )
+        font_specs.setdefault(label, {}).update(normalized_flat)
 
+    if fonts_in and not font_specs:
+        raise PptMcpError(
+            "brand carries no usable colors or fonts (all slots empty)"
+        )
     if not normalized and not font_specs:
         raise PptMcpError(
             "brand carries no usable colors or fonts (all slots empty)"

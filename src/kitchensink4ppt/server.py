@@ -12,47 +12,44 @@ Contract for every mutating tool:
 - Refusals are structured: {ok: false, error: {code, message, hint}} with a
   closed code vocabulary, never raw tracebacks.
 
-Tiered loading: the server starts in LITE mode (the view/batch layer, slide
-CRUD, text core, safety tools). Everything else is registered but disabled
-until enable_tools flips a pack on (see packs.py; KS4P_MODE pins a bigger
-startup surface, KS4P_PACK_POLICY=locked freezes it).
-
-This module is the ONLY one that knows FastMCP. Ops functions take a
-PptxPackage and never touch disk; _edit owns the lock + load + save cycle.
+The MCP surface is fixed for the session: eight operation groups and one help
+tool. Ops functions take a PptxPackage and never touch disk; _edit owns the
+lock + load + save cycle. Only surface/tools.py registers FastMCP tools.
 """
 
 from __future__ import annotations
 
-import functools
-import inspect as _inspect
-import json as _json
-import platform as _platform
+import os as _os
 import sys as _sys
-from typing import Any
-from xml.etree.ElementTree import ParseError as _XmlParseError
+from typing import Any, Literal
 
+from . import license_policy as _license_policy
 from fastmcp import FastMCP
-from fastmcp.exceptions import NotFoundError as _FmcpNotFound
-from fastmcp.exceptions import ToolError as _FmcpToolError
-from fastmcp.server.context import Context as _Context
-from fastmcp.server.middleware import Middleware as _FmcpMiddleware
-from fastmcp.server.transforms.visibility import Visibility as _Visibility
-from fastmcp.tools.function_tool import FunctionTool as _FunctionTool
-from fastmcp.tools.tool import ToolResult as _FmcpToolResult
-from lxml import etree as _lxml_etree
 
 from . import __version__
 
-from . import packs as _packs
+from . import registry as _registry
 from . import shipped as _shipped
 from .core import errors as _err
-from .core import readonly as _readonly
-from .core import tool_annotations as _toolann
+from .core import messages as _messages
+from .core import slide_echo as _slide_echo
 from .core import update_check as _upd
-from .core import star_nudge as _star_nudge
-from .core.package import PptxPackage
-from .core.safesave import MutationLockTimeout
-from .core.sandbox import SandboxViolation, check_path
+from .core.package import (
+    PptxPackage,
+    note_live_unreachable,
+    powerpoint_holds,
+    has_read_only_attribute,
+    make_file_writable,
+    read_only_error,
+    refuse_ole_encrypted,
+)
+from .core.sandbox import check_path
+from .core.swapwait import require_deck, through_swap
+from .settings import Settings, SettingsError, legacy_notice
+from .surface import copy as _surface_copy
+from .surface import dispatch as _surface_dispatch
+from .surface import plan as _surface_plan
+from .surface import tools as _surface_tools
 from .com import live_ops as _lo
 from .ops import (
     access as _acc,
@@ -81,6 +78,7 @@ from .ops import (
     optimize as _opz,
     painter as _pnt,
     read as _rd,
+    shape_copy as _shc,
     shapes as _sh,
     show as _shw,
     slides as _sl,
@@ -93,343 +91,53 @@ from .ops import (
     workflows as _wf,
 )
 
-mcp = FastMCP(
-    "kitchensink4ppt",
-    version=__version__,
-    instructions=(
-        # The lead line is the only place an agent reading the injected
-        # instructions learns WHAT it is connected to. Without it the
-        # product name never reaches a client: the server name field is
-        # lowercase, and clients show the user's own config alias ("ppt")
-        # rather than either. get_server_info is the tool that answers the
-        # same question on demand.
-        "KitchenSink4PPT (kitchensink4ppt on PyPI), part of the "
-        "KitchenSink4AI suite. "
-        "PowerPoint (.pptx) editor: slides, text, native vector graphics "
-        "(SVG in, editable grouped shapes with glued connectors out), "
-        "structural tables, charts, notes, and render-to-verify export. "
-        "File-based with atomic validated saves and two-slot backups before "
-        "every mutation; dual-mode tools with live='auto' edit decks open in "
-        "the user's PowerPoint. Starts in lite mode; enable_tools switches "
-        "on the graphics, tables-charts, design, assembly-export, "
-        "review-sweeps, and com packs mid-session. "
-        + _packs.WORKER_PACK_SENTENCE
-        + " get_workflows has "
-        "recipes; get_presentation_view + "
-        "apply_edits is the cheap batch-editing loop."
-    ),
-)
+def _tool(_legacy_pack: str | None = None):
+    """Record one released operation without registering an MCP tool.
 
-# ------------------------------------------------------- response envelope
-
-_CODE_MAP: tuple[tuple[type[BaseException], str], ...] = (
-    (_err.AmbiguousTarget, "AMBIGUOUS_LOCATION"),
-    (_err.TargetNotFound, "NOT_FOUND"),
-    (_err.DocumentNotFound, "NOT_FOUND"),
-    (MutationLockTimeout, "DOCUMENT_LOCKED"),
-    (_err.DocumentLocked, "DOCUMENT_LOCKED"),
-    (_err.DocumentCorrupt, "UNSUPPORTED_CONTENT"),
-    (_err.DocumentProtected, "UNSUPPORTED_CONTENT"),
-    (_err.UnsupportedStructure, "UNSUPPORTED_CONTENT"),
-    (_err.ValidationFailed, "VALIDATION_FAILED"),
-    (_err.ProtectedViewRefused, "PROTECTED_VIEW"),
-    (_err.PowerPointNotRunning, "APP_NOT_RUNNING"),
-    (_err.DocumentNotOpenInPowerPoint, "APP_NOT_RUNNING"),
-    (_err.LiveLockTimeout, "APP_BUSY"),
-    (_err.PowerPointBusy, "APP_BUSY"),
-    (_err.PowerPointBlocked, "APP_BLOCKED"),
-    (_err.PowerPointDisconnected, "CONFLICT"),
-    (SandboxViolation, "BAD_PARAMS"),
-    (_err.PptMcpError, "BAD_PARAMS"),
-    (FileExistsError, "CONFLICT"),
-    (FileNotFoundError, "NOT_FOUND"),
-    (ValueError, "BAD_PARAMS"),
-    (TypeError, "BAD_PARAMS"),
-    # Deliberate widening: parser and recursion errors
-    # from hostile SVG/XML input must refuse in-envelope, never surface as
-    # raw FastMCP tool errors. Ops-level guards refuse first with better
-    # messages; these are the backstop.
-    (_XmlParseError, "BAD_PARAMS"),
-    (_lxml_etree.LxmlError, "BAD_PARAMS"),
-    (AttributeError, "BAD_PARAMS"),
-    (RecursionError, "UNSUPPORTED_CONTENT"),
-    # Backstop: a float multiply overflowing to inf and
-    # hitting int() must refuse in-envelope. The conversion chokepoints
-    # (ops/geometry.py, ops/text.py _to_emu) refuse first with named
-    # values; this catches any stragglers.
-    (OverflowError, "BAD_PARAMS"),
-    # Production-test backstop: a dict indexed with the wrong key type
-    # (generate_diagram matrix flat cells died as a raw KeyError: 0,
-    # surfacing to the client as "Error calling tool: 0"). Ops-level
-    # guards refuse first with real messages; this catches stragglers.
-    (KeyError, "BAD_PARAMS"),
-    (IndexError, "BAD_PARAMS"),
-)
-_CATCHABLE = tuple(t for t, _ in _CODE_MAP)
-
-#: The complete refusal-code vocabulary this server may emit. _refusal()
-#: clamps declared ``exc.code`` values against this set at RUNTIME: a typo at
-#: a raise site, or a third-party exception that happens to carry a ``.code``
-#: attribute, falls back to _classify() instead of reaching the wire as an
-#: unknown code.
-CLOSED_CODES = frozenset({
-    "AMBIGUOUS_LOCATION",
-    "APP_BLOCKED",
-    "APP_BUSY",
-    "APP_NOT_RUNNING",
-    "BAD_PARAMS",
-    "CONFLICT",
-    "DOCUMENT_LOCKED",
-    "NOT_FOUND",
-    "PROTECTED_VIEW",
-    "STALE_ANCHOR",
-    "UNSUPPORTED_CONTENT",
-    "VALIDATION_FAILED",
-})
-
-_HINTS: dict[str, str] = {
-    "AMBIGUOUS_LOCATION": (
-        "several targets matched; use the unambiguous address from the "
-        "candidates in the message"
-    ),
-    "NOT_FOUND": (
-        "re-run get_presentation_view or get_slide_info to see current "
-        "slides, ids, and anchors"
-    ),
-    "STALE_ANCHOR": (
-        "the deck changed since the view was taken; re-run "
-        "get_presentation_view and resend with fresh anchors"
-    ),
-    "DOCUMENT_LOCKED": (
-        "close the file in PowerPoint (or wait out the other process) and "
-        "retry; dual-mode tools accept live='auto' to edit the open copy "
-        "instead"
-    ),
-    "VALIDATION_FAILED": (
-        "the original file was NOT modified; the message says what the "
-        "produced package failed"
-    ),
-    "APP_NOT_RUNNING": "this operation needs PowerPoint installed and reachable",
-    "APP_BUSY": (
-        "PowerPoint is showing a dialog or running a command; clear it and "
-        "retry"
-    ),
-    "APP_BLOCKED": "PowerPoint is not answering; wait or restart it",
-    "PROTECTED_VIEW": "click Enable Editing in PowerPoint first",
-}
-
-
-def _classify(exc: BaseException) -> str:
-    for etype, code in _CODE_MAP:
-        if isinstance(exc, etype):
-            return code
-    return "BAD_PARAMS"
-
-
-def _pack_hint(exc: BaseException) -> str | None:
-    """If a refusal explicitly directs the caller to tools that exist but
-    are disabled, say exactly how to turn them on (discoverability rule 2:
-    the refusal IS the signpost). The raise site declares the tools via
-    exc.hint_tools; the message text is NEVER scanned, because a message
-    echoing user input that happens to match a tool name must not trigger
-    the hint."""
-    names = getattr(exc, "hint_tools", None)
-    if not names:
-        return None
-    needed: dict[str, str] = {}
-    for name in names:
-        pack = _packs.pack_of(name)
-        if pack in (None, "lite"):
-            continue
-        if not _packs.is_tool_enabled(name):
-            needed[name] = pack
-    if not needed:
-        return None
-    pack_list = sorted(set(needed.values()))
-    named = ", ".join(f"{n} (pack {p!r})" for n, p in sorted(needed.items()))
-    return (
-        f"the tool(s) named here are registered but currently disabled: "
-        f"{named}. Call enable_tools(packs={pack_list}) to turn them on."
-    )
-
-
-def _declared_code(exc: BaseException) -> str | None:
-    """The exception's own ``.code`` when (and only when) it speaks the
-    closed vocabulary; anything else defers to _classify()."""
-    code = getattr(exc, "code", None)
-    return code if isinstance(code, str) and code in CLOSED_CODES else None
-
-
-def _declared_hint(exc: BaseException) -> str | None:
-    """A remedy the raise site states for itself, which beats the blanket
-    per-code entry in _HINTS.
-
-    The per-code hint is a decent guess about a whole class of refusal and
-    a bad one about a specific failure inside it: copy_presentation to a
-    folder that does not exist refused NOT_FOUND and told the caller to
-    re-run get_presentation_view, which is neither the problem nor the fix. A raise site that knows better says so
-    through exc.hint, the same way it declares exc.hint_tools.
+    The decorator argument is retained only while the implementation moves
+    to the fixed family surface. The adopted tool group comes from the
+    frozen operation map in registry.py.
     """
-    hint = getattr(exc, "hint", None)
-    return hint if isinstance(hint, str) and hint.strip() else None
-
-
-def _refusal(exc: BaseException) -> dict:
-    code = _declared_code(exc) or _classify(exc)
-    message = str(exc)
-    if isinstance(exc, LookupError) and len(message) < 40:
-        # A bare KeyError/IndexError repr ("0") is useless on its own;
-        # name the failure mode. Ops-level guards should refuse first.
-        message = (
-            f"internal lookup failed on {message}: a nested parameter "
-            "probably has the wrong shape (list where a dict belongs, or "
-            "vice versa)"
-        )
-    hint = _declared_hint(exc) or _HINTS.get(code, "")
-    ph = _pack_hint(exc)
-    if ph:
-        hint = f"{hint} {ph}".strip()
-    error: dict[str, Any] = {"code": code, "message": message, "hint": hint}
-    detail = getattr(exc, "detail", None)
-    if detail:
-        error["detail"] = detail
-    return {"ok": False, "error": error}
-
-
-class _RefusalResult(_FmcpToolResult):
-    """A structured refusal that is BOTH indexable like the
-    {ok: false, error: ...} dict (in-process callers and the test harness)
-    AND a FastMCP ToolResult whose MCP serialization sets isError=true, so
-    spec-compliant clients see the failure flag (production-test finding:
-    refusals rode out as isError=false successes). The JSON payload stays
-    intact in the content AND in structuredContent; only the flag changes.
-
-    fastmcp 3.x shape: v1.2 inherited from BOTH dict and ToolResult, but
-    3.x made ToolResult a pydantic model and the dual base is an instance
-    lay-out conflict. The class now subclasses ToolResult alone, passes
-    is_error=True at construction (3.x carries the flag itself, so the
-    hand-rolled to_mcp_result override is gone), and serves the mapping
-    protocol off structured_content, which keeps both halves of the old
-    contract."""
-
-    def __init__(self, payload: dict):
-        text = _json.dumps(payload, indent=2, ensure_ascii=False)
-        super().__init__(
-            content=text, structured_content=payload, is_error=True
-        )
-
-    # Mapping protocol over the payload, replacing the 2.14 dict base.
-    def __getitem__(self, key):
-        return self.structured_content[key]
-
-    def __contains__(self, key) -> bool:
-        return key in self.structured_content
-
-    def __iter__(self):
-        return iter(self.structured_content)
-
-    def __len__(self) -> int:
-        return len(self.structured_content)
-
-    def get(self, key, default=None):
-        return self.structured_content.get(key, default)
-
-    def keys(self):
-        return self.structured_content.keys()
-
-    def values(self):
-        return self.structured_content.values()
-
-    def items(self):
-        return self.structured_content.items()
-
-
-class _DisabledToolSignpost(_FmcpMiddleware):
-    """M4 fix (discoverability rule 2): a tools/call to a registered but
-    currently disabled tool must name the owning pack and the exact
-    enable_tools call, not dead-end with a bare "Unknown tool"."""
-
-    async def on_call_tool(self, context, call_next):
-        try:
-            return await call_next(context)
-        except _FmcpNotFound as exc:
-            name = getattr(context.message, "name", "")
-            pack = _packs.pack_of(name)
-            if pack and pack != "lite" and not _packs.is_tool_enabled(name):
-                raise _FmcpToolError(
-                    f"tool {name!r} exists but is currently disabled: it "
-                    f"belongs to the {pack!r} pack. Call "
-                    f"enable_tools(packs=['{pack}']) to turn it on, "
-                    "then retry this call."
-                ) from exc
-            raise
-
-
-mcp.add_middleware(_DisabledToolSignpost())
-
-
-def _tool(pack: str | None = None):
-    """Register a tool: refusal envelope + pack bookkeeping. pack=None means
-    the lite core (enabled at startup); anything else starts disabled.
-
-    Every tool also carries the readOnlyHint its core/readonly.py
-    classification gives it. An unclassified tool raises HERE, at import,
-    rather than reaching tools/list without anyone having decided whether
-    it can change a deck.
-
-    fastmcp 3.x: the MCP-registered callable is the boundary wrapper and
-    the module attribute stays the RAW function, because mcp.tool() no
-    longer hands back the Tool object it built (it returns the function),
-    and the packs registry needs the real Tool for the token math. The
-    startup enabled=False that 2.14 took here is gone with Tool.enable();
-    main() hides the non-lite names with one global visibility transform
-    instead."""
 
     def deco(fn):
-        if _inspect.iscoroutinefunction(fn):
-            @functools.wraps(fn)
-            async def wrapper(*args, **kwargs):
-                try:
-                    return await fn(*args, **kwargs)
-                except _CATCHABLE as exc:
-                    return _RefusalResult(_refusal(exc))
-        else:
-            @functools.wraps(fn)
-            def wrapper(*args, **kwargs):
-                try:
-                    return fn(*args, **kwargs)
-                except _CATCHABLE as exc:
-                    return _RefusalResult(_refusal(exc))
-
-        tool_obj = mcp.add_tool(
-            _FunctionTool.from_function(
-                wrapper,
-                tags={pack or "lite"},
-                annotations=_toolann.annotations(
-                    fn.__name__, _readonly.read_only_hint(fn.__name__)
-                ),
-            )
-        )
-        _packs.register(fn.__name__, pack, tool_obj)
+        _registry.register(fn)
         return fn
 
     return deco
 
-
-def _edit(file_path: str, fn, *, backup: bool = True) -> dict:
+def _edit(
+    file_path: str,
+    fn,
+    *,
+    backup: bool = True,
+    snapshot_label: str | None = None,
+) -> dict:
     """One mutation: lock, load, apply, one atomic validated save. Returns
     the standard mutation envelope."""
-    from .core.safesave import write_lock
+    from .core.safesave import refuse_protected_output, write_lock
 
     file_path = check_path(file_path, "edit presentation")
+    refuse_protected_output(file_path, purpose="edit presentation")
+    # Refuse before write_lock creates its sidecar directory.  The package
+    # repeats this check after lock acquisition to close the attribute-change
+    # race and save() guards direct package callers as a final backstop.
+    if has_read_only_attribute(file_path):
+        raise read_only_error(file_path)
+    snapshot = None
     with write_lock(file_path):
-        pkg = PptxPackage(file_path)
+        pkg = PptxPackage(file_path, reading=False)
+        pkg.assert_modifiable()
+        if snapshot_label is not None:
+            snapshot = _bk.create_snapshot(
+                file_path, label=snapshot_label, _managed=True
+            )
         result = fn(pkg)
         saved = pkg.save(do_backup=backup)
     warnings = (
         result.pop("warnings", []) or [] if isinstance(result, dict) else []
     )
-    return {
+    warnings = [*warnings, *getattr(pkg, "save_warnings", [])]
+    response = {
         "ok": True,
         "file": file_path,
         "changed": result,
@@ -437,28 +145,64 @@ def _edit(file_path: str, fn, *, backup: bool = True) -> dict:
         "backup": backup,
         "warnings": warnings,
     }
+    if snapshot is not None:
+        response["snapshot"] = snapshot["snapshot"]
+    return response
 
 
 def _load(file_path: str) -> PptxPackage:
-    return PptxPackage(check_path(file_path, "read presentation"))
+    """A deck opened to READ: one PowerPoint has open is read from its saved
+    file, and the answer says so (core/package.py)."""
+    return PptxPackage(check_path(file_path, "read presentation"), reading=True)
+
+
+def _live_mode(live: str) -> str:
+    mode = str(live or "auto").strip().lower()
+    if mode not in ("auto", "force", "off"):
+        raise _err.PptMcpError(
+            f"live must be 'auto', 'force', or 'off', got {live!r}"
+        )
+    return mode
+
+
+def _route_live_read(live: str, file_path: str, file_call, live_call):
+    """Dual-mode dispatch for the reads with a live route (get_text,
+    get_slide_info). A deck open in PowerPoint is read live under 'auto':
+    the open copy, unsaved changes included. When the open copy cannot be
+    reached from here, and under 'off', the saved file is read and the
+    answer says so in open_deck_note: a read never refuses because
+    PowerPoint has the deck open. 'force' reads the open copy or refuses."""
+    mode = _live_mode(live)
+    if mode == "force":
+        return live_call()
+    if mode == "auto" and powerpoint_holds(check_path(file_path, "read presentation")):
+        try:
+            # The open copy is the deck being edited now; describe its slide.
+            _slide_echo.restart()
+            return live_call()
+        except _err.PptMcpError as exc:
+            note_live_unreachable(file_path, str(exc))
+            _slide_echo.restart()
+    return file_call()
 
 
 def _route_live(live: str, file_call, live_call):
     """Dual-mode dispatch for the eleven live='auto' tools. 'force' goes
     straight to the live COM layer; otherwise file mode runs first, and a
     DocumentLocked refusal (the file is open in PowerPoint) falls through
-    to the live layer under 'auto' or propagates under 'off'."""
-    mode = str(live or "auto").strip().lower()
-    if mode not in ("auto", "force", "off"):
-        raise _err.PptMcpError(
-            f"live must be 'auto', 'force', or 'off', got {live!r}"
-        )
+    to the live layer under 'auto' or propagates under 'off'. DocumentHeld
+    never falls through: it is another program's hold on the file, after
+    the owner-file check excluded PowerPoint's. The reads with a live route
+    use _route_live_read instead."""
+    mode = _live_mode(live)
     if mode == "force":
         return live_call()
     try:
         return file_call()
-    except _err.DocumentLocked:
-        if mode == "auto":
+    except _err.DocumentLocked as refused:
+        if mode == "auto" and not isinstance(refused, _err.DocumentHeld):
+            # The open copy is the deck being edited now; describe its slide.
+            _slide_echo.restart()
             return live_call()
         raise
 
@@ -485,11 +229,15 @@ def _live_refuse(**given) -> None:
     False mean 'not requested'); silence would drop user intent."""
     bad = sorted(k for k, v in given.items() if v is not None and v is not False)
     if bad:
-        raise _err.UnsupportedStructure(
+        refusal = _err.UnsupportedStructure(
             f"parameter(s) {', '.join(bad)} have no live-mode route; close "
             "the presentation in PowerPoint to use them file-based, or drop "
             "them for the live edit."
         )
+        # The deck is fine; the generic UNSUPPORTED_CONTENT hint said it
+        # might be protected or damaged.
+        refusal.hint = _messages.LIVE_FILE_ONLY_HINT
+        raise refusal
 
 
 _MUT = "Saves atomically with two-slot backup; backup=False skips rotation."
@@ -514,8 +262,7 @@ def get_presentation_view(
     "outline", "text" (default), or "full" (geometry too). Budgeted: a deck
     too large to render whole returns whole slides plus a "page" block
     giving the omitted count and the offset that continues; limit/offset
-    page in slides. Shape and diagram editing:
-    enable_tools(packs=['graphics'])."""
+    page in slides."""
     return _vw.get_presentation_view(
         _load(file_path), scope, detail, limit=limit, offset=offset
     )
@@ -530,19 +277,22 @@ def apply_edits(
 ) -> dict:
     """Batch editor: many edits, one lock, one backup, one atomic save.
     Each edit is {"op": name, ...params} addressed by a view "anchor" (from
-    get_presentation_view) or explicit {"slide", "shape"/"table"} keys. Ops:
-    set_text, set_shape (graphics pack), set_table_cells (tables-charts
-    pack), search_and_replace, set_placeholder_text, format_text
-    (graphics pack), delete_shape (graphics pack). Every location is
+    get_presentation_view) or explicit {"slide", "shape"/"table"} keys
+    (slide_number or slide_id may name the slide). Ops: set_text,
+    set_shape, set_table_cells, search_and_replace, set_placeholder_text,
+    format_text, delete_shape, set_notes (named by slide_id or
+    slide_number), and set_paragraph, insert_paragraph and
+    delete_paragraph (one paragraph of a shape: paragraph counted from 0,
+    or paragraph_number from 1, as the shape was before the batch).
+    Every location is
     resolved BEFORE anything mutates; any stale anchor refuses the whole
     batch listing every failed index, and result.changed maps op index to
     outcome. format_text's vertical anchor rides here as "text_anchor",
     since "anchor" already addresses the shape.
     These ops EDIT existing content; nothing here inserts shapes,
-    tables, or slides. Creation tools live in the packs (enable_tools).
-    atomic must stay True: v1 has no partial-apply mode. Saves atomically
-    with two-slot backup; backup=False skips rotation. Use this when a
-    change needs two or more edits; for a single edit use the standalone
+    tables, or slides.
+    Saves atomically with two-slot backup; backup=False skips rotation. Use
+    this when a change needs two or more edits; for a single edit use the standalone
     tool (set_shape, format_text, set_table_cells, set_placeholder_text,
     search_and_replace, delete_shape)."""
     env = _edit(
@@ -566,19 +316,24 @@ def get_text(
     live: str = "auto",
 ) -> dict:
     """Plain text of the deck in reading order: shapes in spTree order,
-    table cells tab-joined, fields rendering their cached text. scope: None
+    table cells tab-joined, fields rendering their cached text. In every
+    text value, '\v' is a line break inside a paragraph and '\n'
+    separates paragraphs. File-mode reads also include chart titles,
+    series names, category labels and axis titles when the chart stores
+    them; live reads do not. scope: None
     for all slides, a 0-based index, {"slide_id": N}, or a list;
     include_notes=True appends speaker notes. Budgeted, paging in whole
     slides: slide_count stays the deck's true total and a "page" block
     gives the omitted count and the next offset; limit/offset page
-    explicitly. Rendered-appearance checks live in the assembly-export
-    pack.
-    live='auto' edits the open PowerPoint copy when the file is locked by
-    it (UNSAVED until live_save, com pack); 'force' targets the open
-    session; 'off' refuses locked files. For edit anchors, use
-    get_presentation_view."""
-    return _route_live(
+    explicitly. Use export_slide_image for rendered-appearance checks.
+    live='auto' reads the copy open in PowerPoint (unsaved changes
+    included) when PowerPoint has the deck open; 'force' reads only the
+    open copy; 'off' reads the saved file, and so does 'auto' when the open
+    copy cannot be reached, saying so in open_deck_note. For edit anchors,
+    use get_presentation_view."""
+    return _route_live_read(
         live,
+        file_path,
         lambda: _rd.get_text(
             _load(file_path),
             scope,
@@ -597,6 +352,7 @@ def find_text(
     file_path: str,
     query: str,
     regex: bool = False,
+    match_case: bool = True,
     scope: Any = None,
     include_notes: bool = True,
     limit: int | None = None,
@@ -604,21 +360,27 @@ def find_text(
     compact: bool = False,
 ) -> dict:
     """Search the deck's text. Returns every match with slide index, shape
-    id, paragraph index, and character offsets, exactly the addresses
-    format_text (graphics pack) and apply_edits consume. regex=True treats
+    id, and character offsets. Ordinary slide text also carries paragraph
+    indexes, exactly the addresses format_text and apply_edits consume.
+    In match text and offsets, a line break inside a paragraph counts as
+    one '\v' character and '\n' separates paragraphs. A match inside a
+    chart carries chart_field instead of a paragraph and is read-only; no
+    edit operation takes it. regex=True treats
     query as a regular expression (guarded against catastrophic
-    backtracking). Matches
+    backtracking). match_case=True (the default) matches exact case
+    only; match_case=False matches any case. When an exact-case search
+    leaves out matches in another case, case_note says how many and on
+    which slides. Matches
     text as displayed, not raw XML, so search for & rather than &amp;.
     count is always the true total; a "page" block gives the omitted
     count and next offset when more matched than the budget fits.
     compact=True returns matches as a fields header plus one array each.
-    Formatting-aware replacement lives in the graphics pack:
-    enable_tools(packs=['graphics']). Use this to locate text; to read it
-    in order, use get_text."""
+    Use this to locate text; to read it in order, use get_text."""
     return _rd.find_text(
         _load(file_path),
         query,
         regex=regex,
+        match_case=match_case,
         scope=scope,
         include_notes=include_notes,
         limit=limit,
@@ -636,14 +398,23 @@ def search_and_replace(
     regex: bool = False,
     match_case: bool = True,
     include_notes: bool = False,
+    remove_empty_paragraphs: bool = False,
     backup: bool = True,
     live: str = "auto",
 ) -> dict:
     """Deck-wide find and replace, safe across fragmented runs (each
     replacement keeps the first run's formatting), SmartArt node text
-    included. regex=True enables capture groups (refused live); matches
-    overlapping slide-number/date fields are skipped. Bulk cell rewrites:
-    set_table_cells (tables-charts pack). Saves atomically with two-slot
+    included. In file mode, matches inside chart labels are counted in
+    matches_found and chart_matches_skipped but are not edited, and so are
+    matches inside an equation (wrapped_matches_skipped). In file
+    mode, '\v' in the replacement text makes a line break inside the
+    paragraph; a replacement containing '\n' is refused, because one
+    match cannot split a paragraph in two.
+    regex=True enables capture groups (refused live); matches
+    overlapping slide-number/date fields are skipped.
+    remove_empty_paragraphs=True removes the paragraphs a replacement
+    leaves empty (file mode only). Bulk cell rewrites:
+    set_table_cells. Saves atomically with two-slot
     backup. live='auto' edits the open PowerPoint copy of a locked file;
     'force' targets the open session; 'off' refuses locked files.
     Batches: apply_edits."""
@@ -659,10 +430,12 @@ def search_and_replace(
                 regex=regex,
                 match_case=match_case,
                 include_notes=include_notes,
+                remove_empty_paragraphs=remove_empty_paragraphs,
             ),
             backup=backup,
         ),
-        lambda: _live_envelope(
+        lambda: _live_refuse(remove_empty_paragraphs=remove_empty_paragraphs)
+        or _live_envelope(
             file_path,
             _lo.live_search_and_replace(
                 file_path,
@@ -689,10 +462,10 @@ def insert_slide(
     list_elements kind='layouts' lists them), carrying the layout's
     placeholder skeleton so inheritance binds.
     position: 0-based final index, default end. Whole decks start via
-    create_presentation (design pack). Saves atomically with two-slot
+    create_presentation. Saves atomically with two-slot
     backup; backup=False skips rotation. live='auto' edits the open
     PowerPoint copy when the file is locked by it (UNSAVED until
-    live_save, com pack); 'force' targets the open session; 'off' refuses
+    live_save); 'force' targets the open session; 'off' refuses
     locked files."""
     return _route_live(
         live,
@@ -713,10 +486,10 @@ def delete_slide(
     """Delete a slide and garbage-collect everything only it used: notes,
     charts, embeddings, comments, custom-show references, section
     membership; jump links to it are neutered. slide:
-    0-based index or {"slide_id": N}. Prefer set_slide_hidden (design pack)
+    0-based index or {"slide_id": N}. Prefer set_slide_hidden
     when it might come back. Saves atomically with two-slot backup;
     backup=False skips rotation. live='auto' edits the open PowerPoint copy
-    when the file is locked by it (UNSAVED until live_save, com pack);
+    when the file is locked by it (UNSAVED until live_save);
     'force' targets the open session; 'off' refuses locked files."""
     return _route_live(
         live,
@@ -739,8 +512,7 @@ def duplicate_slide(
     embeddings are cloned and retargeted; layout and media stay shared by
     design; creation GUIDs are regenerated (duplicates corrupt). slide:
     0-based index or {"slide_id": N}. position: 0-based final index for the
-    copy, default right after the original. The design pack adds move and
-    hide: enable_tools(packs=['design']). Saves atomically with two-slot
+    copy, default right after the original. Saves atomically with two-slot
     backup; backup=False skips rotation."""
     return _edit(
         file_path,
@@ -756,8 +528,7 @@ def reorder_slides(
     """Rearrange the whole deck in one call. order: every current 0-based
     slide index exactly once, in the desired new sequence (a permutation;
     partial lists refuse). Durable slide_ids and view anchors survive
-    reordering, plain indices do not. For moving ONE slide, move_slide in
-    the design pack is simpler: enable_tools(packs=['design']). Saves
+    reordering, plain indices do not. Saves
     atomically with two-slot backup; backup=False skips rotation."""
     return _edit(
         file_path, lambda pkg: _sl.reorder_slides(pkg, order), backup=backup
@@ -779,7 +550,9 @@ def set_placeholder_text(
     body and obj placeholders; exact type wins), a raw ph type, or an idx
     int (idx/paragraphs= file-mode only). text: newline = paragraph,
     leading tabs = levels; or paragraphs=[{"text": str, "level": 0..8}].
-    Free text boxes: graphics pack. Saves
+    '\\v' is a line break inside the current paragraph, in file and live
+    modes.
+    For free text boxes, use insert_textbox. Saves
     atomically with two-slot backup; backup=False skips rotation.
     live='auto' edits the open PowerPoint copy of a locked file.
     Batches: apply_edits."""
@@ -814,14 +587,17 @@ def fit_text(
     min_size: float = 10.0,
     backup: bool = True,
 ) -> dict:
-    """Shrink overflowing text to fit: estimates the largest uniform
-    font scale (floor min_size pt) via an average-glyph-width heuristic,
-    rewrites explicit run sizes (or writes a normAutofit fontScale when
-    sizes are inherited), and enables normAutofit. shape=None fits every
+    """Shrink overflowing text to fit: estimates the largest uniform font
+    scale (floor min_size pt; a run already at or below it keeps its size)
+    and applies it through ONE mechanism, keeping each shape's autofit
+    setting, its own or the layout's: shrink text on overflow gets the
+    scale as its fontScale and keeps its run sizes; resize shape to fit
+    text is fitted to the room it can grow into on the slide, by its run
+    sizes; no autofit has its run sizes rewritten. shape=None fits every
     overflowing text shape on the slide; one that cannot fit at min_size
-    reports still_overflowing. An ESTIMATE (no font metrics): verify
-    with export_slide_images (assembly-export pack). Saves atomically
-    with two-slot backup; backup=False skips rotation."""
+    reports still_overflowing. An ESTIMATE (a heuristic unless font
+    metrics are installed): verify with export_slide_image. Saves
+    atomically with two-slot backup; backup=False skips rotation."""
     return _edit(
         file_path,
         lambda pkg: _tx.fit_text(pkg, slide, shape, min_size=min_size),
@@ -840,14 +616,17 @@ def get_slide_info(
     """One slide in depth: durable slide_id, layout, hidden flag, notes
     presence, and every shape with id, name, kind, geometry in inches,
     placeholder type, and text preview. Shape ids here are the addresses
-    every editing tool takes; edit what it lists via the graphics pack.
+    every editing tool takes; edit what it lists with ppt_graphics operations.
     slide: 0-based index or {"slide_id": N}. Budgeted: a crowded slide
     returns a "page" block with the omitted count and next offset.
-    All slides: get_presentation_view. live='auto' edits the open PowerPoint copy when
-    the file is locked by it (UNSAVED until live_save, com pack); 'force'
-    targets the open session; 'off' refuses locked files."""
-    return _route_live(
+    All slides: get_presentation_view. live='auto' reads the copy open in
+    PowerPoint (unsaved changes included) when PowerPoint has the deck
+    open; 'force' reads only the open copy; 'off' reads the saved file, and
+    so does 'auto' when the open copy cannot be reached, saying so in
+    open_deck_note."""
+    return _route_live_read(
         live,
+        file_path,
         lambda: _rd.get_slide_info(_load(file_path), slide, limit=limit, offset=offset),
         lambda: _lo.live_get_slide_info(file_path, slide),
     )
@@ -858,9 +637,7 @@ def get_presentation_info(file_path: str) -> dict:
     """Deck-level facts in one call: slide count and size, slide order with
     durable ids and titles, masters and layouts, section list, and notes
     presence. The cheap first look before get_presentation_view. To
-    enumerate one kind of element, use list_elements. Rendering,
-    validation, and PDF export live in the assembly-export pack:
-    enable_tools(packs=['assembly-export'])."""
+    enumerate one kind of element, use list_elements."""
     return _rd.get_presentation_info(_load(file_path))
 
 
@@ -883,8 +660,7 @@ def list_elements(
     back and the offset that continues, so nothing goes missing quietly.
     limit/offset page explicitly, and compact=True returns a fields header
     plus one array per item, about a third the size on large decks. Use it
-    to find layout names for insert_slide and shape ids for editing. The
-    packs (enable_tools) hold the tools that edit what this lists. For one
+    to find layout names for insert_slide and shape ids for editing. For one
     slide in depth, use get_slide_info; for edit anchors, use
     get_presentation_view."""
     return _rd.list_elements(
@@ -907,7 +683,7 @@ def set_hyperlink(
     "start"?: S, "end"?: E} for a text range. Exactly one destination: url
     (external) or to_slide (a jump by index or {"slide_id": N}, the
     structure delete_slide knows how to neuter). tooltip sets hover text.
-    Navigation buttons pair with insert_shape (graphics pack). Saves
+    Navigation buttons pair with insert_shape. Saves
     atomically with two-slot backup; backup=False skips rotation."""
     return _edit(
         file_path,
@@ -926,7 +702,7 @@ def remove_hyperlink(
     (removes the shape-level link AND every run-level link inside the
     shape) or {"shape_id": N, "paragraph": P, "start"?: S, "end"?: E} for
     the covered runs only. Orphaned link rels are dropped; media playback
-    affordances (graphics pack av inserts) are left alone. Saves
+    affordances created by insert_video or insert_audio are left alone. Saves
     atomically with two-slot backup; backup=False skips rotation."""
     return _edit(
         file_path,
@@ -937,13 +713,20 @@ def remove_hyperlink(
 
 @_tool()
 def list_hyperlinks(file_path: str, scope: Any = None) -> dict:
-    """Every hyperlink in scope (default all slides): external URLs and
-    jump-to-slide links, on shapes and on text runs, with broken-target
-    detection (missing rels, rels to deleted slides, empty URLs). The
-    addresses reported are exactly what set_hyperlink and remove_hyperlink
-    take. Media playback controls (insert_video/insert_audio, graphics
-    pack) are not hyperlinks and are not listed. Read-only; the file is
-    never modified."""
+    """Every hyperlink and click action in scope (default all slides):
+    external URLs, jump-to-slide links, show jumps, custom shows, macros and
+    OLE verbs, on shapes, text runs and fields, in table cells, SmartArt
+    nodes and each slide's notes, then on the layouts and masters those
+    slides use (each listed once, with where "layout" or "master"). Broken
+    targets are flagged (missing rels, rels to deleted slides, empty URLs,
+    custom shows the deck lacks). A link on a shape or its text has the
+    address set_hyperlink and remove_hyperlink take; the other places are
+    listed for reading. A click that only plays a sound is listed as kind
+    "sound", and an action that also plays one names it (sound). Media
+    playback controls (insert_video, insert_audio) are not hyperlinks and
+    are not listed. A shape PowerPoint keeps in a compatibility wrapper (a
+    text box, table or notes body that holds an equation) is read as
+    PowerPoint shows it. Read-only; the file is never modified."""
     return _lk.list_hyperlinks(_load(file_path), scope)
 
 
@@ -954,8 +737,9 @@ def copy_presentation(
     """Copy a deck byte-for-byte, e.g. to a working copy before heavy
     edits (create_snapshot names a DTG-stamped copy for you; this tool
     takes an explicit dest_path). Refuses an existing dest_path unless
-    overwrite=True; an overwritten destination's previous content rotates
-    into its .ks4p-backups prev slot first, so the overwrite is undoable
+    overwrite=True; an overwritten destination's previous content goes
+    into its .ks4p-backups prev slot once the copy lands, so the overwrite
+    is undoable
     via manage_backups restore. The source file is never modified."""
     import shutil
     from pathlib import Path
@@ -964,8 +748,10 @@ def copy_presentation(
 
     file_path = check_path(file_path, "copy source (read)")
     dest_path = check_path(dest_path, "copy destination")
-    if not Path(file_path).is_file():
-        raise _err.DocumentNotFound(f"no presentation at {file_path}")
+    safesave.refuse_protected_output(
+        dest_path, file_path, purpose="write the presentation copy"
+    )
+    require_deck(file_path, f"no presentation at {file_path}")
     dest = Path(dest_path)
     parent = dest.parent
     if not parent.is_dir():
@@ -983,6 +769,13 @@ def copy_presentation(
         )
         raise exc
     overwrote = False
+    copy_warnings: list[str] = []
+    if not dest.exists() and safesave.replace_in_flight(dest):
+        # A save that did not finish left the destination aside: put it back
+        # before deciding whether it exists, so it is never written over
+        # unasked or left aside behind a new file.
+        with safesave.write_lock(dest_path):
+            pass
     if dest.exists():
         if not overwrite:
             raise FileExistsError(
@@ -990,35 +783,76 @@ def copy_presentation(
                 "replace it; its current content will be kept in the "
                 ".ks4p-backups prev slot)"
             )
-        with safesave.write_lock(dest_path):
-            safesave.rotate_slots(dest_path)
-            # prev.pptx may be a hardlink to dest: never write into dest
-            # in place (it would write through the link and corrupt the
-            # backup); copy aside, then atomically replace.
-            tmp_copy = dest.with_name(dest.name + ".ks4p-copy-tmp")
-            shutil.copy2(file_path, tmp_copy)
-            safesave.replace_with_retry(tmp_copy, dest_path)
+        # Refuse before write_lock creates the backup sidecar directory.
+        if has_read_only_attribute(dest):
+            raise read_only_error(dest)
+        # prev.pptx may be a hardlink to dest: never write into dest in place
+        # (it would write through the link and corrupt the backup); copy
+        # aside, then atomically replace.
+        tmp_copy = dest.with_name(dest.name + ".ks4p-copy-tmp")
+        ticket = None
+        try:
+            with safesave.write_lock(dest_path):
+                safesave.claim_publish("the presentation copy")
+                ticket = safesave.prepare_rotation(dest_path)
+                through_swap(file_path, lambda: shutil.copy2(file_path, tmp_copy))
+                make_file_writable(tmp_copy)
+                copy_warnings = safesave.promote(tmp_copy, dest_path, ticket=ticket)
+        except BaseException as exc:
+            if ticket is not None:
+                ticket.abort()
+            if isinstance(exc, OSError):
+                refusal = safesave.os_write_refusal(dest_path, exc)
+                if refusal is not None:
+                    raise refusal from exc
+            raise
+        finally:
+            try:
+                tmp_copy.unlink(missing_ok=True)
+            except OSError:
+                pass
         overwrote = True
     else:
-        shutil.copy2(file_path, dest_path)
-    return {
+        safesave.claim_publish("the presentation copy")
+        try:
+            through_swap(file_path, lambda: shutil.copy2(file_path, dest_path))
+            make_file_writable(dest_path)
+        except BaseException as exc:
+            try:
+                dest.unlink(missing_ok=True)
+            except OSError:
+                pass
+            if isinstance(exc, OSError):
+                refusal = safesave.os_write_refusal(dest_path, exc)
+                if refusal is not None:
+                    raise refusal from exc
+            raise
+    answer = {
         "ok": True,
         "copied_to": dest_path,
         "overwrote_existing": overwrote,
     }
+    if copy_warnings:
+        answer["warnings"] = list(copy_warnings)
+    return answer
 
 
 @_tool()
 def create_snapshot(
     file_path: str, label: str | None = None, dest_dir: str | None = None
 ) -> dict:
-    """Save a DTG-stamped permanent copy: YYYYMMDD_HHMM_<name>.pptx (an
-    existing leading DTG in the name is replaced, not stacked), plus an
-    optional short label. Snapshots are the PERMANENT keepers alongside the
-    automatic prev/anchor slots: slots rotate on every mutation, snapshots
-    are never auto-pruned and manage_backups never touches them. Never
-    overwrites (collisions get a numeric suffix). The source file is not
-    modified. Take one before any large or risky editing pass."""
+    """Save a permanent copy of the deck as it is now, with an optional
+    short label. By default it goes into the deck's hidden backup folder
+    (.ks4p-backups beside the deck, where prev and anchor live), never into
+    the deck's own folder: manage_backups lists it and restores from it,
+    and nothing rotates or purges it. With dest_dir it is a visible copy
+    there, named after the deck: "<deck name> (snapshot <label> YYYY-MM-DD
+    HHMM).pptx", so it never carries a newer leading date stamp than the
+    deck. The time in the name and the file's modification time are the
+    time it was written. Never overwrites (collisions get a numeric
+    suffix). The answer gives the full path and says whether it is hidden.
+    The source file is not modified. Take one before any large or risky
+    editing pass."""
     return _bk.create_snapshot(file_path, label=label, dest_dir=dest_dir)
 
 
@@ -1032,13 +866,19 @@ def manage_backups(
     dry_run: bool = True,
 ) -> dict:
     """The automatic backups under .ks4p-backups/ next to each mutated
-    deck: prev (state before the last mutation) and anchor (session start).
-    action='list': slots for one file_path or a whole directory, plus
-    orphaned folders. action='restore': overwrite file_path from source
-    ('prev', 'anchor', or a .pptx path); current content rotates into prev
-    FIRST so the restore is undoable, and the payload is validated before
-    the atomic replace. action='purge': scope 'orphans' or 'slots';
-    dry_run=True (default) reports only, dry_run=False deletes."""
+    deck: prev (state before the last mutation), anchor (session start), and
+    managed permanent snapshots such as the private pre-anonymize copy.
+    action='list': slots and managed snapshots for one file_path or a whole
+    directory, plus orphaned folders; every listed backup carries the source
+    that restores it. action='restore': overwrite file_path from source
+    ('prev', 'anchor', or the listed snapshot's .pptx path; slot is read as
+    another name for source);
+    the current content becomes prev once the restore lands, so the
+    restore is undoable, and
+    the payload is validated before the atomic replace. action='purge':
+    scope 'orphans' or 'slots'; dry_run=True (default) reports only,
+    dry_run=False deletes. Purging slots does not delete snapshots, and a
+    purge of orphans keeps every folder that holds one (listed as kept)."""
     return _bk.manage_backups(
         action,
         file_path=file_path,
@@ -1052,11 +892,12 @@ def manage_backups(
 def _update_check_status() -> dict:
     """The update report, without its cache path.
 
-    THIS is the server's one and only on-demand check: it may ask PyPI, at
-    most once every seven days, with a two-second cap. No other tool path can
-    reach the network, nothing runs at startup, and a check that fails or is
-    switched off reports that fact rather than going quiet. state is one of:
-    disabled, update_available, current, unknown. Never raises.
+    The on-demand check: it may ask PyPI, at most once every seven days,
+    with a two-second timeout (the weekly background check, started after a
+    tool call, shares the same cache). Nothing runs at startup, and a check
+    that fails or is switched off reports that fact rather than going quiet.
+    state is one of: disabled, update_available, current, unknown. Never
+    raises.
     """
     try:
         return _upd.status()
@@ -1064,22 +905,67 @@ def _update_check_status() -> dict:
         return {"state": "unknown", "note": _upd.NOTE_UNKNOWN}
 
 
+def _installed_build() -> dict:
+    """Which bundle this server came out of, read from the environment
+    stamp the installer wrote. Three nulls on a Community install, which is
+    how a support bundle tells the two editions apart at a glance."""
+    try:
+        return _upd.installed_build()
+    except Exception:
+        return {"bundle_version": None, "release_id": None, "channel": None}
+
+
 @_tool()
-def get_server_info() -> dict:
+def get_server_info(include_licensee: bool = False) -> dict:
     """Report the KitchenSink4PPT server build: product and PyPI package
-    name, the version a client is connected to, the landing page, the
-    sibling servers in the KitchenSink4AI suite, the registered and lite
-    tool totals, the released test count, the active pack surface and its
-    token bill, and the host platform and Python. A read-only orient call
-    that needs no deck and touches no file, and the only tool that answers
-    WHAT you are connected to. diagnose covers the environment."""
-    names = _packs.tool_names()
+    name, the connected version, the landing page, the sibling servers in
+    the KitchenSink4AI suite, fixed tool and operation totals, the released
+    test count, host platform and Python. Needs no deck. Community checks
+    PyPI at most once a week and keeps its cache; Business reads only its
+    configured license receipt.
+    include_licensee=True discloses the signed company name; omitted by default.
+    diagnose covers the environment."""
+    operations = _registry.public_ops()
+    default_plan = _surface_plan.build(Settings(), operations)
+    groups = {
+        name: sum(1 for spec in operations.values() if spec.group == name)
+        for name in _registry.GROUPS
+    }
+    _pol = _license_policy.active()
     out = {
-        "product": "KitchenSink4PPT",
-        "name": "kitchensink4ppt",
-        "package": "kitchensink4ppt",
-        "version": __version__,
-        "homepage": "https://kitchensink4.ai/KitchenSink4PPT/",
+        "product": "KitchenSink4PPT" + (" Business" if _pol.edition_id == "business" else ""),
+        "name": _pol.product_id,
+        "package": _pol.product_id,
+        "edition": _pol.edition_id,
+        # include_licensee is the client-visible parameter and does not
+        # change; redaction is the policy-side default it maps onto.
+        "licensing": _pol.describe_license(redacted=not include_licensee),
+        # The edition distribution's version, which is what a customer
+        # installed and what the old single wheel reported. The shared
+        # editing core's own version is reported alongside it.
+        "version": _pol.distribution_version,
+        # What stage of the product this is, and when this build was cut.
+        # Business reads both out of its generated build metadata; Community
+        # has neither and reports null for both. getattr, because a policy
+        # adapter older than these two fields is still a supportable
+        # installation and not a reason to fail a status call.
+        "channel": getattr(_pol, "channel", None),
+        "release_date": getattr(_pol, "release_date", None),
+        # WHAT THIS BUILD TRUSTS, and how far it can follow a receipt back to
+        # it. chain_version is the certificate schema this build understands,
+        # and it is null when the build pins no roots and therefore cannot
+        # follow a chain at all. trust_list_version says which retirement list
+        # it shipped with, so support can tell at a glance whether an
+        # installation has heard that a key was pulled. root_key_ids names the
+        # anchors, which is the licensing fact an operator reads aloud when
+        # comparing a key out of band. None of the three is a secret: a root's
+        # public half is public by construction, and Community reports the
+        # same nulls it reports for channel.
+        "chain_version": getattr(_pol, "chain_version", None),
+        "trust_list_version": getattr(_pol, "trust_list_version", None),
+        "root_key_ids": getattr(_pol, "root_key_ids", []),
+        "core_version": __version__,
+        "homepage": "https://community.kitchensink4.ai/ppt/",
         "family": [
             "kitchensink4word",
             "kitchensink4xl",
@@ -1088,20 +974,39 @@ def get_server_info() -> dict:
         # Read off the live registry, the same source measure_surface.py
         # and check_site.py cut the published figures from. A hand-typed
         # number here is the defect this whole file guards against.
-        "tools_registered": sum(len(v) for v in names.values()),
-        "tools_lite": len(names["lite"]),
+        "tools_registered": len(groups) + 1,
+        "operations_registered": len(operations),
         "tests": _shipped.TESTS,
-        "surface": _packs.surface_report(),
-        "packs_available": _packs.pack_names(),
-        "platform": _platform.platform(),
+        "surface": {
+            "fixed": True,
+            "tools": groups,
+            "operations": len(operations),
+            "approx_active_tokens": _surface_dispatch.approx_active_tokens(default_plan),
+        },
+        # Avoid platform.platform() here: CPython 3.12 uses WMI on Windows,
+        # which can emit a process-level 0x8007000e diagnostic from a worker
+        # thread under memory pressure. These two stable facts are enough for
+        # support triage and require no subprocess or WMI query.
+        "platform": (
+            f"{_sys.platform}-"
+            f"{_os.environ.get('PROCESSOR_ARCHITECTURE', 'unknown').lower()}"
+        ),
         "python": _sys.version.split()[0],
     }
-    # The server's one and only update surface, and its one and only path to
-    # the network: an on-demand check, at most once every seven days, two-second
-    # cap, off under KS4P_UPDATE_CHECK=off. Nothing runs at startup, no other
-    # tool can fire it, a failed check reports the failure, and this never
-    # raises.
+    # The on-demand update report: at most one PyPI request every seven days,
+    # two-second timeout, off under KS4P_UPDATE_CHECK=off. Nothing runs at
+    # startup, a failed check reports the failure, and this never raises. The
+    # weekly background check shares the same cache.
     out["update_check"] = _update_check_status()
+    # WHICH BUNDLE THIS IS. Three product versions can repeat across two
+    # bundles, so the product version alone does not name the build a
+    # support case is looking at. These three do, and they are null on a
+    # Community install, which is itself the answer to "which edition is
+    # this".
+    build = _installed_build()
+    out["bundle_version"] = build["bundle_version"]
+    out["release_id"] = build["release_id"]
+    out["channel"] = out.get("channel") or build["channel"]
     notice = _upd.update_notice()
     if notice:
         out["update"] = notice
@@ -1112,23 +1017,29 @@ def get_server_info() -> dict:
 def diagnose(file_path: str | None = None, verbose: bool = False) -> dict:
     """Self-check for this environment and, optionally, one file. Reports
     export engine availability (PowerPoint COM vs LibreOffice), sandbox
-    state, KS4P mode/policy env, and the current pack surface with token
-    costs. With file_path: existence, size, PowerPoint lock state, whether
+    state, and the fixed operation surface. With file_path: existence, size,
+    PowerPoint lock state, whether
     the package opens, and slide count, WITHOUT mutating anything. Output
     is PASTE-SAFE by default: no absolute paths, so it can go straight into
     a bug report; verbose=True adds the sandbox roots, engine locations,
     and full file path for local troubleshooting. Run it first when any
     tool refuses unexpectedly or an export engine seems missing. Reports
-    the update-check state; the only place the check runs. The validate
-    tool (assembly-export pack) does the real opens-clean check in
-    PowerPoint."""
+    the update-check state. The validate
+    validate does the real opens-clean check in PowerPoint."""
     out = _dg.diagnose(file_path, verbose=verbose)
-    out["surface"] = _packs.surface_report()
-    # The server's one and only update surface, and its one and only path to
-    # the network: an on-demand check, at most once every seven days, two-second
-    # cap, off under KS4P_UPDATE_CHECK=off. Nothing runs at startup, no other
-    # tool can fire it, a failed check reports the failure, and this never
-    # raises.
+    operations = _registry.public_ops()
+    out["surface"] = {
+        "fixed": True,
+        "tools": {
+            name: sum(1 for spec in operations.values() if spec.group == name)
+            for name in _registry.GROUPS
+        },
+        "operations": len(operations),
+    }
+    # The on-demand update report: at most one PyPI request every seven days,
+    # two-second timeout, off under KS4P_UPDATE_CHECK=off. Nothing runs at
+    # startup, a failed check reports the failure, and this never raises. The
+    # weekly background check shares the same cache.
     out["update_check"] = _update_check_status()
     notice = _upd.update_notice()
     if notice:
@@ -1138,92 +1049,16 @@ def diagnose(file_path: str | None = None, verbose: bool = False) -> dict:
 
 @_tool()
 def get_workflows(task: str | None = None) -> dict:
-    """Step-by-step recipes for the common jobs, each naming the packs it
-    needs and the exact tool order: build-a-diagram, one-call-diagram,
-    equation-authoring (graphics), build-a-table-report (tables-charts),
-    template-deck-setup, master-restyle, accessibility-pass (design),
-    render-and-review, cross-deck-assembly, deck-merge, animate-a-build
-    (assembly-export), batch-edit-from-view (lite, the cheap loop),
-    review-cycle (review-sweeps), rebrand-pipeline (review-sweeps +
-    design), live-session (com). Call with no task for the
+    """Step-by-step recipes for the common jobs and the exact operation
+    order: build-a-diagram, one-call-diagram, equation-authoring,
+    build-a-table-report, template-deck-setup, master-restyle,
+    accessibility-pass, render-and-review, cross-deck-assembly, deck-merge,
+    animate-a-build, batch-edit-from-view, review-cycle, rebrand-pipeline,
+    live-session. Call with no task for the
     index, with a task name for full steps. Read the matching recipe
     before your first deck edit of a session; it prevents most wrong-tool
     detours."""
     return _wf.get_workflows(task)
-
-
-_PENDING_VISIBILITY: list[tuple[set[str], bool]] = []
-
-
-def _record_visibility(names: set[str], enabled: bool) -> None:
-    """packs.py visibility hook: bookkeeping flips queue here; the async
-    enable_tools/disable_tools bodies apply them session-scoped, and main()
-    folds startup flips into the global transform instead."""
-    _PENDING_VISIBILITY.append((set(names), enabled))
-
-
-_packs.set_visibility_hook(_record_visibility)
-
-
-async def _apply_session_visibility(ctx) -> None:
-    """Session-scoped toggles: fastmcp 3.x session visibility rules
-    override the startup global transform (mark-based semantics, later
-    marks win) and send ToolListChangedNotification to this session only.
-    ctx=None (in-process callers, unit tests) drains the queue without
-    applying; packs bookkeeping stays authoritative for surface_report and
-    the disabled-tool signpost either way."""
-    pending = list(_PENDING_VISIBILITY)
-    _PENDING_VISIBILITY.clear()
-    if ctx is None:
-        return
-    for names, enabled in pending:
-        if enabled:
-            await ctx.enable_components(names=names)
-        else:
-            await ctx.disable_components(names=names)
-
-
-@_tool()
-async def enable_tools(packs: list[str], ctx: _Context | None = None) -> dict:
-    """Switch on optional tool packs mid-session; the tool list grows and
-    your client is notified to re-fetch it. Packs: 'graphics' (shapes,
-    connectors, groups, align, z-order, SVG to native editable shapes,
-    diagram generators, images, video/audio, text boxes, run formatting,
-    bullets, format painter, LaTeX equations); 'tables-charts' (tables:
-    create, bulk cells, merge, row/column surgery, borders, styles,
-    CSV/JSON; bar/line/pie/scatter/combo charts, formatting, data
-    readback); 'design' (create FROM template, apply layouts, theme
-    colors/fonts read AND write, brand extract/apply, layout guardrails,
-    slide size, hide/move, autofit report, slide/master backgrounds,
-    master and layout editing, accessibility audit/repair);
-    'assembly-export' (notes, sections, footers, PDF/PNG/handout export,
-    validation, text extraction, cross-deck copy, deck merge/split,
-    agenda slides, statistics, document properties, anonymize, custom
-    shows, slide transitions and entrance animations); 'review-sweeps'
-    (threaded comments, compare_decks, deck-wide font/color/language/logo
-    sweeps, compress); 'com' (PowerPoint status, zombie check, and
-    editing the deck OPEN in PowerPoint); 'everything' (all). The v1.0
-    names transitions-animations, review, sweeps, and com-live still
-    resolve to their new homes. Idempotent; reports approx token cost
-    added and the active surface. disable_tools reverses."""
-    result = _packs.enable(packs)
-    await _apply_session_visibility(ctx)
-    return result
-
-
-@_tool()
-async def disable_tools(
-    packs: list[str], ctx: _Context | None = None
-) -> dict:
-    """Switch pack tools back off to shrink the tool surface (the lite core
-    always stays on). Takes the same pack names as enable_tools, or
-    'everything'. Idempotent: already-disabled packs are reported, not
-    errors. Nothing about the presentation files changes; this only trims
-    what this session's client has to carry. Reports the approx token cost
-    removed and the remaining active surface."""
-    result = _packs.disable(packs)
-    await _apply_session_visibility(ctx)
-    return result
 
 
 # ================================================================= GRAPHICS
@@ -1249,6 +1084,7 @@ def insert_shape(
     rotation: float = 0.0,
     flip_h: bool = False,
     flip_v: bool = False,
+    group: Any = None,
     backup: bool = True,
     live: str = "auto",
 ) -> dict:
@@ -1256,6 +1092,8 @@ def insert_shape(
     chevron, ...) or "freeform" with path. Position/size in inches; fill,
     line, effect, and text label style it (advanced params are file-mode
     only). Gradient stop pos: 0..100 percent (all-0..1 = fractions).
+    group: an existing group's id or name to put the shape inside, at the
+    same slide position (file mode).
     Returns the new shape id for set_shape, connectors, grouping.
     Saves atomically with two-slot backup; backup=False skips rotation.
     live='auto' edits the open PowerPoint copy of a locked file
@@ -1265,7 +1103,7 @@ def insert_shape(
         _live_refuse(
             adjustments=adjustments, path=path, line=line, effect=effect,
             text_style=text_style, rotation=rotation or None,
-            flip_h=flip_h, flip_v=flip_v,
+            flip_h=flip_h, flip_v=flip_v, group=group,
         )
         return _live_envelope(
             file_path,
@@ -1283,7 +1121,7 @@ def insert_shape(
                 pkg, slide, shape_type, x, y, w, h,
                 adjustments=adjustments, path=path, fill=fill, line=line,
                 effect=effect, text=text, text_style=text_style, name=name,
-                rotation=rotation, flip_h=flip_h, flip_v=flip_v,
+                rotation=rotation, flip_h=flip_h, flip_v=flip_v, group=group,
             ),
             backup=backup,
         ),
@@ -1328,7 +1166,7 @@ def insert_connector(
 def set_shape(
     file_path: str,
     slide: Any,
-    shape: int,
+    shape: int | str,
     x: float | None = None,
     y: float | None = None,
     dx: float | None = None,
@@ -1344,15 +1182,25 @@ def set_shape(
     text: str | None = None,
     text_style: dict | None = None,
     name: str | None = None,
+    scale_text: bool = False,
+    scale_lines: bool = False,
+    no_wrap: bool = False,
     backup: bool = True,
     live: str = "auto",
 ) -> dict:
-    """Edit one shape in place by id: position (x/y; dx/dy nudges are
+    """Edit one shape in place by id or name, inside groups too
+    ("Group/Shape" when a name repeats): position (x/y; dx/dy nudges are
     file-mode only), size, rotation, flips, fill, line, effect, text, or
-    name; only given parameters change. text replaces the body
+    name; only given parameters change. Moving or growing a group member
+    refits the group's frame, as PowerPoint does. With w or h,
+    scale_text and scale_lines shrink or grow the text sizes and line
+    widths inside by the same ratio; no_wrap stops the text boxes inside
+    wrapping (file mode). text replaces the body
     single-style; text_style keys: size, color, bold, italic, underline,
     align, anchor, font, wrap (unknown keys refuse). Glued connectors
-    re-route. Ids come from get_slide_info. Saves atomically with
+    re-route. In file mode, text uses '\\n' between paragraphs and '\\v'
+    for a line break inside one.
+    Ids come from get_slide_info. Saves atomically with
     two-slot backup; backup=False skips rotation. live='auto' edits the
     open PowerPoint copy of a locked file. Batches: apply_edits."""
 
@@ -1360,6 +1208,7 @@ def set_shape(
         _live_refuse(
             dx=dx, dy=dy, flip_h=flip_h, flip_v=flip_v, line=line,
             effect=effect, text=text, text_style=text_style,
+            scale_text=scale_text, scale_lines=scale_lines, no_wrap=no_wrap,
         )
         return _live_envelope(
             file_path,
@@ -1377,11 +1226,47 @@ def set_shape(
                 pkg, slide, shape, x=x, y=y, dx=dx, dy=dy, w=w, h=h,
                 rotation=rotation, flip_h=flip_h, flip_v=flip_v, fill=fill,
                 line=line, effect=effect, text=text, text_style=text_style,
-                name=name,
+                name=name, scale_text=scale_text, scale_lines=scale_lines,
+                no_wrap=no_wrap,
             ),
             backup=backup,
         ),
         _live,
+    )
+
+
+@_tool("graphics")
+def set_shape_adjustments(
+    file_path: str,
+    slide: Any,
+    shape: int | str,
+    adjustments: Any = None,
+    degrees: dict | None = None,
+    backup: bool = True,
+) -> dict:
+    """Read or set a preset shape's adjust handles, the yellow handles
+    PowerPoint shows: an arc's start and end angles, a rounded corner, an
+    arrow's head and shaft, an elbow connector's bend. shape: id or name
+    ("Group/Shape" inside a group). With neither adjustments nor degrees it
+    only reads, listing every handle with its value and default. Names are
+    checked against the preset's own handles, and a value is a whole number
+    from -2147483648 to 2147483647 (or a fraction, or degrees). Every set
+    writes the preset's whole list in its own order, since PowerPoint
+    refuses a deck whose list names only some handles; the others keep their
+    values. Saves atomically with two-slot backup; backup=False skips
+    rotation."""
+    if not adjustments and not degrees:
+        return {
+            "ok": True,
+            "file": file_path,
+            **_sh.shape_adjustments(_load(file_path), slide, shape),
+        }
+    return _edit(
+        file_path,
+        lambda pkg: _sh.shape_adjustments(
+            pkg, slide, shape, adjustments=adjustments, degrees=degrees,
+        ),
+        backup=backup,
     )
 
 
@@ -1497,12 +1382,14 @@ def set_z_order(
 @_tool("graphics")
 def svg_to_shapes(
     file_path: str,
-    slide: Any,
     svg: str,
     x: float,
     y: float,
     w: float | None = None,
     h: float | None = None,
+    slide: Any = None,
+    master: Any = None,
+    layout: Any = None,
     group: bool = True,
     name: str | None = None,
     backup: bool = True,
@@ -1513,12 +1400,15 @@ def svg_to_shapes(
     strokes, text, and nested groups carry over. Placed in an inch box at
     x, y sized w by h (aspect kept when one is omitted). Unsupported
     features are skipped WITH warnings, never silently. Returns every
-    created shape id for set_shape tweaks. Saves atomically with two-slot
+    created shape id for set_shape tweaks. Target exactly one slide,
+    master, or layout; master/layout artwork is inherited by its slides.
+    Saves atomically with two-slot
     backup; backup=False skips rotation."""
     return _edit(
         file_path,
         lambda pkg: _svg.svg_to_shapes(
-            pkg, slide, svg, x, y, w, h, group=group, name=name
+            pkg, slide, svg, x, y, w, h, master=master, layout=layout,
+            group=group, name=name
         ),
         backup=backup,
     )
@@ -1547,8 +1437,10 @@ def insert_textbox(
 ) -> dict:
     """Add a free-floating text box at an inch position: labels and
     callouts. Paragraphs split on newline; one style for the box
-    (underline and wrap are file-mode only); refine ranges with
-    format_text. name sets the shape name, as in insert_shape. Prefer
+    (underline and wrap are file-mode only); refine ranges with format_text.
+    '\\v' is a line break inside the current paragraph, in file and live
+    modes.
+    name sets the shape name, as in insert_shape. Prefer
     set_placeholder_text for layout placeholders. Returns the new shape
     id. Saves atomically with two-slot backup; backup=False skips
     rotation. live='auto' edits the open PowerPoint copy of a locked
@@ -1596,6 +1488,8 @@ def format_text(
     color: str | None = None,
     align: str | None = None,
     line_spacing: float | None = None,
+    space_before: float | None = None,
+    space_after: float | None = None,
     anchor: str | None = None,
     wrap: bool | None = None,
     backup: bool = True,
@@ -1604,15 +1498,17 @@ def format_text(
     """Format existing text in one shape: whole shape, one paragraph, or a
     character range (start/end from find_text, file-mode only).
     Handles fragmented runs without bleed. anchor (top|middle|bottom) and
-    wrap set the whole text frame in place. Table cells go through
-    set_table_cells. shape: id or unique name. Saves atomically with
-    two-slot backup; backup=False skips rotation. live='auto' edits the
+    wrap set the whole text frame in place. space_before/space_after are
+    paragraph spacing in points (file-mode only), beside line_spacing. Table cells go through
+    set_table_cells. shape: id, unique name, "Group/Shape" or view anchor
+    (a:3f9c2a). Saves atomically with two-slot backup; backup=False skips rotation. live='auto' edits the
     open PowerPoint copy of a locked file; 'force' targets the open
     session; 'off' refuses locked files. Batches: apply_edits."""
 
     def _live() -> dict:
         _live_refuse(
             start=start, end=end, line_spacing=line_spacing,
+            space_before=space_before, space_after=space_after,
             anchor=anchor, wrap=wrap,
             underline_style=underline if isinstance(underline, str) else None,
         )
@@ -1633,7 +1529,8 @@ def format_text(
                 pkg, slide, shape, paragraph=paragraph, start=start, end=end,
                 font=font, size_pt=size_pt, bold=bold, italic=italic,
                 underline=underline, color=color, align=align,
-                line_spacing=line_spacing, anchor=anchor, wrap=wrap,
+                line_spacing=line_spacing, space_before=space_before,
+                space_after=space_after, anchor=anchor, wrap=wrap,
             ),
             backup=backup,
         ),
@@ -1659,11 +1556,14 @@ def set_bullets(
 ) -> dict:
     """Control bullets on a text shape: style 'char' (custom character
     bullet), 'number' (auto-numbered, num_type e.g. arabicPeriod,
-    romanLcParen, start_at), or 'none' (strip bullets). Applies to all
-    paragraphs or the listed paragraph indices; level sets indent depth,
-    size_pct and color style the bullet glyph itself. shape: id or unique
-    name. Saves atomically with two-slot backup; backup=False skips
-    rotation."""
+    romanLcParen, start_at), or 'none' (strip bullets and their indent).
+    Applies to all paragraphs or the listed paragraph indices; level (0..8)
+    sets the indent depth by writing the hanging indent (marL 0.25 in + 0.5
+    in per level, indent -0.25 in); omitted, a text box gets the level-0
+    hang and a placeholder keeps its layout's. size_pct and color style the
+    bullet glyph itself. shape: id, unique name, "Group/Shape" or view
+    anchor (a:3f9c2a). Saves atomically with two-slot backup; backup=False
+    skips rotation."""
     return _edit(
         file_path,
         lambda pkg: _tx.set_bullets(
@@ -1678,27 +1578,32 @@ def set_bullets(
 @_tool("graphics")
 def insert_image(
     file_path: str,
-    slide: Any,
     image: str,
     x: float,
     y: float,
     w: float | None = None,
     h: float | None = None,
+    slide: Any = None,
+    master: Any = None,
+    layout: Any = None,
     name: str | None = None,
     alt_text: str | None = None,
     backup: bool = True,
 ) -> dict:
-    """Place a picture on a slide. image: a file path or base64 data (png,
+    """Place a picture on exactly one slide, master, or layout. image: a
+    file path or base64 data (png,
     jpeg, gif, bmp, tiff; format sniffed from the bytes). Position x, y in
     inches; give w and h, or just one to keep the aspect ratio, or neither
     for native size at 96 DPI (bmp/tiff need explicit w and h). Identical
     bytes reuse the existing media part, so a repeated logo costs nothing.
-    Returns the new shape id for set_image, grouping, and z-order. Saves
+    Master/layout images become inherited artwork and report affected slides.
+    Returns the new shape id. Saves
     atomically with two-slot backup; backup=False skips rotation."""
     return _edit(
         file_path,
         lambda pkg: _md.insert_image(
-            pkg, slide, image, x, y, w, h, name=name, alt_text=alt_text
+            pkg, slide, image, x, y, w, h, master=master, layout=layout,
+            name=name, alt_text=alt_text
         ),
         backup=backup,
     )
@@ -1991,6 +1896,44 @@ def copy_position(
 
 
 @_tool("graphics")
+def copy_shape_between(
+    file_path: str,
+    source_path: str,
+    source_slide: Any,
+    shape: int | str,
+    slide: Any,
+    x: float | None = None,
+    y: float | None = None,
+    w: float | None = None,
+    h: float | None = None,
+    scale_text: bool = False,
+    scale_lines: bool = False,
+    no_wrap: bool = False,
+    leave_out: list[int | str] | None = None,
+    name: str | None = None,
+    backup: bool = True,
+) -> dict:
+    """Copy one shape or group from a slide of source_path (another deck, or
+    this one) onto slide of file_path, on top. shape: id or name on
+    source_slide ("Group/Shape" inside a group). x, y default to where it is
+    drawn on the source slide; w or h alone keeps the aspect; scale_text,
+    scale_lines and no_wrap work as on set_shape. leave_out drops members of
+    a copied group, which is refitted to what is left. Pictures, charts and
+    links travel; theme colours, theme fonts and inherited text sizes are
+    written from the source deck's theme. The source is never modified.
+    Saves atomically with two-slot backup; backup=False skips rotation."""
+    return _edit(
+        file_path,
+        lambda pkg: _shc.copy_shape_between(
+            pkg, source_path, source_slide, shape, slide, x=x, y=y, w=w, h=h,
+            scale_text=scale_text, scale_lines=scale_lines, no_wrap=no_wrap,
+            leave_out=leave_out, name=name,
+        ),
+        backup=backup,
+    )
+
+
+@_tool("graphics")
 def insert_equation(
     file_path: str,
     slide: Any,
@@ -2006,8 +1949,8 @@ def insert_equation(
     inches (w/h default 3.0 x 0.8). Conversion failures refuse with the
     converter's message and the file untouched; garbage LaTeX (unknown
     macros, unbalanced braces) refuses rather than inserting literal
-    text, and latex is capped at 20000 chars. Math never appears in
-    get_text/find_text; list_equations is the read path. Saves atomically
+    text, and latex is capped at 20000 chars. Text reads show the
+    equation's characters; list_equations lists every equation. Saves atomically
     with two-slot backup; backup=False skips rotation."""
     return _edit(
         file_path,
@@ -2026,8 +1969,8 @@ def add_equation_to_shape(
     backup: bool = True,
 ) -> dict:
     """Append a LaTeX equation as a new math paragraph inside an existing
-    shape's text body; existing paragraphs stay untouched. shape: id (int)
-    or name (str). position: 0-based paragraph index to insert BEFORE
+    shape's text body; existing paragraphs stay untouched. shape: id,
+    unique name, "Group/Shape" or view anchor (a:3f9c2a). position: 0-based paragraph index to insert BEFORE
     (None appends). Shapes without an editable text body (tables,
     pictures, charts, groups) refuse honestly; conversion failures refuse
     before the shape is touched. Saves atomically with two-slot backup;
@@ -2044,10 +1987,12 @@ def add_equation_to_shape(
 @_tool("graphics")
 def list_equations(file_path: str, scope: Any = None) -> dict:
     """Every native math equation on the selected slides (scope: None for
-    all, a slide selector, or a list). THIS is the read path for math:
-    equations never appear in get_text or find_text output (math runs live
-    outside the text index by design). Each entry carries slide index/id,
-    shape id, the equation's paragraph position, and a linearized text
+    all, a slide selector, or a list) and in their speaker notes. get_text
+    and find_text show an equation too, as its characters, and
+    search_and_replace leaves equations as they are. Each entry carries
+    slide index/id, where it is ("slide" for a shape's text, "table" with
+    row and col, "notes"), the shape id (the table's, or the notes
+    placeholder's), the equation's paragraph position, and a linearized text
     approximation. Read-only; nothing is modified."""
     return _eqn.list_equations(_load(file_path), scope)
 
@@ -2101,10 +2046,14 @@ def set_table_cells(
     "text"?, bold?, italic?, size?, color?, font?, align?, fill?,
     anchor?}] with 0-based addresses into the full grid. Format keys
     without text restyle the existing text; fill/anchor style the cell box
-    itself. Writing into a merge continuation refuses and names the origin
-    cell. table: None for the slide's only table, an index, or
-    {"shape_id": N}. Saves atomically with two-slot backup; backup=False
-    skips rotation. Batches: apply_edits."""
+    itself.
+    Cell text uses '\\n' between paragraphs and '\\v' for a line break
+    inside one.
+    Writing into a merge continuation refuses and names the origin
+    cell. table: None for the slide's only table, {"index": N}, or
+    {"shape_id": N}. A bare integer is accepted only when its index and
+    shape-id readings are not different tables. Saves atomically with
+    two-slot backup; backup=False skips rotation. Batches: apply_edits."""
     return _edit(
         file_path,
         lambda pkg: _tb.set_table_cells(pkg, slide, table, cells),
@@ -2204,8 +2153,7 @@ def insert_table_cols(
     'shift' (new columns copy the neighbor width and the table widens,
     PowerPoint's behavior) or 'fit' (existing columns compress so total
     width holds; alias 'rescale'). Inserting inside a merged span refuses; spans covering
-    the seam grow. A structural op no other file-based PowerPoint server
-    has. Saves atomically with two-slot backup; backup=False skips
+    the seam grow. Saves atomically with two-slot backup; backup=False skips
     rotation."""
     return _edit(
         file_path,
@@ -2254,7 +2202,8 @@ def format_table_cells(
     anchor: str | None = None,
     backup: bool = True,
 ) -> dict:
-    """Style cell BOXES over a rectangular range (range: {r1, c1, r2, c2},
+    """Style cell BOXES in table {"index": N} or {"shape_id": N} over a
+    rectangular range (range: {r1, c1, r2, c2},
     default whole table): borders per edge ({top/bottom/left/right/all:
     {color, weight_pt, dash} or false to clear}), fill color or spec,
     inner margins in inches, and vertical anchor (top/middle/bottom).
@@ -2341,8 +2290,9 @@ def get_table(file_path: str, slide: Any, table: Any = None) -> dict:
     with origins and spans, column widths and row heights in inches, style
     id and option flags, and the table's shape id. The 0-based addresses
     it reports are exactly what set_table_cells, merge_cells, and the
-    row/column tools consume. table: None for the slide's only table, an
-    index, or {"shape_id": N}."""
+    row/column tools consume. table: None for the slide's only table,
+    {"index": N}, or {"shape_id": N}; a bare integer is accepted only when
+    its index and shape-id readings are not different tables."""
     return _tb.get_table(_load(file_path), slide, table)
 
 
@@ -2353,15 +2303,17 @@ def export_table(
     table: Any = None,
     path: str | None = None,
     format: str | None = None,
+    overwrite: bool = False,
 ) -> dict:
     """Write a table's content out as CSV or JSON. path: destination file
     (format inferred from its extension, or forced with format='csv' or
     'json'); with no path the data returns inline in the result. Merged
     regions export their text at the origin with empty continuations, and
     the JSON form carries the merge map so import_table can round-trip.
-    The presentation itself is not modified."""
+    An existing file is replaced only with overwrite=true. The
+    presentation itself is not modified."""
     return _tb.export_table(
-        _load(file_path), slide, table, path, format=format
+        _load(file_path), slide, table, path, format=format, overwrite=overwrite
     )
 
 
@@ -2440,9 +2392,9 @@ def update_chart_data(
     series (same shapes as create_chart, combo included; scatter omits
     categories, series carry "x"/"y" lists) rewrite the plotted caches
     AND the embedded workbook together, keeping type, title, position,
-    and styling. Series count must match the chart (changing it is
-    delete + re-create). chart: None for the slide's only chart, an
-    index, or {"shape_id": N}. Chartex charts refuse by name. Saves
+    and unspecified styling. Series count must match the chart (changing it is
+    delete + re-create). chart: None for the slide's only chart,
+    {"index": N}, or {"shape_id": N}. Chartex charts refuse by name. Saves
     atomically with two-slot backup; backup=False skips rotation."""
     return _edit(
         file_path,
@@ -2472,8 +2424,8 @@ def format_chart(
     """Format an existing chart in place; only given parameters change.
     title and axis titles take text ('' removes); legend_pos: b/l/r/t/tr;
     number_format: an Excel code for value axis labels; gridlines and
-    data_labels toggle. chart: None for the slide's only chart, an
-    index, or {"shape_id": N}. Chartex and axis requests on pies refuse.
+    data_labels toggle. chart: None for the slide's only chart,
+    {"index": N}, or {"shape_id": N}. Chartex and axis requests on pies refuse.
     Scatter caveat: both its axes are value axes, so cat_axis_title
     refuses and val_axis_title addresses the bottom X axis. Saves
     atomically with two-slot backup; backup=False skips rotation."""
@@ -2496,8 +2448,8 @@ def get_chart_data(file_path: str, slide: Any, chart: Any = None) -> dict:
     """Read back what a chart currently holds: title, plot groups with
     type and grouping, per-series name/categories/values (x/y for
     scatter, sizes for bubble), value formulas, and axis titles and
-    positions. chart: a chart shape id, or None when the slide has
-    exactly one. Values come from the chart XML's caches (what
+    positions. chart: {"index": N}, {"shape_id": N}, or None when the
+    slide has exactly one. Values come from the chart XML's caches (what
     PowerPoint renders); the embedded workbook is never opened, and a
     cache-less series says so instead of guessing. Works on charts from
     any producer; chartex kinds report as unsupported by name.
@@ -2515,12 +2467,15 @@ def create_presentation(
     keep_slides: bool = False,
     slide_size: str | None = None,
 ) -> dict:
-    """Create a NEW .pptx. With template: a byte-copy of that deck so its
+    """Create a NEW .pptx presentation or .potx template. With template: a
+    byte-copy of that deck so its
     theme colors, fonts, layouts, masters, and slide size all carry over,
     which is how brand-correct decks start; keep_slides=False (default)
     then strips the template's slides, keeping only the design machinery.
     Without template: a blank 16:9 deck, or slide_size (4:3, 16:10, a4,
-    letter) with the layouts fitted to it. The result states the canvas.
+    letter) with the layouts fitted to it. The path suffix selects the
+    matching real Office content type; this is not an extension rename.
+    The result states the canvas.
     Refuses to overwrite an existing path. Follow with insert_slide +
     set_placeholder_text."""
     result = _sl.create_presentation(
@@ -2660,18 +2615,27 @@ def check_layout(
 
 @_tool("design")
 def set_theme_colors(
-    file_path: str, colors: dict, master: Any = None, backup: bool = True
+    file_path: str,
+    colors: dict | None = None,
+    master: Any = None,
+    color_map: dict | str | None = None,
+    layout: Any = None,
+    backup: bool = True,
 ) -> dict:
     """Set any subset of the 12 theme color slots (dk1, lt1, dk2, lt2,
     accent1..accent6, hlink, folHlink) to RRGGBB hex on one master's
     theme. Every schemeClr-linked fill, line, and chart re-resolves
     against the new values; explicit srgbClr fills do not move
-    (extract_brand reports them honestly). master: None for the first
-    master, a 0-based index, or a name. Saves atomically with two-slot
+    (extract_brand reports them honestly). color_map changes semantic
+    bg/tx/accent routing without swapping palette values; pass layout= for
+    a layout override or color_map="inherit" to restore master routing.
+    master: None for the first master, a 0-based index, or a name. Saves atomically with two-slot
     backup; backup=False skips rotation."""
     return _edit(
         file_path,
-        lambda pkg: _thm.set_theme_colors(pkg, master, colors),
+        lambda pkg: _thm.set_theme_colors(
+            pkg, master, colors, color_map=color_map, layout=layout
+        ),
         backup=backup,
     )
 
@@ -2689,9 +2653,11 @@ def set_theme_fonts(
     and minor (body) each take a typeface string (the latin slot) or a
     dict with any of {"latin", "ea", "cs"}. ea is a convenience: one East
     Asian typeface applied to BOTH schemes, the slots CJK decks resolve
-    through. At least one parameter is required; theme-following text
-    updates everywhere at once. Saves atomically with two-slot backup;
-    backup=False skips rotation."""
+    through. At least one parameter is required. Text on this master's
+    slides that follows the theme fonts changes; text with its own font set
+    directly keeps it, and explicit_font_run_count says how many runs that
+    is. Saves
+    atomically with two-slot backup; backup=False skips rotation."""
     return _edit(
         file_path,
         lambda pkg: _thm.set_theme_fonts(
@@ -2774,12 +2740,17 @@ def set_master_placeholder(
     color: str | None = None,
     bold: bool | None = None,
     italic: bool | None = None,
-    level: int = 1,
+    align: str | None = None,
+    caps: str | None = None,
+    level: int | str = 1,
+    clear_layout_overrides: bool = False,
     backup: bool = True,
 ) -> dict:
     """Edit a MASTER placeholder: geometry (inches) and/or text defaults
-    (size pt, font, color, bold, italic) at the given outline level, which
-    every derived slide inherits. Title/body defaults land in the
+    (size pt, font, color, bold, italic, alignment and capitalization) at
+    the given outline level, which every derived slide inherits. Set
+    clear_layout_overrides only to remove matching child-layout overrides
+    that would otherwise win. Title/body defaults land in the
     master's txStyles (the deck-wide 'make all titles 28pt' move); other
     types write the placeholder's own list style. Slides carrying
     explicit run formatting keep it; the result reports affected slides.
@@ -2788,7 +2759,9 @@ def set_master_placeholder(
         file_path,
         lambda pkg: _mst.set_master_placeholder(
             pkg, ph, master=master, x=x, y=y, w=w, h=h, size=size,
-            font=font, color=color, bold=bold, italic=italic, level=level,
+            font=font, color=color, bold=bold, italic=italic, align=align,
+            caps=caps, level=level,
+            clear_layout_overrides=clear_layout_overrides,
         ),
         backup=backup,
     )
@@ -2808,21 +2781,25 @@ def set_layout_placeholder(
     color: str | None = None,
     bold: bool | None = None,
     italic: bool | None = None,
-    level: int = 1,
+    align: str | None = None,
+    caps: str | None = None,
+    level: int | str = 1,
     backup: bool = True,
 ) -> dict:
     """Edit a LAYOUT placeholder: geometry (inches) and/or text-default
     overrides written into the layout's own list style, the layer between
     the master defaults and the slide. Only slides using this layout are
     affected (the result names them); slides with explicit run formatting
-    keep it. layout: name or global index; ph: type, index, or name from
+    keep it. layout: name or global index; ph: placeholder type, bare idx,
+    or an explicit selector such as {"idx": 2} or {"shape_id": 4} from
     list_master_elements. Saves atomically with two-slot backup;
     backup=False skips rotation."""
     return _edit(
         file_path,
         lambda pkg: _mst.set_layout_placeholder(
             pkg, ph, layout=layout, x=x, y=y, w=w, h=h, size=size,
-            font=font, color=color, bold=bold, italic=italic, level=level,
+            font=font, color=color, bold=bold, italic=italic, align=align,
+            caps=caps, level=level,
         ),
         backup=backup,
     )
@@ -3011,18 +2988,28 @@ def audit_accessibility(
 
 @_tool("design")
 def set_alt_text(
-    file_path: str, slide: Any, shape: int, text: str, backup: bool = True
+    file_path: str,
+    slide: Any,
+    shape: int,
+    text: str,
+    decorative: bool | None = None,
+    backup: bool = True,
 ) -> dict:
     """Set (or clear, with an empty string) the alt text of ANY shape by
     id: autoshapes, text boxes, pictures, tables, charts, diagrams,
     groups, connectors. Writes the description attribute every screen
     reader and the PowerPoint accessibility checker read.
+    decorative=True marks the shape for screen readers to skip and needs
+    text=''; setting real alt text removes an earlier decorative mark, and
+    decorative=False removes it explicitly.
     audit_accessibility finds the shapes that need one; export a slide
     image if you need to see what the shape shows before describing it.
     Saves atomically with two-slot backup; backup=False skips rotation."""
     return _edit(
         file_path,
-        lambda pkg: _acc.set_alt_text(pkg, slide, shape, text),
+        lambda pkg: _acc.set_alt_text(
+            pkg, slide, shape, text, decorative=decorative
+        ),
         backup=backup,
     )
 
@@ -3050,8 +3037,9 @@ def set_reading_order(
 
 @_tool("assembly-export")
 def set_notes(
-    file_path: str, slide: Any, text: str | None = None,
+    file_path: str, slide: Any = None, text: str | None = None,
     paragraphs: list | None = None, flatten: bool = False,
+    notes: list | None = None,
     backup: bool = True, live: str = "auto",
 ) -> dict:
     """Write a slide's speaker notes, REPLACING what was there. Pass `text`
@@ -3059,8 +3047,36 @@ def set_notes(
     with bold/italic/underline/size_pt/font/color), never both. A plain
     write matching what is there writes nothing; one that would flatten
     bold, bullets, or hyperlinks refuses until flatten=True. A paragraphs
-    write edits in place, keeping formatting it does not touch. Saves
-    atomically with two-slot backup; live='auto' takes plain text only."""
+    write edits in place, keeping formatting it does not touch.
+    Plain note text uses '\\n' between paragraphs and '\\v' for a line
+    break inside one, in file and live modes.
+    Many slides at once: notes, a list of {slide_id or slide_number, text
+    or paragraphs}, written with one backup and one save. Each entry names
+    its own slide (a bare 0-based slide is refused) and every slide is
+    checked before anything is written, so one bad entry changes nothing;
+    the list is file mode only.
+    Saves atomically with two-slot backup; live='auto' takes plain text only."""
+    if notes is not None:
+        if slide is not None or text is not None or paragraphs is not None:
+            raise _err.PptMcpError(
+                "set_notes takes notes (several slides) or slide with text or "
+                "paragraphs (one slide), not both: send notes alone, each "
+                "entry naming its slide by slide_id or slide_number"
+            )
+        return _route_live(
+            live,
+            lambda: _edit(
+                file_path,
+                lambda pkg: _bt.set_notes_list(pkg, notes, flatten=flatten),
+                backup=backup,
+            ),
+            lambda: _live_refuse(notes=notes) or {},
+        )
+    if slide is None:
+        raise _err.PptMcpError(
+            "set_notes needs the slide (slide, or slide_number counted from "
+            "1) with text or paragraphs, or notes for several slides"
+        )
     return _route_live(
         live,
         lambda: _edit(
@@ -3153,17 +3169,19 @@ def get_footer_support(file_path: str, slide: Any) -> dict:
 
 @_tool("assembly-export")
 def export_pdf(
-    file_path: str, output: str | None = None, engine: str = "auto"
+    file_path: str, output: str | None = None, engine: str = "auto",
+    overwrite: bool = False,
 ) -> dict:
     """Render the deck to PDF, the shareable artifact. engine='auto'
     prefers PowerPoint COM (ground-truth fidelity), falling back to
     LibreOffice headless (theme colors and fonts can drift, reported);
     'com'/'libreoffice' force one. output defaults next to the source
-    with .pdf. The source file is never modified. get_export_engines
-    shows what this machine has; diagnose covers the rest."""
+    with .pdf; an existing PDF is replaced only with overwrite=true. The
+    source file is never modified. get_export_engines shows what this
+    machine has; diagnose covers the rest."""
     return {
         "ok": True,
-        **_ex.export_pdf(file_path, output=output, engine=engine),
+        **_ex.export_pdf(file_path, output=output, engine=engine, overwrite=overwrite),
     }
 
 
@@ -3175,18 +3193,49 @@ def export_slide_image(
     width: int = 1280,
     height: int | None = None,
     engine: str = "auto",
+    overwrite: bool = False,
 ) -> dict:
     """Render slides to PNG files, the verify-by-looking primitive: build,
     render, READ the image, fix, re-render. slides: 0-based indices (None
-    = all); width in pixels (height from the slide aspect unless given).
+    = all), or slide_numbers counted from 1; each image names both. width
+    in pixels (height from the slide aspect unless given).
     engine='auto' prefers PowerPoint COM; the LibreOffice path needs
     poppler and says so when missing. Returns the written file paths.
-    The source file is never modified."""
+    An existing slideN.png is replaced only with overwrite=true (a
+    re-render into the same folder sends it); the source presentation is
+    never modified."""
     return {
         "ok": True,
         **_ex.export_slide_images(
             file_path, output_dir=output_dir, slides=slides, width=width,
-            height=height, engine=engine,
+            height=height, engine=engine, overwrite=overwrite,
+        ),
+    }
+
+
+@_tool("assembly-export")
+def export_shape_image(
+    file_path: str,
+    slide: Any,
+    shape: int | str,
+    output: str | None = None,
+    width: int | None = None,
+    height: int | None = None,
+    overwrite: bool = False,
+) -> dict:
+    """Render one shape or group to a PNG at a set size: the area it is
+    drawn in on its slide (through its groups, turned with its rotation,
+    with its outline), without exporting and cropping the whole slide.
+    shape: id or name ("Group/Shape" inside a group). width in pixels
+    (default 1280), or height; the other follows the shape's proportions.
+    output defaults beside the deck; an existing PNG is replaced only with
+    overwrite=true. Needs PowerPoint and Pillow. The presentation is never
+    modified."""
+    return {
+        "ok": True,
+        **_ex.export_shape_image(
+            file_path, slide, shape, output=output, width=width, height=height,
+            overwrite=overwrite,
         ),
     }
 
@@ -3206,46 +3255,176 @@ def get_export_engines() -> dict:
 def validate(file_path: str) -> dict:
     """The two-layer soundness check. Layer 1 (always): the package
     payload is re-validated (zip integrity, required parts, relationship
-    targets, and every text body carrying at least one paragraph, charts
-    included). Layer 2 (when PowerPoint COM exists): a REAL open in an
+    targets, every text body carrying at least one paragraph, charts
+    included, and every preset shape's adjust list, which PowerPoint
+    refuses when it names only some of the preset's handles; the error
+    names the shape). Layer 2 (when PowerPoint COM exists): a REAL open in an
     invisible PowerPoint that touches every slide, top-level shape, group
     member and table cell and reads the text of each; a repair prompt or
     load failure means not clean, and that verdict is authoritative. A
     failure names where it happened when it can be located
     (failed_slide_index, failed_slide_id, failed_shape_index,
     failed_shape_name); a busy or closed PowerPoint
-    refuses as itself instead of blaming the file. Read-only. Run after
-    big generated changes and before handing a deck to a human."""
+    refuses as itself instead of blaming the file. The time PowerPoint is
+    given grows with the deck (slides, shapes, notes pages, media) up to a
+    cap; opens_clean_time_limit says how long and why. A check that runs
+    out of time answers opens_clean null and timed_out true: a time limit,
+    not a verdict on the deck. A file the payload check refuses to read (built
+    to exhaust memory, a part named twice, a document type declaration) is not
+    handed to PowerPoint: powerpoint is null and powerpoint_note says so.
+    Read-only. Run after big generated changes and before handing a deck to a
+    human."""
     from pathlib import Path
 
+    from .com import bridge as _bridge
+
     fp = check_path(file_path, "validate presentation")
-    if not Path(fp).is_file():
-        raise _err.DocumentNotFound(f"no presentation at {fp}")
+    require_deck(fp, f"no presentation at {fp}")
+    # An encrypted OOXML presentation is an OLE compound file.  Refuse it
+    # before the payload error is collected below, because handing it to
+    # PowerPoint raises a modal password prompt that blocks COM itself.
+    refuse_ole_encrypted(fp)
     out: dict[str, Any] = {"file": fp}
+    counts = {"slides": 0, "shapes": 0, "notes": 0, "media_bytes": 0}
     try:
-        PptxPackage._validate_payload(Path(fp).read_bytes())
-        pkg = PptxPackage(fp)
-        out["payload_valid"] = True
+        PptxPackage._validate_payload(
+            through_swap(fp, Path(fp).read_bytes), doc=Path(fp).name)
+        # validate never writes the deck: a deck open in PowerPoint is read
+        # as last saved, as the reads read it, and the answer says so.
+        pkg = PptxPackage(fp, reading=True)
         out["slide_count"] = len(pkg.slide_parts())
-    except _CATCHABLE as exc:
+        counts = _opens_clean_counts(pkg)
+        refused = _sh.adjust_list_problems(pkg)
+        if refused:
+            raise _err.PptMcpError(_sh.adjust_list_message(refused))
+        out["payload_valid"] = True
+    except _err.RefusedUnread as exc:
+        # The server refused to read this file for safety (built to exhaust
+        # memory, a part named twice, a document type declaration). PowerPoint
+        # is one instance per machine, possibly the user's own, so it is not
+        # handed a file the server would not read.
         out["payload_valid"] = False
         out["payload_error"] = str(exc)
-    try:
-        from .com.bridge import com_validate_opens_clean
-
-        out["powerpoint"] = com_validate_opens_clean(fp)
-    except Exception as exc:
         out["powerpoint"] = None
         out["powerpoint_note"] = (
-            f"opens-clean check unavailable here ({exc}); payload check "
-            "only. Run on a machine with PowerPoint for the authoritative "
-            "verdict."
+            "PowerPoint was not asked to open this file: this server refused to read it "
+            "(payload_error says why), and it never hands PowerPoint a file it refused."
         )
+        out["ok"] = False
+        return out
+    except Exception as exc:
+        out["payload_valid"] = False
+        out["payload_error"] = str(exc)
+    limit, capped = _bridge.opens_clean_time_limit(
+        counts["slides"], counts["shapes"], counts["notes"],
+        counts["media_bytes"])
+    out["opens_clean_time_limit"] = {"seconds": limit, "capped": capped, **counts}
+    try:
+        out["powerpoint"] = _bridge.com_validate_opens_clean(fp, timeout=limit)
+    except Exception as exc:
+        if getattr(exc, "timed_out", False):
+            out["powerpoint"] = {
+                "opens_clean": None,
+                "timed_out": True,
+                "time_limit_s": limit,
+            }
+            out["powerpoint_note"] = _timed_out_note(
+                limit, capped, counts, bool(out.get("payload_valid")),
+                bool(getattr(exc, "left", None)))
+        else:
+            out["powerpoint"] = None
+            out["powerpoint_note"] = (
+                f"opens-clean check unavailable here ({exc}); payload check "
+                "only. Run on a machine with PowerPoint for the authoritative "
+                "verdict."
+            )
+    pp = out.get("powerpoint")
     out["ok"] = bool(out.get("payload_valid")) and (
-        out.get("powerpoint") is None
-        or bool(out["powerpoint"].get("opens_clean"))
+        pp is None or bool(pp.get("timed_out")) or bool(pp.get("opens_clean"))
     )
     return out
+
+
+def _opens_clean_counts(pkg: PptxPackage) -> dict[str, int]:
+    """What the opens-clean check has to get through, read from the
+    package: slides, shapes as its walk visits them (group members and
+    table cells included), notes pages, and media bytes."""
+    from .core.package import qn
+
+    shapes = 0
+    for part in pkg.slide_parts():
+        tree = pkg.root(part).find(f"{qn('p:cSld')}/{qn('p:spTree')}")
+        if tree is None:
+            continue
+        for elem, kind, _z, _parent in _rd.iter_shapes(tree):
+            shapes += 1
+            if kind == "table":
+                rows = elem.findall(f".//{qn('a:tr')}")
+                cells = sum(len(row.findall(qn("a:tc"))) for row in rows)
+                shapes += cells
+    names = pkg.part_names()
+    notes = sum(1 for name in names
+                if name.startswith("ppt/notesSlides/") and name.endswith(".xml"))
+    media = 0
+    for name in names:
+        if name.startswith("ppt/media/"):
+            try:
+                media += len(pkg.raw_part(name))
+            except Exception:
+                continue
+    return {"slides": len(pkg.slide_parts()), "shapes": shapes,
+            "notes": notes, "media_bytes": media}
+
+
+def _deck_size_words(counts: dict) -> str:
+    """What the opens-clean time limit was set from, as a reader says it:
+    "30 slides and 750 shapes", "1 slide, 1 shape, 2 notes pages and
+    12.3 MB of media". A count of nothing is left out; media under 0.1 MB
+    adds nothing measurable to the limit and is left out too."""
+    parts = []
+    for key, one, many in (("slides", "slide", "slides"),
+                           ("shapes", "shape", "shapes"),
+                           ("notes", "notes page", "notes pages")):
+        n = int(counts.get(key) or 0)
+        if n > 0:
+            parts.append(f"{n:,} {one if n == 1 else many}")
+    mb = (counts.get("media_bytes") or 0) / 1_000_000
+    if mb >= 0.1:
+        parts.append(f"{mb:,.1f} MB of media")
+    if not parts:
+        return "no slides"
+    if len(parts) == 1:
+        return parts[0]
+    return ", ".join(parts[:-1]) + " and " + parts[-1]
+
+
+def _timed_out_note(limit: float, capped: bool, counts: dict,
+                    payload_valid: bool, left_running: bool) -> str:
+    """What a validate timeout means, in the order a reader needs it."""
+    note = (
+        f"PowerPoint did not finish opening and reading every slide within "
+        f"{limit:g} s, the time this check gives a deck with "
+        f"{_deck_size_words(counts)}. "
+        "That is a time limit, not a verdict on the deck"
+    )
+    note += (
+        ": the package check passed. " if payload_valid else ". "
+    )
+    if capped:
+        note += (
+            f"{limit:g} s is the most this check waits for any deck. ")
+    if left_running:
+        note += (
+            "The hidden PowerPoint it started could not be ended safely and "
+            "may still be working; call powerpoint_status and wait until it "
+            "reports no COM operation in progress before you run validate "
+            "again. ")
+    else:
+        note += "Run validate again when the computer is less busy. "
+    note += (
+        "export_slide_image also opens every slide in PowerPoint and shows "
+        "what it draws.")
+    return note
 
 
 @_tool("assembly-export")
@@ -3254,7 +3433,9 @@ def extract_text(
 ) -> dict:
     """Everything textual in one call: all slides in reading order PLUS
     every slide's speaker notes (equivalent to get_text with
-    include_notes=True over the whole deck). The full-content dump for
+    include_notes=True over the whole deck). Chart titles, series names,
+    categories and axis titles are included when the chart stores them.
+    The full-content dump for
     indexing, review, or migrating deck content into a document. For
     slide-scoped or notes-free reads, get_text with a scope is cheaper;
     for editing addresses use get_presentation_view instead. A deck past
@@ -3365,6 +3546,11 @@ def split_deck(
     Each piece keeps the full design chain plus exactly the dependencies
     its slides need (notes, charts, reference-counted media) and passes
     validation on save. The inverse of merge_decks."""
+    from .core import safesave
+
+    safesave.refuse_protected_output(
+        output_dir, file_path, purpose="write the split presentations"
+    )
     return _asm.split_deck(file_path, output_dir, by=by, ranges=ranges)
 
 
@@ -3427,7 +3613,10 @@ def set_document_properties(
     rewrites 'modified' on its own saves). App fields: company, manager.
     properties: {field: value}; an empty string clears a field, omitted
     fields stay. Missing docProps parts are created. Saves atomically
-    with two-slot backup; backup=False skips rotation."""
+    with two-slot backup; backup=False skips rotation. author and
+    last_modified_by never take an email address: the user's own name (or
+    the assistant label with KS4P_AUTHOR=assistant) stands in and the
+    answer says so."""
     if not isinstance(properties, dict) or not properties:
         raise _err.PptMcpError(
             "properties must be a non-empty dict of {field: value}"
@@ -3455,18 +3644,22 @@ def get_document_properties(file_path: str) -> dict:
 def anonymize_deck(
     file_path: str, replacement: str = "Reviewer", backup: bool = True
 ) -> dict:
-    """IRREVERSIBLE: take a create_snapshot FIRST. Strips author identity
+    """IRREVERSIBLE. A permanent snapshot is saved automatically first, in
+    the hidden backup area, and its path is returned in `snapshot`;
+    manage_backups lists it and can restore it. Then strips author identity
     deck-wide: core creator/lastModifiedBy become `replacement`; company,
     manager, and hyperlink base are cleared; comment authors in BOTH
     systems map consistently to Reviewer-1/Reviewer-2/... with initials
     replaced. Comment TEXT is NOT scrubbed: bodies mentioning names by
-    hand stay as written. Everything changed is reported with its old
-    value for audit. Saves atomically with two-slot backup; backup=False
-    skips rotation."""
+    hand stay as written. An email address sent as `replacement` is never
+    written: "Reviewer" stands in and the answer says so. Everything
+    changed is reported with its old value for audit. Saves atomically with
+    two-slot backup; backup=False skips rotation."""
     return _edit(
         file_path,
         lambda pkg: _asm.anonymize_deck(pkg, replacement=replacement),
         backup=backup,
+        snapshot_label="before anonymize",
     )
 
 
@@ -3509,7 +3702,8 @@ def manage_custom_show(
     """Custom show lifecycle (named slide sequences PowerPoint can present
     instead of the whole deck). action='create': name (unique
     case-insensitively, like layout names) + slides (0-based indexes or
-    {"slide_id": N}; repeats allowed, matching PowerPoint). 'rename':
+    {"slide_id": N}, or slide_numbers counted from 1; repeats allowed,
+    matching PowerPoint). 'rename':
     name (or id int) + new_name (same uniqueness rule). 'delete': name
     (or id); a show-range pointing at the deleted show resets to all
     slides and is reported. 'list': every show with its slides, dangling
@@ -3534,6 +3728,7 @@ def export_handout(
     output: str | None = None,
     slides_per_page: int = 3,
     include_notes: bool = False,
+    overwrite: bool = False,
 ) -> dict:
     """Export a handout-layout PDF: slides_per_page (1/2/3/4/6/9) slides
     per printed page, or notes pages (include_notes=True: one slide plus
@@ -3541,10 +3736,11 @@ def export_handout(
     PowerPoint print-pipeline feature with no LibreOffice equivalent, so
     without PowerPoint this refuses honestly instead of faking a
     one-slide-per-page PDF. The plain per-slide alternative is
-    export_pdf. output defaults next to the source file."""
+    export_pdf. output defaults next to the source file; an existing PDF
+    is replaced only with overwrite=true."""
     return _ex.export_handout(
         file_path, output, slides_per_page=slides_per_page,
-        include_notes=include_notes,
+        include_notes=include_notes, overwrite=overwrite,
     )
 
 
@@ -3664,8 +3860,14 @@ def add_comment(
 ) -> dict:
     """Add a modern threaded comment to a slide, building the whole
     comment infrastructure when the deck has none. anchor: None for the
-    slide, {"x", "y"} in EMU for a position, or {"shape_id": N}. author
-    defaults to the KS4P_COMMENT_AUTHOR env value. Decks carrying classic
+    slide, {"x", "y"} in EMU for a position, or {"shape_id": N}. Leave
+    author out to sign with the user's own name (their Office user name, or
+    their Windows sign-in name), or pass author="assistant" to sign as "AI
+    Assistant via KS4PPT"; any other author is used as given. With no author,
+    KS4P_AUTHOR=assistant signs the label and KS4P_COMMENT_AUTHOR, when set,
+    names the author; the answer's author_source says which. An author that
+    is an email address is never written: the default signs instead and the
+    answer's warnings say so. Decks carrying classic
     comments refuse the add: the two systems never mix in one file.
     Replies go through reply_to_comment. Saves atomically with two-slot
     backup; backup=False skips rotation."""
@@ -3687,12 +3889,12 @@ def reply_to_comment(
     author: str | None = None,
     backup: bool = True,
 ) -> dict:
-    """Append a threaded reply to a modern comment; replies are the
-    ecosystem-first (no other file-based PowerPoint server writes them).
+    """Append a threaded reply to a modern comment.
     comment_id: the thread root id from list_comments. Replying to a reply
     refuses; threads are one level deep by design, so reply to the root.
-    author defaults to KS4P_COMMENT_AUTHOR. Saves atomically with
-    two-slot backup; backup=False skips rotation."""
+    author is chosen as add_comment chooses it, and the answer's
+    author_source says where it came from. Saves atomically with two-slot
+    backup; backup=False skips rotation."""
     return _edit(
         file_path,
         lambda pkg: _cm.reply_to_comment(
@@ -3707,7 +3909,8 @@ def list_comments(file_path: str, scope: Any = None) -> dict:
     """Every comment in scope (None = all slides), from BOTH systems:
     modern threaded comments with replies nested under their thread root
     and resolved status, and legacy classic comments (read-only; identity
-    rendered as legacy-A-I, no replies or resolved flag). The comment_id
+    rendered as legacy-A-I, replies nested under their thread, no resolved
+    flag). The comment_id
     values reported are what reply_to_comment, resolve_comment, and
     delete_comment take. Read-only; the file is never modified."""
     return _cm.list_comments(_load(file_path), scope)
@@ -3778,7 +3981,9 @@ def compare_decks(file_path_a: str, file_path_b: str) -> dict:
     title, then position with a text-similarity floor (each pair states
     which rule matched). Per pair: moved flag, title/layout changes, text
     diff snippets, shape and geometry deltas, table dimension and notes
-    changes; plus added/removed slides and a markdown rendering.
+    changes; plus added/removed slides and a markdown rendering. Changes
+    to chart content and to embedded pictures, video or audio are
+    reported even when the frame does not move or resize.
     Read-only; neither file is modified or backed up."""
     return _dif.compare_decks(
         check_path(file_path_a, "read presentation"),
@@ -3906,7 +4111,7 @@ def compress_deck(
     file_path: str,
     max_dpi: int = 150,
     jpeg_quality: int = 85,
-    purge_unused: bool = True,
+    purge_unused: bool = False,
     dry_run: bool = False,
     backup: bool = True,
 ) -> dict:
@@ -3969,9 +4174,15 @@ def live_save(file_path: str) -> dict:
     """Save the presentation open in the user's PowerPoint (the file must
     be open there). The ONE live tool that writes the user's file, and
     only on explicit request: every live edit stays unsaved in the open
-    copy until this call or the user's own save. The result's
-    document_dirty confirms the post-save state. Windows only; the user's
-    window, selection, and view are never touched."""
+    copy, for the user to review and save, unless the user asks for this
+    call. The result's document_dirty confirms the post-save state, and
+    unsaved_before_our_edits says whether the deck already had unsaved
+    changes before this server's first live edit to it (true, false, or
+    null when unknown; typing the user did after that edit is not told
+    apart from the edits). When the save wrote the user's own unsaved work
+    (or may have), the result's first key, saved_user_work, says so: tell
+    the user. Windows only; the user's window, selection, and view are
+    never touched."""
     return {"ok": True, **_lo.live_save(file_path)}
 
 
@@ -3997,37 +4208,241 @@ def live_status() -> dict:
     return {"ok": True, **_lo.live_status()}
 
 
+# ------------------------------------------------------- the update ops
+# The per-product half of core/update_flow.py (the family module): two
+# thin ops in ppt_review, a tool that is already not read-only, so the
+# client's own permission prompt for it is the human check. Both refuse on
+# Business, and the surface plan leaves them off the Business tool list.
+
+
+def _update_op(fn, *args):
+    from .core import update_flow
+    from .core.errors import OpError
+
+    try:
+        return fn(*args)
+    except update_flow.UpdateRefused as exc:
+        raise OpError(exc.code, exc.message, hint=exc.hint) from None
+
+
+@_tool()
+def update_now() -> dict:
+    """Install the newer version the update notice named; call only when the user asks or
+    agrees. Takes no arguments and acts only on the newer stable version
+    the server's own check found. Where the app can show a dialog, the
+    user confirms there first; a Claude Desktop install opens Desktop's own
+    install window. The install runs in the background: the answer comes
+    within about 30 seconds, or says it is still running and the next
+    answer reports the outcome, with what to do to start using it.
+    """
+    from .core import update_flow
+
+    return _update_op(update_flow.update_now)
+
+
+@_tool()
+def update_notices(action: Literal["on", "off", "status"]) -> dict:
+    """Turn update notices on or off, or show their status (action). The
+    setting is kept in the server's state folder, so it survives updates
+    and applies to every app that starts this server. off stops the
+    notices and keeps the weekly check; status also reports the last
+    notice and the newer version, if one is known.
+    """
+    from .core import update_flow
+
+    return _update_op(update_flow.update_notices, action)
+
+
 # ===================================================================== main
 
 
-def _startup_disabled_names() -> set[str]:
-    """Tool names hidden at startup under current packs bookkeeping."""
-    return {
-        name
-        for members in _packs.tool_names().values()
-        for name in members
-        if not _packs.is_tool_enabled(name)
-    }
+def _instructions_for(policy) -> str:
+    """Compose the existing policy text around the product instructions."""
+    text = policy.initialization_text()
+    product = (
+        "PowerPoint (.pptx) editor: slides, text, native vector graphics "
+        "(SVG in, editable grouped shapes with glued connectors out), "
+        "structural tables, charts, notes, and render-to-verify export. "
+        "File-based with atomic validated saves and two-slot backups before "
+        "every mutation; dual-mode tools with live='auto' edit decks open in "
+        "the user's PowerPoint. get_workflows has recipes; "
+        "get_presentation_view + apply_edits is the cheap batch-editing loop."
+    )
+    return (
+        text["introduction"] + text["instructions"] + " " + product
+        + "\n\n" + _surface_copy.INSTRUCTIONS
+    )
+
+
+def _fixed_list(mcp: FastMCP) -> None:
+    """Advertise a fixed tool list for every transport."""
+    from mcp.server.lowlevel.server import NotificationOptions
+
+    low = mcp._mcp_server  # noqa: SLF001 - pinned FastMCP wire contract
+    original = low.create_initialization_options
+
+    def fixed(notification_options=None, **kwargs):
+        return original(notification_options=NotificationOptions(), **kwargs)
+
+    low.create_initialization_options = fixed
+
+
+def create_server(settings: Settings | None = None) -> FastMCP:
+    """Build one fixed-surface server from frozen launch settings."""
+    policy = _license_policy.active()
+    settings = Settings.from_env() if settings is None else settings
+    plan = _surface_plan.build(settings, _registry.public_ops())
+    mcp = FastMCP(
+        name=policy.product_id,
+        version=policy.distribution_version,
+        instructions=_instructions_for(policy),
+    )
+    _surface_tools.install(mcp, plan)
+    # Optional edition-policy seam.  Shipped policies currently decline it,
+    # but any future addition happens here, before the list is frozen.
+    _license_policy.register_additional_tools(mcp)
+    _fixed_list(mcp)
+    return mcp
+
+
+def _arm_stdio_disconnect_sentinel() -> None:
+    """Begin bounded cleanup when a Windows stdio client's pipe closes.
+
+    FastMCP waits for active request tasks after stdin reaches EOF. A valid
+    COM request can have a 600-second bound, so the ordinary ``finally`` may
+    otherwise arrive too late. ``PeekNamedPipe`` observes closure without
+    consuming JSON-RPC bytes. Consoles and regular files are ignored.
+    """
+    if _sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        import msvcrt
+        import threading
+        import time
+        from ctypes import wintypes
+
+        handle = msvcrt.get_osfhandle(_sys.stdin.fileno())
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        if kernel32.GetFileType(handle) != 3:  # FILE_TYPE_PIPE
+            return
+        kernel32.PeekNamedPipe.argtypes = [
+            wintypes.HANDLE,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            wintypes.LPVOID,
+            ctypes.POINTER(wintypes.DWORD),
+            wintypes.LPVOID,
+        ]
+
+        def watch() -> None:
+            available = wintypes.DWORD()
+            while True:
+                ok = kernel32.PeekNamedPipe(
+                    handle, None, 0, None, ctypes.byref(available), None
+                )
+                if ok:
+                    time.sleep(0.2)
+                    continue
+                if ctypes.get_last_error() in (109, 232):  # broken/disconnected
+                    # A batch client normally closes its write end after its
+                    # final request. Let FastMCP consume the buffered input,
+                    # flush every response, and reach the ordinary finally.
+                    # The sentinel exists only for the exceptional case where
+                    # a disconnected client leaves an operation worker stuck.
+                    if _surface_dispatch.has_inflight():
+                        _surface_dispatch.drain_at_exit_once()
+                        # ``os._exit`` bypasses both ``main``'s finally block
+                        # and atexit handlers.  Hand the final drain result
+                        # through the bounded stderr transport before taking
+                        # that emergency exit, otherwise a readable client
+                        # can lose the one "still running" diagnostic.
+                        from . import stderrlog as _stderrlog
+
+                        _stderrlog.drain()
+                        _os._exit(0)
+                return
+
+        threading.Thread(
+            target=watch,
+            name="ks4p-stdio-disconnect",
+            daemon=True,
+        ).start()
+    except Exception:
+        # The ordinary transport-finally path remains authoritative whenever
+        # the pipe cannot be inspected safely.
+        return
+
+
+def _recover_at_start(settings: Settings) -> list[str]:
+    """Put back any deck that a save which did not finish left aside (a
+    server stopped in the middle of a save). A read-only server changes
+    nothing on disk, so it leaves that to the next server that may write."""
+    if settings.read_only:
+        return []
+    try:
+        from .core import safesave
+
+        return safesave.recover_interrupted_saves()
+    except Exception:
+        return []
 
 
 def main() -> None:
-    # KS4P_MODE startup surface: bookkeeping first (a typo in the env fails
-    # loudly BEFORE serving), then ONE global visibility transform hiding
-    # every tool not enabled at startup. Session rules laid down later by
-    # enable_tools/disable_tools override this transform. Applied here, not
-    # at import, so tests and measure_surface always see the full registry.
-    _packs.apply_startup_mode()  # stdio stays clean, no prints
-    _PENDING_VISIBILITY.clear()  # startup flips ride the global transform
-    disabled = _startup_disabled_names()
-    if disabled:
-        mcp.add_transform(_Visibility(False, names=disabled))
-    # No update check here. It runs ON DEMAND, inside diagnose, and nowhere
-    # else: startup starts no thread and asks PyPI nothing.
-    # The one-time star nudge, last, after startup has already succeeded.
-    # It is a single line on stderr on the very first run of an install and
-    # nothing at all thereafter; it asks the network nothing.
+    # A stdio client may pipe stderr and never read it. Install before any
+    # startup work can emit a refusal, warning, raw descriptor write, or child
+    # stderr; see stderrlog for the bounded queue and descriptor-2 pump.
+    from . import stderrlog
+
+    stderrlog.install()
+    try:
+        settings = Settings.from_env()
+        mcp = create_server(settings)
+    except _license_policy.PolicySetupError as exc:
+        print(str(exc), file=_sys.stderr)
+        stderrlog.drain()
+        raise SystemExit(2) from None
+    except SettingsError as exc:
+        print(f"KitchenSink4PPT did not start: {exc}", file=_sys.stderr)
+        stderrlog.drain()
+        raise SystemExit(2) from None
+    if settings.ignored_legacy:
+        # Everything is validated by now (settings and the operation plan), so
+        # the one-line notice about ignored 1.x settings is the last word on a
+        # start that has succeeded. Names only, never a raw value, and stderr
+        # only: stdout belongs to the protocol.
+        print(legacy_notice(settings.ignored_legacy), file=_sys.stderr)
+    # No update check here: startup starts no thread and asks PyPI nothing.
+    # The weekly check starts in the background after a tool call
+    # (core/update_check.maybe_refresh_in_background).
+    _recover_at_start(settings)
+    from .core import star_nudge as _star_nudge
+
     _star_nudge.announce_once()
-    mcp.run()
+    _arm_stdio_disconnect_sentinel()
+    try:
+        mcp.run(transport="stdio", show_banner=False, log_level="CRITICAL")
+    finally:
+        try:
+            # Let timed-out workers release their hidden PowerPoint state
+            # before the stdio process returns. Uncommitted calls are
+            # cancelled at their publication point; no process is ended.
+            _surface_dispatch.drain_at_exit_once()
+        finally:
+            try:
+                _stop_update_child()
+            finally:
+                # Count both queued records and the line currently held by
+                # the writer, but stop waiting once the client stderr is
+                # stalled.
+                stderrlog.drain()
+
+
+def _stop_update_child() -> None:
+    """An update child still running when the client goes away is killed."""
+    flow = _sys.modules.get("kitchensink4ppt.core.update_flow")
+    if flow is not None:
+        flow.shutdown()
 
 
 if __name__ == "__main__":

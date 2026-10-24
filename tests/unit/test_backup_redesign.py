@@ -1,8 +1,10 @@
-"""Behavioural coverage for ops/backups.py. Covers: list by file and by directory, orphan detection,
-restore rotates-prev-first and is undoable, restore validates the payload
-before touching the target, purge dry-run semantics and scope validation,
-snapshot timestamp naming and label rules, the manage_backups dispatch, and the
-sandbox gates on every path argument.
+"""Behavioural coverage for ops/backups.py. Before these tests, nothing in
+the suite called
+restore, purge, snapshot, or list. Covers: list by file and by directory,
+orphan detection, restore keeps the old content in prev and is undoable, restore
+validates the payload before touching the target, purge dry-run semantics
+and scope validation, snapshot DTG naming and label rules, the
+manage_backups dispatch, and the sandbox gates on every path argument.
 
 Deck mutations here edit docProps/core.xml's dc:title through PptxPackage,
 the same real save cycle test_safesave.py uses.
@@ -202,9 +204,9 @@ def test_restore_target_outside_sandbox_blocked(make_deck, tmp_path, monkeypatch
 
 
 def test_restore_source_file_outside_sandbox_blocked(make_deck, tmp_path, monkeypatch):
-    """Exfiltration shape: source is a caller-supplied path, and with
-    the gate gone a sandboxed server would read an arbitrary file from disk
-    and copy its bytes over a presentation inside the sandbox."""
+    """Exfiltration shape: source is a caller-supplied path, and with the
+    gate gone a sandboxed server would read an arbitrary file from disk and
+    copy its bytes over a presentation inside the sandbox."""
     inside = tmp_path / "inside"
     inside.mkdir()
     doc = make_deck("inside/deck.pptx")
@@ -292,14 +294,15 @@ def test_anchor_recreated_after_slot_purge(make_deck):
 # ---------------------------------------------------------------- snapshots
 
 
-def test_snapshot_creates_dtg_named_copy(make_deck):
+def test_snapshot_creates_a_hidden_dtg_named_copy(make_deck):
     doc = make_deck()
     r = bk.create_snapshot(str(doc))
     snap = Path(r["snapshot"])
-    assert snap.parent == doc.parent
-    assert re.fullmatch(r"\d{8}_\d{4}_deck\.pptx", snap.name)
+    assert snap.parent == safesave.slot_dir(doc)  # hidden, never beside the deck
+    assert re.fullmatch(r"snapshot-\d{8}_\d{4}_deck\.pptx", snap.name)
     assert snap.read_bytes() == doc.read_bytes()
     assert r["label"] is None
+    assert r["hidden"] is True
 
 
 def test_snapshot_replaces_existing_dtg_and_suffixes_collisions(
@@ -319,9 +322,11 @@ def test_snapshot_replaces_existing_dtg_and_suffixes_collisions(
     )
     doc = make_deck("20250101_0101_mydeck.pptx")
     first = Path(bk.create_snapshot(str(doc))["snapshot"])
-    assert first.name == "20260906_1234_mydeck.pptx"  # replaced, not stacked
+    # replaced, not stacked
+    assert first.name == "snapshot-20260906_1234_mydeck.pptx"
     second = Path(bk.create_snapshot(str(doc))["snapshot"])
-    assert second.name == "20260906_1234_mydeck (2).pptx"  # never overwrites
+    # never overwrites
+    assert second.name == "snapshot-20260906_1234_mydeck (2).pptx"
     assert first.exists() and second.exists()
 
 
@@ -352,7 +357,7 @@ def test_snapshot_blank_label_means_no_label(make_deck):
     doc = make_deck()
     r = bk.create_snapshot(str(doc), label="   ")
     assert r["label"] is None
-    assert re.fullmatch(r"\d{8}_\d{4}_deck\.pptx", Path(r["snapshot"]).name)
+    assert re.fullmatch(r"snapshot-\d{8}_\d{4}_deck\.pptx", Path(r["snapshot"]).name)
 
 
 def test_snapshot_dest_dir(make_deck, tmp_path):

@@ -1,9 +1,9 @@
-"""Pinning tests for guards that were deletable or invertible without any
-test noticing: the stale-lock legs and the never-os.kill invariant in
+"""Pinning tests for guards that could be deleted or inverted without any
+other test noticing: the stale-lock legs and the never-os.kill invariant in
 core/safesave.py, the part-presence and slide-spine refusals in
-core/package.py, the cross-process live-lock family in com/xproc.py, and the sandbox
-canonicalizer's less-travelled routes (bare drive roots, forward-slash
-extended UNC, nonexistent tails).
+core/package.py, the cross-process live-lock family in com/xproc.py, and
+the sandbox canonicalizer's less-travelled routes (bare drive roots,
+forward-slash extended UNC, nonexistent tails).
 
 Subprocesses spawned here are plain python.exe children created with
 CREATE_NO_WINDOW and killed in teardown; no Office process is ever started.
@@ -110,15 +110,15 @@ def _patch_windll(monkeypatch, windll):
 
 
 def test_dead_pid_with_fresh_timestamp_is_stale(dead_pid):
-    """Liveness alone decides; a fresh timestamp must not
-    keep a dead writer's lock alive."""
+    """Liveness alone decides: a fresh timestamp must not keep a dead
+    writer's lock alive."""
     info = {"pid": dead_pid, "time": time.time(), "token": "foreign"}
     assert safesave._is_stale(info) is True
 
 
 def test_live_foreign_pid_with_ancient_timestamp_retains_ownership(sleeper):
-    """Liveness alone decides. A live holder that has sat on
-    the lock past LOCK_STALE_SECONDS keeps it, and the waiter times out."""
+    """Liveness alone decides. A live holder that has sat on the lock past
+    LOCK_STALE_SECONDS keeps it, and the waiter times out."""
     info = {
         "pid": sleeper.pid,
         "time": 1.0,
@@ -158,8 +158,8 @@ def test_recycled_pid_is_stale(sleeper):
 
 
 def test_pid_alive_probe_never_kills_the_probed_process(sleeper):
-    """The NEVER-os.kill-on-Windows invariant. The probe must report
-    the child alive AND leave it alive."""
+    """The NEVER-os.kill-on-Windows invariant. The probe must report the
+    child alive AND leave it alive."""
     assert safesave._pid_alive(sleeper.pid) is True
     time.sleep(0.2)
     assert sleeper.poll() is None, "liveness probe terminated the process"
@@ -226,8 +226,8 @@ def test_publish_lockfile_fallback_without_hardlinks(tmp_path, monkeypatch):
 
 
 def test_unreadable_lock_refuses_at_the_deadline(make_deck, monkeypatch):
-    """An unreadable lockfile inside its grace window must time out
-    with a refusal, not spin forever."""
+    """An unreadable lockfile inside its grace window must time out with a
+    refusal, not spin forever."""
     doc = make_deck()
     d = safesave.slot_dir(doc, create=True)
     (d / safesave.LOCK_FILE_NAME).write_bytes(b"{{{ not json")
@@ -240,8 +240,8 @@ def test_unreadable_lock_refuses_at_the_deadline(make_deck, monkeypatch):
 
 
 def test_unreadable_lock_is_broken_after_grace_not_before(make_deck, monkeypatch):
-    """Within the wait window, a persistently unreadable lock
-    is eventually treated as abandoned and the acquire succeeds."""
+    """Within the wait window, a persistently unreadable lock is
+    eventually treated as abandoned and the acquire succeeds."""
     doc = make_deck()
     d = safesave.slot_dir(doc, create=True)
     lock = d / safesave.LOCK_FILE_NAME
@@ -256,7 +256,7 @@ def test_unreadable_lock_is_broken_after_grace_not_before(make_deck, monkeypatch
 
 
 def test_transient_error_classification_and_retry():
-    """The antivirus-retry policy end to end."""
+    """The antivirus-retry policy, end to end."""
     sharing = OSError(22, "sharing violation")
     sharing.winerror = 32
     lock_violation = OSError(22, "lock violation")
@@ -299,7 +299,7 @@ def test_lock_policy_constants_are_pinned():
 
 
 def test_folder_name_boundary_is_exact():
-    """P-A7: 80 characters keeps the file's own name; 81 truncates and
+    """A name of 80 characters keeps the file's own name; 81 truncates and
     hash-suffixes back to exactly 80."""
     name80 = "a" * 75 + ".pptx"
     assert len(name80) == 80
@@ -328,8 +328,8 @@ def _payload_without(doc: Path, part: str) -> bytes:
 
 
 def test_payload_missing_presentation_part_refused(make_deck):
-    """Losing ppt/presentation.xml is a VALIDATION_FAILED refusal,
-    not a payload that lands on the destination."""
+    """Losing ppt/presentation.xml is a VALIDATION_FAILED refusal, not a
+    payload that lands on the destination."""
     payload = _payload_without(make_deck(), PRESENTATION_PART)
     with pytest.raises(ValidationFailed, match=r"lost ppt/presentation\.xml"):
         PptxPackage._validate_payload(payload)
@@ -348,14 +348,23 @@ def test_payload_that_is_not_a_zip_refused():
 
 
 def test_slide_id_exhaustion_refused(make_deck):
-    """A deck at the 2^31-1 slide-id ceiling refuses instead of
-    silently allocating an out-of-range id."""
+    """A deck at the 2^31-1 slide-id ceiling refuses instead of silently
+    allocating an out-of-range id, and the refusal says what happened and
+    the next step (merge_decks into a new deck)."""
     pkg = PptxPackage(make_deck())
     lst = pkg.presentation().find(qn("p:sldIdLst"))
     first = lst.findall(qn("p:sldId"))[0]
     first.set("id", str(SLIDE_ID_MAX))
-    with pytest.raises(PptMcpError, match="slide id space exhausted"):
+    with pytest.raises(PptMcpError) as refused:
         pkg._next_slide_id(lst)
+    message = str(refused.value)
+    assert "slide ids have reached 2147483647, the highest the file format allows" in message
+    assert "nothing was changed" in message
+    assert "merge_decks" in message and "new deck" in message
+    # How ids are given out, as the allocator does it: the highest in use
+    # plus one (a deleted highest slide's id can be given out again).
+    assert "New slide ids are always numbered after the highest id in use." in message
+    assert "not reused" not in message and "view anchor" not in message
     # One below the ceiling still allocates (the boundary is >=, not >).
     first.set("id", str(SLIDE_ID_MAX - 1))
     assert pkg._next_slide_id(lst) == SLIDE_ID_MAX
@@ -371,8 +380,8 @@ def test_unknown_presentation_child_refused(make_deck):
 
 
 def test_presentation_child_lands_at_schema_position(make_deck):
-    """A re-inserted sldIdLst must come after the master list
-    and before sldSz, matching the schema's fixed sequence."""
+    """A re-inserted sldIdLst must come after the master list and before
+    sldSz, matching the schema's fixed sequence."""
     pkg = PptxPackage(make_deck())
     pres = pkg.presentation()
     lst = pres.find(qn("p:sldIdLst"))
@@ -406,8 +415,8 @@ def test_unknown_part_lookup_is_a_named_keyerror(make_deck):
 
 
 def test_long_dest_name_gets_hash_shortened_tmp(make_deck, tmp_path, monkeypatch):
-    """Past 240 bytes the temp name is the hash form; below it, the
-    dest's own name. Observed through the replace call the save makes."""
+    """Past 240 bytes the temp name is the hash form; below it, the dest's
+    own name. Observed through the replace call the save makes."""
     seen = []
     real = safesave.replace_with_retry
 
@@ -478,8 +487,8 @@ def test_xproc_recycled_pid_is_stale(sleeper):
 
 
 def test_xproc_publish_fallback_reports_a_lost_race_lost(tmp_path, monkeypatch):
-    """W-D3's ppt twin: without hardlinks, the loser of the create race must
-    hear False, never claim a lock it did not take."""
+    """Without hardlinks, the loser of the create race must hear False,
+    never claim a lock it did not take."""
 
     def no_link(*a, **kw):
         raise OSError(1, "filesystem does not support hardlinks")
@@ -493,8 +502,8 @@ def test_xproc_publish_fallback_reports_a_lost_race_lost(tmp_path, monkeypatch):
 
 
 def test_xproc_lock_dir_falls_back_to_tempdir(monkeypatch):
-    """W-D5's ppt twin: with LOCALAPPDATA and the override both absent, the
-    lock is hosted under the temp dir and coverage stays cross-process."""
+    """With LOCALAPPDATA and the override both absent, the lock is hosted
+    under the temp dir and coverage stays cross-process."""
     monkeypatch.delenv(xproc._LOCK_DIR_ENV, raising=False)
     monkeypatch.delenv("LOCALAPPDATA", raising=False)
     d = xproc._lock_dir()
@@ -506,9 +515,9 @@ def test_xproc_lock_dir_falls_back_to_tempdir(monkeypatch):
 
 def test_holder_info_reports_our_own_hold_and_clears(lock_dir):
     """holder_info ran _is_stale on our own lock; its pid == os.getpid()
-    leg (recycled-number detection, valid only AFTER ownership is ruled
-    out) then reported the process's own live hold as no-holder, so the
-    'ours' field could never be True. Pinned against the fix."""
+    leg (recycled-number detection, valid only AFTER our own ownership has
+    been excluded) then reported the process's own live hold as no-holder,
+    so the 'ours' field could never be True."""
     assert xproc.holder_info() is None
     with xproc.cross_process_lock("test-op") as owns:
         assert owns is True
@@ -536,29 +545,30 @@ def test_holder_info_hides_stale_locks(lock_dir, dead_pid):
 
 
 def test_refusal_codes_are_a_closed_vocabulary():
-    """Structural finding of the round: nothing enforced the code
-    vocabulary at runtime. The map and hints must speak only CLOSED_CODES,
-    and every code raised via ``.code`` in src/ is a member by the clamp."""
-    import kitchensink4ppt.server as srv
+    """The refusal code vocabulary is closed. The map and hints must speak
+    only CLOSED_CODES, and every code raised via ``.code`` in src/ is a
+    member by the clamp."""
+    from kitchensink4ppt.core.errors import CODES
+    from kitchensink4ppt.surface import copy, envelope
 
-    assert {code for _t, code in srv._CODE_MAP} <= srv.CLOSED_CODES
-    assert set(srv._HINTS) <= srv.CLOSED_CODES
+    assert {code for _t, code in envelope._CODE_MAP} <= CODES
+    assert set(copy.HINTS) == set(CODES)
 
 
 def test_declared_code_outside_the_vocabulary_is_clamped():
-    import kitchensink4ppt.server as srv
+    from kitchensink4ppt.surface import envelope
 
     exc = PptMcpError("boom")
     exc.code = "MADE_UP_CODE"
-    assert srv._refusal(exc)["error"]["code"] == "BAD_PARAMS"
+    assert envelope.refusal(exc)["error"]["code"] == "BAD_PARAMS"
 
     weird = PptMcpError("weird")
     weird.code = 404  # non-string .code from any third-party exception
-    assert srv._refusal(weird)["error"]["code"] == "BAD_PARAMS"
+    assert envelope.refusal(weird)["error"]["code"] == "BAD_PARAMS"
 
     declared = PptMcpError("stale view")
     declared.code = "STALE_ANCHOR"
-    assert srv._refusal(declared)["error"]["code"] == "STALE_ANCHOR"
+    assert envelope.refusal(declared)["error"]["code"] == "STALE_ANCHOR"
 
 
 # ------------------------------------------- sandbox: canonicalizer routes

@@ -1,14 +1,15 @@
 """compress_deck coverage (ops/optimize.py): offender report, dry-run
 zero-mutation guarantee (verified by md5 over every part), image
 downsampling via optional Pillow, the honest no-Pillow refusal, the
-deregister-then-sweep purge, and spine performance on the 131-slide
-heavy deck. COM validation of a compressed deck follows the repo's
+deregister-then-sweep purge, and spine performance on the heavy deck.
+COM validation of a compressed deck follows the repo's
 subprocess + tasklist-gate rules.
 """
 
 from __future__ import annotations
 
 import hashlib
+import inspect
 import shutil
 import subprocess
 import sys
@@ -18,6 +19,7 @@ from pathlib import Path
 import pytest
 
 import make_corpus
+from kitchensink4ppt import server
 from kitchensink4ppt.core.errors import PptMcpError
 from kitchensink4ppt.core.package import PptxPackage
 from kitchensink4ppt.ops import _traverse as tv
@@ -49,6 +51,14 @@ def _has_pillow() -> bool:
 
 
 class TestParams:
+    def test_purge_is_opt_in_on_both_surfaces(self):
+        assert inspect.signature(compress_deck).parameters[
+            "purge_unused"
+        ].default is False
+        assert inspect.signature(server.compress_deck).parameters[
+            "purge_unused"
+        ].default is False
+
     def test_bounds(self, make_deck):
         pkg = PptxPackage(make_deck("params.pptx"))
         with pytest.raises(PptMcpError, match="max_dpi"):
@@ -104,7 +114,7 @@ class TestDryRun:
 
     def test_spine_performance_on_131_slides(self, tmp_path):
         """The audit's performance bar: the full spine and the compress
-        report must stay sane on the heaviest deck."""
+        report must stay sane on the heaviest real deck."""
         path = _copy(tmp_path, "heavy_deck.pptx")
         pkg = PptxPackage(path)
         t0 = time.perf_counter()
@@ -144,13 +154,13 @@ class TestPurge:
 
         pkg = PptxPackage(path)
         assert pkg.has_part(orphan_part)
-        dry = compress_deck(pkg, dry_run=True)
+        dry = compress_deck(pkg, purge_unused=True, dry_run=True)
         entry = next(e for e in dry["media"] if e["part"] == orphan_part)
         assert entry["action"] == "unreferenced"
         assert orphan_part in dry["purge"].get("media", [])
         assert pkg.has_part(orphan_part), "dry run must not purge"
 
-        report = compress_deck(pkg, dry_run=False)
+        report = compress_deck(pkg, purge_unused=True, dry_run=False)
         assert orphan_part in report["purge"]["media"]
         assert not pkg.has_part(orphan_part)
         assert report["purge"]["bytes_freed"] > 0
@@ -167,7 +177,7 @@ class TestPurge:
         unused_before = tv.unused_layouts(pkg)
         slide_count = len(pkg.slide_parts())
 
-        report = compress_deck(pkg, dry_run=False)
+        report = compress_deck(pkg, purge_unused=True, dry_run=False)
         purged_layouts = report["purge"].get("layouts", [])
         assert set(purged_layouts) == set(unused_before)
         pkg.save()
@@ -203,7 +213,7 @@ class TestPurge:
 
         pkg = PptxPackage(path)
         assert notes_part in tv.orphan_notes_slides(pkg)
-        report = compress_deck(pkg, dry_run=False)
+        report = compress_deck(pkg, purge_unused=True, dry_run=False)
         assert notes_part in report["purge"].get("notes_slides", [])
         pkg.save()
         assert not PptxPackage(path).has_part(notes_part)
@@ -214,6 +224,22 @@ class TestPurge:
         report = compress_deck(pkg, purge_unused=False)
         assert report["purge"] is None
         assert pkg.has_part(orphan_part)
+
+    def test_purge_is_opt_in_and_default_preserves_unused_layouts(
+        self, tmp_path, monkeypatch
+    ):
+        path = _copy(tmp_path, "heavy_deck.pptx")
+        pkg = PptxPackage(path)
+        unused_before = set(tv.unused_layouts(pkg))
+        assert unused_before, "fixture must have unused layouts"
+        parts_before = set(pkg.part_names())
+        monkeypatch.setattr(optimize, "_plan_images", lambda *_args: ([], 0))
+
+        report = compress_deck(pkg)
+
+        assert report["purge"] is None
+        assert set(tv.unused_layouts(pkg)) == unused_before
+        assert set(pkg.part_names()) == parts_before
 
 
 # ================================================================== images
@@ -259,17 +285,31 @@ class TestImageCompression:
         px = image_size_px(data, "png")
         assert px is not None and px[0] <= 200
 
-    def test_heavy_deck_real_compress_shrinks_file(self, tmp_path):
+    def test_heavy_deck_real_compress_never_grows_media(self, tmp_path):
         path = _copy(tmp_path, "heavy_deck.pptx")
-        size_before = path.stat().st_size
         pkg = PptxPackage(path)
         slide_count = len(pkg.slide_parts())
+        media_before = {
+            name: pkg.raw_part(name)
+            for name in tv.media_usage(pkg)
+        }
 
         report = compress_deck(pkg)
         assert report["pillow_available"] is True
+        expected_savings = 0
+        for entry in report["media"]:
+            before = media_before[entry["part"]]
+            after = pkg.raw_part(entry["part"])
+            if entry["action"] in {"resize", "recompress"}:
+                assert len(after) < len(before)
+                assert len(after) == entry["new_bytes"]
+                assert len(before) - len(after) == entry["savings_bytes"]
+                expected_savings += entry["savings_bytes"]
+            else:
+                assert after == before
+        assert report["image_savings_bytes"] == expected_savings
         pkg.save()
 
-        assert path.stat().st_size < size_before
         reopened = PptxPackage(path)
         assert len(reopened.slide_parts()) == slide_count
         # every remaining media reference still resolves
@@ -294,8 +334,14 @@ class TestNoPillowPath:
         entry = next(e for e in report["media"] if e["part"] == res["media_part"])
         assert entry["action"] == "skipped-no-pillow"
         assert entry.get("est_savings_bytes", 0) > 0
-        # the purge half still ran (pure XML)
-        assert report["purge"] is not None
+        assert report["purge"] is None
+
+        before = _part_md5s(pkg)
+        dirty_before = set(pkg._dirty)
+        with pytest.raises(PptMcpError, match="Pillow"):
+            compress_deck(pkg, purge_unused=True)
+        assert _part_md5s(pkg) == before
+        assert pkg._dirty == dirty_before
 
 
 # ======================================================= COM validation gate
@@ -344,7 +390,7 @@ def test_com_validator_on_compressed_deck(tmp_path):
 
     path = _copy(tmp_path, "heavy_deck.pptx")
     pkg = PptxPackage(path)
-    compress_deck(pkg)
+    compress_deck(pkg, purge_unused=True)
     pkg.save()
 
     validator = Path(__file__).resolve().parents[1] / "ppt_validator.py"

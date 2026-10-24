@@ -17,22 +17,21 @@ The properties pinned:
    check is off, and performs no network, no cache read, no cache write.
 5. HOSTILE INPUT. Malformed, wrong-typed, and adversarial PyPI payloads
    never crash and never fabricate a version.
-6. ONE SURFACE. diagnose is the only tool that can reach the
-   network. No other tool path fires the check.
+6. ON DEMAND, ONE OP. Called directly, diagnose is the only op that can
+   reach the network; no other op fires the check. The weekly background
+   check starts only from the tool surface, after a call
+   (test_update_dialog.py).
 7. PRIVACY. The first report discloses that the check is a plain HTTPS GET
    to pypi.org, and the request carries no body and no identifier.
 """
 
 from __future__ import annotations
 
-import asyncio
-import inspect
-
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from kitchensink4ppt import __version__, packs, server  # noqa: F401  (the import registers tools)
+from kitchensink4ppt import __version__, server
 from kitchensink4ppt.core import update_check as uc
 
 
@@ -68,14 +67,8 @@ class _Counter:
 
 
 def _call(name, *args, **kwargs):
-    """Invoke a registered tool in process (the pptx suite convention: the
-    registry holds the FunctionTool, the raw callable is .fn). The pack
-    toggles are async since the fastmcp 3.x port, so a coroutine result is
-    driven here rather than at every call site."""
-    out = packs.tool_objects()[name].fn(*args, **kwargs)
-    if inspect.iscoroutine(out):
-        return asyncio.run(out)
-    return out
+    """Invoke a released operation directly, below the fixed MCP surface."""
+    return getattr(server, name)(*args, **kwargs)
 
 
 def _landmine(*args, **kwargs):
@@ -104,11 +97,13 @@ def test_a_newer_release_produces_the_notice(monkeypatch):
     assert out["last_successful_check"]
 
 
-def test_the_running_build_being_current_says_so(monkeypatch):
-    monkeypatch.setattr(uc, "_fetch", _Counter(_payload(__version__)))
+def test_the_running_stable_build_being_current_says_so(monkeypatch):
+    published = "2.0.0"
+    monkeypatch.setattr(uc, "current_version", lambda: published)
+    monkeypatch.setattr(uc, "_fetch", _Counter(_payload(published)))
     out = uc.status()
     assert out["state"] == "current"
-    assert out["latest_version"] == __version__
+    assert out["latest_version"] == published
     assert "install_note" not in out
 
 
@@ -332,17 +327,27 @@ def test_no_other_tool_path_fires_the_check(tmp_path, monkeypatch):
     _call("list_elements", str(deck), "slides")
     _call("get_workflows")
     _call("get_workflows", "build-a-diagram")
-    _call("enable_tools", [])
-    _call("disable_tools", [])
+    server.create_server()
     assert counter.calls == 0
     _call("diagnose")
     assert counter.calls == 1
 
 
-def test_nothing_starts_a_thread(monkeypatch):
-    """The check runs on demand: the module offers no background starter."""
-    assert not hasattr(uc, "start_background_check")
-    assert "threading" not in dir(uc)
+def test_direct_calls_start_no_background_check(tmp_path, monkeypatch):
+    """Calling ops directly (no tool surface) never starts the weekly
+    background check: only the surface's after-call step does."""
+    import threading
+
+    from pptx import Presentation
+
+    monkeypatch.setattr(uc, "_fetch", _Counter(_payload("999.0.0")))
+    name = f"{uc.LOGGER_NAME}-update-check"
+    before = sum(1 for t in threading.enumerate() if t.name == name)
+    deck = tmp_path / "d.pptx"
+    Presentation().save(str(deck))
+    _call("get_presentation_info", str(deck))
+    _call("get_workflows")
+    assert sum(1 for t in threading.enumerate() if t.name == name) == before
 
 
 # ----------------------------------------------------------- 7. privacy

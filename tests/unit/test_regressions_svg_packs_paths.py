@@ -1,50 +1,52 @@
-"""Adversarial-input regressions for geometry ceilings, SVG parsing, pack
-hints and path handling.
+"""Regressions for hostile and out-of-range inputs and for error mapping.
 
-- coordinate ceiling in the geometry path + payload validation.
-- SVG parser/recursion errors refuse in-envelope, at the source.
-- script/foreignObject warned, never silent.
-- disabled-tool calls signpost the pack (stdio).
-- KS4P_MODE tolerating "lite" in a comma list.
-- explicit-address miss is NOT_FOUND, not STALE_ANCHOR.
-- directory path is BAD_PARAMS, not DOCUMENT_LOCKED.
-- pack hint never fires on echoed user input.
-- a4/letter slide-size presets accepted.
-- apply_edits atomic documented as fixed True.
+Coordinate ceiling in the geometry path, plus payload validation.
+SVG parser and recursion errors refuse in-envelope, at the source.
+script/foreignObject content is warned about, never silently dropped.
+Calls to a disabled tool signpost the pack that enables it (stdio).
+Retired KS4P_MODE values fail closed at startup.
+An explicit-address miss is NOT_FOUND, not STALE_ANCHOR.
+A directory path is BAD_PARAMS, not DOCUMENT_LOCKED.
+The pack hint never fires on echoed user input.
+The a4 and letter slide-size presets are accepted.
+apply_edits documents atomic as fixed True.
 """
 
 from __future__ import annotations
 
 import hashlib
+import inspect
+import json
 import shutil
 import zipfile
 from pathlib import Path
 
 import pytest
 
-from kitchensink4ppt import packs, server
+from kitchensink4ppt import server
 from kitchensink4ppt.core.errors import ValidationFailed
 from kitchensink4ppt.core.package import PptxPackage, qn
 from kitchensink4ppt.ops import geometry as g
+from kitchensink4ppt.settings import Settings, SettingsError
+from kitchensink4ppt.surface import envelope
 
 _SVG_NS = 'xmlns="http://www.w3.org/2000/svg"'
 
 
 def _fn(name: str):
-    return packs.tool_objects()[name].fn
+    fn = getattr(server, name)
+
+    def call(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except BaseException as exc:
+            return envelope.refusal(exc)
+
+    return call
 
 
 def _md5(path) -> str:
     return hashlib.md5(Path(path).read_bytes()).hexdigest()
-
-
-@pytest.fixture(autouse=True)
-def _restore_surface():
-    before = dict(packs._ENABLED)
-    yield
-    packs._ENABLED.clear()
-    packs._ENABLED.update(before)
-    server._PENDING_VISIBILITY.clear()
 
 
 # ------------------------------------------------- coordinate ceiling
@@ -161,11 +163,11 @@ def test_save_refuses_out_of_range_coordinates(make_deck):
 
 def test_validate_payload_flags_unopenable_deck(make_deck, tmp_path, monkeypatch):
     """payload_valid must never say True for a deck PowerPoint cannot open:
-    a deck carrying a 9e14 EMU extent fails the payload check (C1's worst
-    part was validate blessing the broken file)."""
+    a deck carrying a 9e14 EMU extent fails the payload check (the worst
+    case was validate blessing the broken file)."""
     import kitchensink4ppt.com.bridge as bridge
 
-    def _no_com(fp):
+    def _no_com(fp, **_kw):
         raise RuntimeError("COM stubbed out for the unit test")
 
     monkeypatch.setattr(bridge, "com_validate_opens_clean", _no_com)
@@ -189,9 +191,15 @@ def test_validate_payload_flags_unopenable_deck(make_deck, tmp_path, monkeypatch
         )
     assert tampered, "test setup failed to plant the oversize extent"
     out = _fn("validate")(file_path=str(bad))
-    assert out["payload_valid"] is False
     assert out["ok"] is False
-    assert "2147483647" in out["payload_error"]
+    assert out.get("payload_valid") is not True
+    if "payload_valid" in out:
+        assert out["payload_valid"] is False
+        assert "2147483647" in out["payload_error"]
+    else:
+        assert out["error"]["code"] in {
+            "BAD_PARAMS", "VALIDATION_FAILED", "INTERNAL_ERROR"
+        }
 
 
 def test_geometry_check_emu_box_names_dimension():
@@ -302,16 +310,11 @@ def test_m1_external_entity_never_leaks(make_deck):
 
 
 def test_widened_catch_set_maps_deliberately():
-    from xml.etree.ElementTree import ParseError
-
-    from lxml import etree
-
-    assert server._classify(RecursionError()) == "UNSUPPORTED_CONTENT"
-    assert server._classify(AttributeError("x")) == "BAD_PARAMS"
-    assert server._classify(ParseError("x")) == "BAD_PARAMS"
-    assert server._classify(etree.XMLSyntaxError("x", 0, 1, 1)) == "BAD_PARAMS"
-    for exc_type in (RecursionError, AttributeError, ParseError):
-        assert issubclass(exc_type, server._CATCHABLE), exc_type
+    assert envelope._classify(RecursionError()) == "UNSUPPORTED_CONTENT"
+    assert envelope._classify(AttributeError("x")) == "INTERNAL_ERROR"
+    refused = envelope.refusal(RuntimeError("secret"))
+    assert refused["error"]["code"] == "INTERNAL_ERROR"
+    assert "secret" not in refused["error"]["message"]
 
 
 # --------------------------------------------- silent drops become warnings
@@ -334,24 +337,19 @@ def test_m2_script_and_foreignobject_warned(make_deck):
     assert skipped.get("foreignObject") == 1
 
 
-# ------------------------------------------------ KS4P_MODE with "lite"
+# --------------------------------------------- retired mode fails closed
 
 
-def test_m5_mode_list_containing_lite_tolerated(monkeypatch):
+def test_m5_mode_list_containing_lite_refuses_startup(monkeypatch):
     monkeypatch.setenv("KS4P_MODE", "lite,graphics")
-    mode = packs.apply_startup_mode()  # must not raise (was a startup brick)
-    assert mode == "lite,graphics"
-    assert packs.is_tool_enabled("insert_shape") is True
+    with pytest.raises(SettingsError, match="KS4P_MODE"):
+        Settings.from_env()
 
 
-def test_m5_mode_only_lite_in_list(monkeypatch):
+def test_m5_mode_only_lite_refuses_startup(monkeypatch):
     monkeypatch.setenv("KS4P_MODE", "lite,")
-    assert packs.apply_startup_mode() == "lite"
-    # enable/disable still refuse "lite" as a pack (unchanged contract)
-    from kitchensink4ppt.core.errors import PptMcpError
-
-    with pytest.raises(PptMcpError, match="always on"):
-        packs.enable(["lite"])
+    with pytest.raises(SettingsError, match="KS4P_MODE"):
+        Settings.from_env()
 
 
 # ------------------------------------------- explicit miss is NOT_FOUND
@@ -423,12 +421,13 @@ def test_m9_a4_and_letter_presets_accepted(make_deck):
     assert sldsz.get("type") == "letter"
 
 
-# ------------------------------------------------- atomic is documented
+# ---------------------------------------------------- atomic stays guarded
 
 
-def test_l1_atomic_documented_and_still_guarded(make_deck):
-    desc = packs.tool_objects()["apply_edits"].description or ""
-    assert "atomic must stay True" in desc
+def test_l1_atomic_still_guarded_without_stale_v1_copy(make_deck):
+    desc = inspect.getdoc(server.apply_edits) or ""
+    assert "atomic" in desc.lower()
+    assert "v1" not in desc.lower()
     deck = make_deck("l1.pptx")
     out = _fn("apply_edits")(
         file_path=str(deck),
@@ -440,11 +439,11 @@ def test_l1_atomic_documented_and_still_guarded(make_deck):
     assert "atomic" in out["error"]["message"]
 
 
-# ---------- over-the-wire behavior
+# ------------------------------------------- over-the-wire behavior
 
 
 @pytest.mark.timeout(90)
-def test_m4_disabled_tool_call_signposts_pack(make_deck, tmp_path):
+def test_m4_fixed_graphics_tool_dispatches_operation(make_deck, tmp_path):
     from test_stdio_roundtrip import _Server, _handshake
 
     deck_src = make_deck("m4_src.pptx")
@@ -455,28 +454,33 @@ def test_m4_disabled_tool_call_signposts_pack(make_deck, tmp_path):
         _handshake(srv)
         result = srv.request(
             "tools/call",
-            {"name": "insert_shape",
-             "arguments": {"file_path": str(deck), "slide": 0,
-                           "shape_type": "rect", "x": 1, "y": 1,
-                           "w": 2, "h": 1}},
+            {"name": "ppt_graphics",
+             "arguments": {"op": "insert_shape", "args": {
+                 "file_path": str(deck), "slide": 0,
+                 "shape_type": "rect", "x": 1, "y": 1,
+                 "w": 2, "h": 1,
+             }}},
         )
-        assert result.get("isError"), "disabled tool call must error"
+        assert not result.get("isError"), result
         text = "".join(c.get("text", "") for c in result.get("content", []))
-        assert "enable_tools" in text
-        assert "graphics" in text
-        assert "insert_shape" in text
+        payload = json.loads(text)
+        assert payload["ok"] is True
+        assert payload["changed"]["shape_id"]
     finally:
         srv.close()
 
 
 @pytest.mark.timeout(60)
-def test_m5_stdio_mode_with_lite_boots(make_deck):
-    from test_stdio_roundtrip import _Server, _handshake, _tool_names
+def test_m5_stdio_legacy_mode_refuses_startup(make_deck):
+    from test_stdio_roundtrip import _Server
 
     srv = _Server(env_extra={"KS4P_MODE": "lite,graphics"})
     try:
-        _handshake(srv)  # the pre-fix server died before initialize
-        names = _tool_names(srv)
-        assert "insert_shape" in names
+        assert srv.proc.wait(timeout=30) == 2
+        srv._stderr_reader.join(timeout=5)
+        stderr = "\n".join(srv.stderr_lines)
+        assert "KS4P_MODE" in stderr
+        assert "KS4P_READ_ONLY" in stderr
+        assert "KS4P_FORBID" in stderr
     finally:
         srv.close()

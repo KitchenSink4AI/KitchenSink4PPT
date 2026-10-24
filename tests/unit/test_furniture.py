@@ -37,9 +37,68 @@ def proposal(tmp_path):
     return PptxPackage(p)
 
 
+def _theme_rgb(pkg, theme_part, slot):
+    path = (
+        f"{qn('a:themeElements')}/{qn('a:clrScheme')}/"
+        f"{qn(f'a:{slot}')}/{qn('a:srgbClr')}"
+    )
+    el = pkg.root(theme_part).find(
+        path
+    )
+    assert el is not None
+    return el.get("val")
+
+
+def test_created_notes_master_uses_neutral_theme_not_dark_slide_brand(
+    proposal, monkeypatch
+):
+    """Notes pages stay readable when the presentation brand is dark."""
+    pkg = proposal
+    slide_theme = nt._first_master_theme(pkg)
+    assert slide_theme is not None
+    scheme = pkg.root(slide_theme).find(
+        f"{qn('a:themeElements')}/{qn('a:clrScheme')}"
+    )
+    assert scheme is not None
+    for slot, value in (("dk1", "EEF3F6"), ("lt1", "050608")):
+        slot_el = scheme.find(qn(f"a:{slot}"))
+        assert slot_el is not None
+        for child in list(slot_el):
+            slot_el.remove(child)
+        etree.SubElement(slot_el, qn("a:srgbClr")).set("val", value)
+    pkg.mark_dirty(slide_theme)
+
+    # The corpus deck carries an unregistered python-pptx notes master. Force
+    # the missing-master branch under test without rewriting the fixture ZIP.
+    monkeypatch.setattr(nt, "_notes_master_part", lambda _pkg: None)
+    monkeypatch.setattr(nt, "_adopt_unregistered_notes_master", lambda _pkg: None)
+
+    notes_master, created = nt._ensure_notes_master(pkg)
+    assert created is True
+    notes_theme = None
+    for rel in pkg.rels_for(notes_master).getroot():
+        if rel.get("Type") == nt._RT_THEME:
+            notes_theme = nt.resolve_target(notes_master, rel.get("Target"))
+            break
+    assert notes_theme is not None
+
+    assert _theme_rgb(pkg, slide_theme, "dk1") == "EEF3F6"
+    assert _theme_rgb(pkg, slide_theme, "lt1") == "050608"
+    assert _theme_rgb(pkg, notes_theme, "dk1") == "000000"
+    assert _theme_rgb(pkg, notes_theme, "lt1") == "FFFFFF"
+    notes_fonts = pkg.root(notes_theme).find(
+        f"{qn('a:themeElements')}/{qn('a:fontScheme')}"
+    )
+    assert notes_fonts is not None
+    major_latin = notes_fonts.find(f"{qn('a:majorFont')}/{qn('a:latin')}")
+    minor_latin = notes_fonts.find(f"{qn('a:minorFont')}/{qn('a:latin')}")
+    assert major_latin is not None and major_latin.get("typeface") == "Aptos Display"
+    assert minor_latin is not None and minor_latin.get("typeface") == "Aptos"
+
+
 @pytest.fixture()
 def heavy(tmp_path):
-    p = tmp_path / "mb.pptx"
+    p = tmp_path / "heavy.pptx"
     shutil.copy(CORPUS / "heavy_deck.pptx", p)
     return PptxPackage(p)
 

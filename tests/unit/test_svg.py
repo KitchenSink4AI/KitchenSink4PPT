@@ -12,6 +12,7 @@ from lxml import etree
 from kitchensink4ppt.core.errors import PptMcpError
 from kitchensink4ppt.core.package import PptxPackage, qn
 from kitchensink4ppt.ops import geometry as g
+from kitchensink4ppt.ops import masters
 from kitchensink4ppt.ops import shapes as shp
 from kitchensink4ppt.ops import slides as sl
 from kitchensink4ppt.ops.read import get_slide_info
@@ -56,6 +57,38 @@ COMPOSITE = f"""<svg {SVG_NS} viewBox="0 0 200 120">
     </g>
   </g>
 </svg>"""
+
+
+def test_svg_to_shapes_on_master_and_layout(make_deck, tmp_path):
+    path = make_deck("svg-master.pptx")
+    pkg = PptxPackage(path)
+    inv = masters.list_master_elements(pkg)["masters"][0]
+    layout = inv["layouts"][0]
+
+    on_master = svg_to_shapes(
+        pkg, None, COMPOSITE, 0.5, 0.5, 3.0, master=0
+    )
+    assert on_master["scope"] == "master"
+    assert on_master["part"] == inv["part"]
+    assert pkg.root(inv["part"]).find(f".//{qn('p:grpSp')}") is not None
+
+    on_layout = svg_to_shapes(
+        pkg, None, COMPOSITE, 0.5, 0.5, 3.0,
+        layout=layout["index"], group=False,
+    )
+    assert on_layout["scope"] == "layout"
+    assert on_layout["part"] == layout["part"]
+    assert on_layout["created"]
+    pkg.save(tmp_path / "svg-master-roundtrip.pptx")
+
+
+def test_svg_to_shapes_requires_exactly_one_target(make_deck):
+    path = make_deck("svg-targets.pptx")
+    pkg = PptxPackage(path)
+    with pytest.raises(PptMcpError, match="exactly one target"):
+        svg_to_shapes(pkg, None, COMPOSITE, 0, 0, 2)
+    with pytest.raises(PptMcpError, match="exactly one target"):
+        svg_to_shapes(pkg, 0, COMPOSITE, 0, 0, 2, master=0)
 
 
 class TestCompositeSvg:

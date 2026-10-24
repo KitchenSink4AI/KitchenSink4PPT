@@ -1,4 +1,4 @@
-"""PptxPackage: byte-identical round-trips on the corpus, pre-open
+"""PptxPackage: byte-identical round-trips on the real corpus, pre-open
 refusals, presentation-order slide resolution against the python-pptx oracle,
 payload validation (dangling rels), the per-slide shape-id allocator, and the
 atomic add_slide_part machinery.
@@ -20,6 +20,7 @@ import pytest
 from lxml import etree
 
 from kitchensink4ppt.core.errors import (
+    DocumentBusy,
     DocumentCorrupt,
     DocumentLocked,
     DocumentNotFound,
@@ -99,7 +100,7 @@ def _layout_of(pkg: PptxPackage, slide_part: str) -> str:
 
 @pytest.mark.parametrize("name", CORPUS_NAMES)
 def test_roundtrip_byte_identical_when_nothing_dirty(name, tmp_path):
-    """Open a deck, read it (parsing parts lazily), save with nothing
+    """Open a real deck, read it (parsing parts lazily), save with nothing
     marked dirty: every part's bytes and the entry order must be identical."""
     work = _work_copy(name, tmp_path)
     pkg = PptxPackage(work)
@@ -161,8 +162,29 @@ def test_exclusively_locked_file_detected(make_deck):
         0,
         None,
     )
+    owner = doc.with_name("~$" + doc.name)
+    owner.write_bytes(b"")  # PowerPoint writes this beside a deck it has open
     try:
         with pytest.raises(DocumentLocked):
+            PptxPackage(doc)
+    finally:
+        handle.Close()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="share-mode locking is Windows-only")
+def test_a_deck_held_with_no_owner_file_is_busy_not_open_in_powerpoint(make_deck):
+    """A hold with no PowerPoint owner file is another program's: a save, a
+    sync client. It is looked at again and then reported as busy, never as
+    open in PowerPoint."""
+    doc = make_deck()
+    import win32con
+    import win32file
+
+    handle = win32file.CreateFile(
+        str(doc), win32con.GENERIC_READ, 0, None, win32con.OPEN_EXISTING, 0, None,
+    )
+    try:
+        with pytest.raises(DocumentBusy, match="being written by another program"):
             PptxPackage(doc)
     finally:
         handle.Close()
@@ -216,6 +238,21 @@ def test_validate_payload_catches_dangling_rel(make_deck):
     pkg = PptxPackage(doc)
     pkg.add_relationship(PRESENTATION_PART, RT_SLIDE, "slides/slide999.xml")
     with pytest.raises(ValidationFailed, match="dangling"):
+        pkg.save(do_backup=False)
+    assert doc.read_bytes() == original, "failed save touched the original"
+
+
+def test_validate_payload_catches_xml_reference_to_missing_relationship(make_deck):
+    doc = make_deck()
+    original = doc.read_bytes()
+    pkg = PptxPackage(doc)
+    slide_part = pkg.slide_parts()[0]
+    cnvpr = pkg.root(slide_part).find(f".//{qn('p:cNvPr')}")
+    link = etree.SubElement(cnvpr, qn("a:hlinkClick"))
+    link.set(qn("r:id"), "rIdMissing")
+    pkg.mark_dirty(slide_part)
+
+    with pytest.raises(ValidationFailed, match="dangling relationship id"):
         pkg.save(do_backup=False)
     assert doc.read_bytes() == original, "failed save touched the original"
 

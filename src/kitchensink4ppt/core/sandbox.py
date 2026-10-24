@@ -32,11 +32,21 @@ Canonicalization defeats the classic escapes before containment is tested:
 
 Roots are parsed lazily and re-parsed whenever the raw environment value
 changes, so tests (and long-lived processes) see updates immediately.
+
+The roots govern the paths a call names. The server's own intermediate
+files are not among them: a slide render that export_shape_image cuts a
+shape from goes into a ServerScratch folder (server_scratch), as the
+LibreOffice exports put their intermediate PDF in a temporary folder. A
+call's arguments arrive as JSON text and can never produce a ServerScratch,
+so a path a caller names is always checked here.
 """
 
 from __future__ import annotations
 
+import contextlib
 import os
+import tempfile
+from collections.abc import Iterator
 
 from .errors import PptMcpError
 
@@ -173,3 +183,32 @@ def check_path(path: str | os.PathLike, purpose: str = "access") -> str:
 
 def _roots_display(roots: tuple[tuple[str, str], ...]) -> str:
     return "; ".join(display for display, _canon in roots)
+
+
+# ---------------------------------------------------------- server scratch
+
+
+class ServerScratch:
+    """A private temporary folder the server made for its own intermediate
+    files. Only server_scratch() makes one; a function that writes into a
+    folder takes either a caller's path, which it checks with check_path, or
+    one of these, which it uses as it is. os.fspath() and Path() read it."""
+
+    __slots__ = ("path",)
+
+    def __init__(self, path: str) -> None:
+        self.path = path
+
+    def __fspath__(self) -> str:
+        return self.path
+
+    def __repr__(self) -> str:
+        return f"ServerScratch({self.path!r})"
+
+
+@contextlib.contextmanager
+def server_scratch(prefix: str) -> Iterator[ServerScratch]:
+    """A new ServerScratch in the system's temporary folder, removed with
+    everything in it when the block ends."""
+    with tempfile.TemporaryDirectory(prefix=prefix) as folder:
+        yield ServerScratch(folder)

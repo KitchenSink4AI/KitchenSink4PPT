@@ -1,57 +1,67 @@
-"""get_workflows and diagnose: recipes must name real tools and real packs."""
+"""Workflow and diagnostic contracts on the fixed operation surface."""
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
-from kitchensink4ppt import packs, server  # noqa: F401  (the import registers tools)
+from kitchensink4ppt import server
 from kitchensink4ppt.core.errors import PptMcpError
 from kitchensink4ppt.ops import workflows as _wf
 from kitchensink4ppt.ops.diagnostics import diagnose
+from kitchensink4ppt.registry import GROUP_OPS, OP_TO_GROUP, public_ops
+from kitchensink4ppt.surface import copy
 
 
-def test_index_lists_all_workflows():
+def test_index_lists_all_workflows_without_retired_surface_controls():
     out = _wf.get_workflows()
     assert set(out["workflows"]) == set(_wf.WORKFLOWS)
     for entry in out["workflows"].values():
         assert entry["summary"]
-        assert entry["packs"]
+        assert "packs" not in entry
 
 
-def test_every_step_names_a_registered_tool():
-    registered = set(packs.tool_objects())
-    for name, wf in _wf.WORKFLOWS.items():
-        for step in wf["steps"]:
-            assert step["tool"] in registered, (
+def test_every_step_names_a_registered_operation():
+    registered = set(public_ops())
+    for name, workflow in _wf.WORKFLOWS.items():
+        assert "packs" not in workflow, name
+        for step in workflow["steps"]:
+            assert step["tool"] in GROUP_OPS, (
                 f"workflow {name} references unknown tool {step['tool']}"
+            )
+            assert step["op"] in registered, (
+                f"workflow {name} references unknown operation {step['op']}"
+            )
+            assert OP_TO_GROUP[step["op"]] == step["tool"], (
+                f"workflow {name} puts {step['op']} under {step['tool']}"
             )
             assert step["why"]
 
 
-def test_every_pack_reference_is_real():
-    valid = set(packs.pack_names()) | {"lite"}
-    for name, wf in _wf.WORKFLOWS.items():
-        for p in wf["packs"]:
-            assert p in valid, f"workflow {name} names unknown pack {p}"
+def test_every_surface_group_is_represented_by_a_workflow_step():
+    named = {
+        step["tool"]
+        for workflow in _wf.WORKFLOWS.values()
+        for step in workflow["steps"]
+    }
+    assert named == set(GROUP_OPS)
 
 
-def test_workflow_tools_live_in_declared_packs():
-    """A recipe's steps must be satisfiable by lite + its declared packs."""
-    for name, wf in _wf.WORKFLOWS.items():
-        allowed = set(wf["packs"]) | {"lite"}
-        for step in wf["steps"]:
-            pack = packs.pack_of(step["tool"])
-            assert pack in allowed, (
-                f"workflow {name} step {step['tool']} needs pack {pack!r} "
-                f"but the recipe only declares {sorted(wf['packs'])}"
-            )
-
-
-def test_each_pack_has_a_workflow_naming_it():
-    """Discoverability rule 4: recipes are how packs get found."""
-    named = {p for wf in _wf.WORKFLOWS.values() for p in wf["packs"]}
-    for pack in packs.pack_names():
-        assert pack in named, f"no workflow advertises pack {pack}"
+def test_every_customer_workflow_string_is_filled_copy():
+    # The recipe prose is filled (the released wording): every string is
+    # present and carries no slot marker, no pack word and no retired
+    # toggle. The release gate scans the same strings in the built wheel.
+    values: list[str] = []
+    for workflow in _wf.WORKFLOWS.values():
+        values.append(workflow["summary"])
+        values.extend(step["why"] for step in workflow["steps"])
+        values.extend(workflow["notes"])
+    assert values and all(value.strip() for value in values)
+    for value in values:
+        assert copy.SLOT not in value and "FACTS TO CONVEY" not in value, value
+        assert "enable_tools" not in value and "disable_tools" not in value, value
+        assert not re.search(r"packs?", value.lower()), value
 
 
 def test_unknown_task_refuses_with_menu():
@@ -84,7 +94,10 @@ def test_diagnose_missing_file(tmp_path):
     assert "problem" in out["file"]
 
 
-def test_diagnose_server_tool_adds_surface():
-    out = packs.tool_objects()["diagnose"].fn()
-    assert "surface" in out
-    assert out["surface"]["active_tools"] >= len(packs.tool_names()["lite"])
+def test_diagnose_server_operation_adds_fixed_surface():
+    out = server.diagnose()
+    assert out["surface"]["fixed"] is True
+    assert out["surface"]["operations"] == 145
+    assert out["surface"]["tools"] == {
+        name: len(ops) for name, ops in GROUP_OPS.items()
+    }

@@ -1,7 +1,6 @@
 """Regression suite for the FILE-route write lock under contention.
 
-Ported from the Excel sibling (xlsx-mcp), whose concurrency gate disproved
-the pre-token two-syscall design that this repo also shipped. The original
+It pins the fix for the pre-token two-syscall design. The original
 ``_acquire_lockfile`` created the lockfile with ``O_CREAT|O_EXCL`` and wrote
 the payload as a SECOND syscall, which leaves a window in which the file
 exists but is EMPTY. A concurrent acquirer that read it inside that window
@@ -275,8 +274,11 @@ CONTENDER = textwrap.dedent("""\
     from kitchensink4ppt.core import safesave
     from kitchensink4ppt.core.safesave import write_lock, MutationLockTimeout
 
-    target, record = sys.argv[2], sys.argv[3]
+    target, record, ready, go = sys.argv[2], sys.argv[3], sys.argv[5], sys.argv[6]
     safesave.LOCK_WAIT_SECONDS = float(sys.argv[4])
+    open(ready, "w").close()
+    while not os.path.exists(go):
+        time.sleep(0.01)
     out = {"pid": os.getpid(), "entered": False, "refused": False}
     try:
         with write_lock(target):
@@ -315,12 +317,37 @@ def test_four_concurrent_writers_cannot_steal_a_half_written_lock(
     hold = 3.0
     contender_wait = 1.5
 
-    victim = subprocess.Popen(
-        [sys.executable, "-X", "utf8", "-c", VICTIM,
-         str(SRC), str(doc), str(victim_record), str(flag), str(hold)],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-    )
+    contenders = []
+    go = tmp_path / "contenders.go"
+    for i in range(4):
+        record = tmp_path / f"contender{i}.json"
+        ready = tmp_path / f"contender{i}.ready"
+        contenders.append((
+            record,
+            ready,
+            subprocess.Popen(
+                [sys.executable, "-X", "utf8", "-c", CONTENDER,
+                 str(SRC), str(doc), str(record), str(contender_wait),
+                 str(ready), str(go)],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            ),
+        ))
+    victim = None
+    results = []
     try:
+        ready_deadline = time.monotonic() + 120
+        while not all(ready.exists() for _, ready, _ in contenders):
+            assert all(p.poll() is None for _, _, p in contenders), (
+                "a contender died before reaching the synchronized start"
+            )
+            assert time.monotonic() < ready_deadline, "contenders never became ready"
+            time.sleep(0.01)
+
+        victim = subprocess.Popen(
+            [sys.executable, "-X", "utf8", "-c", VICTIM,
+             str(SRC), str(doc), str(victim_record), str(flag), str(hold)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
         deadline = time.monotonic() + 60
         while not flag.exists():
             assert victim.poll() is None, "victim died before taking the lock"
@@ -331,30 +358,24 @@ def test_four_concurrent_writers_cannot_steal_a_half_written_lock(
         with open(lock, "w"):  # truncate: the half-written state, frozen
             pass
 
-        contenders = []
-        for i in range(4):
-            record = tmp_path / f"contender{i}.json"
-            contenders.append((
-                record,
-                subprocess.Popen(
-                    [sys.executable, "-X", "utf8", "-c", CONTENDER,
-                     str(SRC), str(doc), str(record), str(contender_wait)],
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                ),
-            ))
+        go.touch()
 
-        results = []
-        for record, p in contenders:
+        for record, _ready, p in contenders:
             _, err = p.communicate(timeout=120)
             assert p.returncode == 0, (
                 f"contender crashed: {err.decode('utf-8', 'replace')}"
             )
             results.append(json.loads(record.read_text(encoding="utf-8")))
     finally:
-        _, verr = victim.communicate(timeout=120)
-        assert victim.returncode == 0, (
-            f"victim crashed: {verr.decode('utf-8', 'replace')}"
-        )
+        go.touch(exist_ok=True)
+        for _record, _ready, process in contenders:
+            if process.poll() is None:
+                process.communicate(timeout=120)
+        if victim is not None:
+            _, verr = victim.communicate(timeout=120)
+            assert victim.returncode == 0, (
+                f"victim crashed: {verr.decode('utf-8', 'replace')}"
+            )
 
     held = json.loads(victim_record.read_text(encoding="utf-8"))
     stole = [

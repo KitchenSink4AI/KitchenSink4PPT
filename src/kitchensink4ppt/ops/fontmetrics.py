@@ -1,7 +1,7 @@
 """Real advance-width measurement, behind the optional `metrics` extra.
 
 Why this module exists: the fit model in ops/text.py was an average-glyph
-width (0.5 x point size per character). It predicted
+width (0.5 x point size per character). In practice it predicted
 a two-line wrap for a Calibri 12 pt label that PowerPoint rendered as three
 lines, because Calibri's per-character width swings between roughly 0.40 and
 0.51 of the point size depending on the string. An estimator that passes a
@@ -478,8 +478,8 @@ def font_file_name(family: str, *, bold: bool = False,
 
 class StyledRun(NamedTuple):
     """A stretch of text in ONE resolved format. A paragraph is a sequence
-    of these; measuring the whole paragraph in the first run's format is
-    a known source of error.
+    of these; measuring the whole paragraph in the first run's format
+    misjudges any paragraph whose runs are formatted differently.
 
     `spc_pt` is PowerPoint's character spacing (a:rPr/@spc, hundredths of a
     point) in points, added once per character. Ignoring it measured an

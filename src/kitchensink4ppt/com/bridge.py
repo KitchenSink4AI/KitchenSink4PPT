@@ -19,7 +19,7 @@ the singleton contract:
 - CoInitialize is called freely and CoUninitialize is NEVER called: pywin32's
   CoUninitialize always decrements, and a paired call on a host-initialized
   thread destroys the host's apartment and disconnects every COM proxy it
-  holds.
+  holds (verified empirically on the Word editor's live layer).
 - After a self-launched instance is quit, a bounded 15s poll confirms the
   process actually exited (POWERPNT lingers a few seconds after Quit).
 - Every exported artifact is verified to exist and be non-empty after the
@@ -28,27 +28,28 @@ the singleton contract:
 Nothing here kills processes it did not spawn, and nothing here attaches to
 the user's instance beyond the refusal check above.
 
-LIVE-SAFETY STACK:
+LIVE-SAFETY STACK (the same design as the Word editor's live layer):
 - Serialization: every COM entry point runs under the process-wide COM lock
   (com/serial.py). _powerpoint() itself takes the lock, so the com_gates
   scripts that enter a session directly are covered too. On a singleton
   server this is not a mitigation, it is the only isolation there is.
-- Bounded timeouts: the public operations run on a worker thread under a
-  deadline, turning the report's 30-minute silent hang into a structured
-  PowerPointBlocked. NOTHING IN THIS PACKAGE FORCE-ENDS A POWERPOINT PROCESS.
-  The refusal REPORTS AN OBSERVATION AND A NON-ACTION: when a pid was
-  recorded on positive evidence it says that process was not running when
-  the call began, that this call did not force-end it, and that its
-  current state was not re-checked. It claims nothing about the present,
-  because a timeout cannot revalidate a hung apartment and a token taken
-  minutes earlier is not proof of what is true now.
+- Bounded timeouts: hidden operations use a 60-second deadline.  After the
+  existing false-timeout grace, cancellation reuses the server-exit reaper:
+  it may end only a journalled process whose creation time, executable and
+  /Automation command line are revalidated independently. COM normally also
+  revalidates invisibility and the complete presentation set. If the owned
+  instance's own modal dialog blocks that inspection, an identity-only route
+  is allowed only for a journalled read-only open when the OS window layer
+  sees that dialog and no visible application frame. Foreign, unsaved,
+  untitled, ambiguous, and unowned instances are left running. The refusal
+  records what happened.
 - Queue abandonment: a call that gives up while its worker is still
   QUEUED on the serialization lock marks itself abandoned, atomically,
   against the worker's own attempt to start. The loser stands down, so a
   caller told the operation did not happen never has it happen anyway
   behind its back, and the retry it was offered is safe.
 - DisplayAlerts: suppressed for the duration and RESTORED when the instance
-  is the user's. The pre-v1.1 code set ppAlertsNone on whatever instance it
+  is the user's. The earlier code set ppAlertsNone on whatever instance it
   reached and never put it back, which on a singleton leaked into the
   user's own session.
 - Dialogs: powerpoint_status reports modal dialogs seen at the OS WINDOW
@@ -60,7 +61,10 @@ from __future__ import annotations
 
 import contextlib
 import functools
+import os
+import re
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -68,14 +72,15 @@ from pathlib import Path
 from ..core.errors import (
     DocumentCorrupt,
     DocumentLocked,
-    DocumentNotFound,
     PowerPointBlocked,
     PowerPointBusy,
     PowerPointDisconnected,
     PowerPointNotRunning,
     PptMcpError,
 )
-from ..core.sandbox import check_path
+from ..core import safesave
+from ..core.sandbox import ServerScratch, check_path
+from ..core.swapwait import require_deck
 from . import serial as _serial
 
 PROCESS_NAME = "POWERPNT.EXE"
@@ -84,10 +89,9 @@ PP_ALERTS_NONE = 1  # ppAlertsNone
 PP_SAVE_AS_PDF = 32  # ppSaveAsPDF
 PP_FIXED_FORMAT_TYPE_PDF = 2  # ppFixedFormatTypePDF
 QUIT_POLL_SECONDS = 15.0
-#: How much longer a timed-out operation is given before the refusal is
-#: built. The deadline bounds the CALLER's wait and cancels nothing, so a
-#: worker that finishes in this window has finished and its result is
-#: returned instead of a false timeout.
+#: How much longer a timed-out operation is given before cancellation is
+#: attempted. A worker that finishes in this window has finished and its
+#: result is returned instead of a false timeout.
 TIMEOUT_GRACE_SECONDS = 10.0
 
 #: TEST SEAM. _run_bounded builds its internal completion signal
@@ -99,7 +103,7 @@ _COMPLETION_EVENT_FACTORY = threading.Event
 
 DEFAULT_IMAGE_WIDTH = 1280
 
-# HRESULTs as signed ints, the way pywin32 surfaces them (pitfall 15).
+# HRESULTs as signed ints, the way pywin32 surfaces them.
 RPC_E_CALL_REJECTED = -2147418111  # modal dialog / call rejected
 RPC_E_SERVERCALL_RETRYLATER = -2147417846  # busy, retry later
 RPC_E_DISCONNECTED = -2147417848  # server died under a live proxy
@@ -135,7 +139,8 @@ STARTUP_HRESULTS = {
 }
 #: The subset worth one more try. The ONLY action taken between the two
 #: attempts is re-arming this thread's apartment, so the retry set is
-#: exactly the errors that action can repair, and nothing else. Deliberately NOT retried:
+#: exactly the errors that action can repair, and nothing else.
+#: Deliberately NOT retried:
 #:   REGDB_E_CLASSNOTREG       a second attempt cannot register a class;
 #:   RPC_E_CHANGED_MODE        the thread's apartment model is already set,
 #:                             and re-initializing it the same way cannot
@@ -263,7 +268,7 @@ def _ensure_apartment(pythoncom) -> str:
 
     A pythoncom without CoInitializeEx falls back to CoInitialize, which is
     the same request in the older API. A MISSING API is not an apartment
-    failure and must not be reported as one, or the N1 refusal below would
+    failure and must not be reported as one, or the refusal below would
     turn an old pywin32 into "PowerPoint could not be started".
 
     CoUninitialize is never paired here, for the reason in the module
@@ -314,8 +319,8 @@ def powerpnt_pids() -> set | None:
     return an empty set for both, and every ownership decision in the
     module then read a failed tasklist as an empty machine: a session
     concluded it had LAUNCHED the PowerPoint it had merely attached to and
-    quit the owner's instance on the way out, unsaved work and all. Nothing that can end, quit or kill
-    a process may act on None.
+    quit the user's instance on the way out, unsaved work and all. Nothing
+    that can end, quit or kill a process may act on None.
 
     A genuine no-match is NOT a failure: tasklist prints its INFO line and
     the answer is an empty set. Unknown is the subprocess raising or timing
@@ -329,6 +334,7 @@ def powerpnt_pids() -> set | None:
             capture_output=True,
             text=True,
             timeout=30,
+            stdin=subprocess.DEVNULL,
         )
     except Exception:
         return None
@@ -365,8 +371,9 @@ def powerpnt_count() -> int:
 
 
 # POWERPNT.EXE pids this server LAUNCHED, keyed by spawning thread.
-# EVIDENCE, not a target list: nothing in this package force-terminates
-# a process, and a timed-out operation only NAMES these in its refusal. An
+# EVIDENCE for diagnostics, not a termination target list. Timeout
+# cancellation uses the stronger _OWNED_JOURNAL below, including creation
+# time, and then reruns every exit-reaper identity and presentation check. An
 # entry exists only when _powerpoint() READ the process table, found no
 # PowerPoint running, started one itself, read the table again to name the
 # one new pid, and found that instance in the state of a just-created
@@ -374,6 +381,13 @@ def powerpnt_count() -> int:
 # either end, or when the application did not look freshly created, this
 # dict stays empty for that thread.
 _SELF_LAUNCHED_PIDS: dict[int, set] = {}
+_OWNED_JOURNAL: dict[int, dict[int, int]] = {}
+_OWNED_PRESENTATION_JOURNAL: dict[int, set[str]] = {}
+_OWNED_WRITE_INTENT_TIDS: set[int] = set()
+_COM_WORKERS: set[threading.Thread] = set()
+_COM_WORKERS_LOCK = threading.Lock()
+SHUTDOWN_JOIN_S = 60.0
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
 def _self_launched_pids_for_thread(tid) -> set:
@@ -381,21 +395,405 @@ def _self_launched_pids_for_thread(tid) -> set:
     EVIDENCE, to have launched. Empty whenever we attached to a PowerPoint
     we did not start, which is the normal case.
 
-    EVIDENCE ONLY, AND ONLY ABOUT THE PAST. This used to terminate them
-    when a COM operation timed out, and 1.3.1 removes that: the timeout
-    path cannot revalidate a hung apartment, so a token taken minutes
-    earlier is not proof that the process is still only ours. Another
-    session can attach to the hidden instance and open work in it while
-    our operation hangs, and a kill would destroy that work.
-
-    A token records what was OBSERVED at entry, that this pid was not
-    running then and the instance looked freshly created, and it is not
-    proof of causation or of current liveness. Nothing in this package
-    ends a PowerPoint process, so the refusal reports the observation and
-    the NON-ACTION: it names the pid, says this call did not force-end it,
-    and says its current state was not re-checked. It does not describe
-    the process's present state, because this path does not know it."""
+    This token records only what was observed at entry. It is used to make
+    an unowned-timeout refusal informative, never by itself as permission to
+    end a process."""
     return set(_SELF_LAUNCHED_PIDS.get(tid) or set())
+
+
+_PROCESS_TERMINATE = 0x0001
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+
+def _kernel32():
+    """Return kernel32 with pointer-safe process API prototypes."""
+    import ctypes
+    from ctypes import wintypes
+
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.OpenProcess.restype = wintypes.HANDLE
+    k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
+    k32.GetProcessTimes.argtypes = [wintypes.HANDLE] + [
+        ctypes.POINTER(wintypes.FILETIME)
+    ] * 4
+    k32.QueryFullProcessImageNameW.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.LPWSTR,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    return k32
+
+
+def _creation_time(pid: int, handle=None) -> int | None:
+    """Read one process creation FILETIME, or return None on any doubt."""
+    if sys.platform != "win32":
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    k32 = _kernel32()
+    own = handle is None
+    process = handle or k32.OpenProcess(
+        _PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid)
+    )
+    if not process:
+        return None
+    try:
+        times = [wintypes.FILETIME() for _ in range(4)]
+        if not k32.GetProcessTimes(process, *[ctypes.byref(value) for value in times]):
+            return None
+        created = times[0]
+        return (created.dwHighDateTime << 32) | created.dwLowDateTime
+    finally:
+        if own:
+            k32.CloseHandle(process)
+
+
+def _is_automation_instance(pid: int) -> bool | None:
+    """Return True only when the live process command line names /Automation."""
+    if sys.platform != "win32":
+        return None
+    try:
+        result = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "(Get-CimInstance Win32_Process -Filter "
+                f"\"ProcessId={int(pid)}\").CommandLine",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            stdin=subprocess.DEVNULL,
+            creationflags=_NO_WINDOW,
+        )
+    except Exception:
+        return None
+    line = (result.stdout or "").strip()
+    if result.returncode != 0 or not line:
+        return None
+    return "/automation" in line.lower()
+
+
+def _powerpoint_app_pid(app) -> int | None:
+    """Return the singleton PowerPoint pid, or ``None`` on any ambiguity.
+
+    A hidden automation instance has no usable ``Application.HWND``.  Process
+    ownership is established separately from the journaled pid, creation
+    time, executable image and ``/Automation`` command line.  This helper is
+    only the conservative singleton-to-proxy check: if the process table does
+    not contain exactly one PowerPoint, it refuses to guess which proxy COM
+    returned.
+    """
+    del app  # the proxy has no process identity API when it is hidden
+    pids = powerpnt_pids()
+    if pids is None or len(pids) != 1:
+        return None
+    return next(iter(pids))
+
+
+def _inspect_exit_ownership(
+    pid: int,
+    owned_paths: set[str],
+    *,
+    timeout: float = 10.0,
+) -> tuple[bool, str]:
+    """Re-read the singleton and close only presentations this server opened.
+
+    The exit reaper may end the process only when it is still invisible and
+    every open presentation belongs to this server.  COM inspection itself
+    is bounded: a blocked or ambiguous read leaves the process alone.
+    """
+    outcome: list[tuple[bool, str]] = []
+
+    def inspect() -> None:
+        try:
+            import pythoncom
+            import win32com.client
+
+            _ensure_apartment(pythoncom)
+            app = win32com.client.GetActiveObject("PowerPoint.Application")
+            actual_pid = _powerpoint_app_pid(app)
+            if actual_pid != int(pid):
+                outcome.append((False, "the active PowerPoint PID could not be matched"))
+                return
+            visible = int(app.Visible) != 0
+            presentations = []
+            foreign: list[str] = []
+            unsaved_owned: list[str] = []
+            count = int(app.Presentations.Count)
+            for index in range(1, count + 1):
+                pres = app.Presentations.Item(index)
+                try:
+                    full_name = str(pres.FullName or "")
+                except Exception:
+                    full_name = ""
+                key = safesave.canonical_key(full_name) if full_name else ""
+                try:
+                    saved = bool(pres.Saved)
+                except Exception:
+                    # An unreadable saved state is not permission to discard
+                    # work.  Treat it as unsaved and leave the process alive.
+                    saved = False
+                presentations.append((pres, key, full_name, saved))
+                if not key or key not in owned_paths:
+                    foreign.append(Path(full_name).name if full_name else "an unsaved presentation")
+                elif not saved:
+                    unsaved_owned.append(Path(full_name).name or "an unsaved presentation")
+
+            # Release only saved presentations that this server opened,
+            # without Save or SaveAs.  An unsaved owned presentation is left
+            # open and prevents process termination; ambiguity never grants
+            # permission to discard work.
+            for pres, key, _full_name, saved in reversed(presentations):
+                if key and key in owned_paths and saved:
+                    with contextlib.suppress(Exception):
+                        pres.Close()
+
+            if visible:
+                outcome.append((False, "the application is visible"))
+            elif foreign:
+                names = ", ".join(foreign[:3])
+                extra = "" if len(foreign) <= 3 else f" (+{len(foreign) - 3} more)"
+                outcome.append((False, f"it holds a presentation this server did not open: {names}{extra}"))
+            elif unsaved_owned:
+                names = ", ".join(unsaved_owned[:3])
+                extra = "" if len(unsaved_owned) <= 3 else f" (+{len(unsaved_owned) - 3} more)"
+                outcome.append((False, f"a presentation this server opened has unsaved changes: {names}{extra}"))
+            else:
+                outcome.append((True, "invisible with no foreign or unsaved presentations"))
+        except Exception as exc:
+            outcome.append((False, f"ownership inspection failed: {type(exc).__name__}"))
+
+    worker = threading.Thread(
+        target=inspect,
+        name=f"ks4p-exit-inspect-{int(pid)}",
+        daemon=True,
+    )
+    worker.start()
+    worker.join(max(0.0, float(timeout)))
+    if worker.is_alive():
+        return False, "ownership inspection timed out"
+    if not outcome:
+        return False, "ownership inspection produced no result"
+    return outcome[0]
+
+
+def _identity_only_modal_cleanup_safe(
+    pid: int,
+    owned_paths: set[str],
+    inspection_why: str,
+) -> tuple[bool, str]:
+    """Allow the narrow no-COM reaper route for this server's modal only.
+
+    The normal inspection remains authoritative whenever COM answers.  This
+    fallback exists for the circular failure where a modal raised by a
+    journalled read-only ``Presentations.Open`` prevents COM from answering
+    the ownership questions.  Process identity is checked by the caller;
+    here the independent Win32 window layer must show at least one dialog
+    and no visible non-dialog window for that exact pid.
+    """
+    unavailable = (
+        inspection_why in {
+            "ownership inspection timed out",
+            "ownership inspection produced no result",
+        }
+        or inspection_why.startswith("ownership inspection failed:")
+    )
+    if not unavailable:
+        return False, "COM ownership inspection answered and refused cleanup"
+    if not owned_paths:
+        return False, "no journalled read-only presentation open"
+
+    try:
+        from . import dialogs as _dialogs
+
+        windows = _dialogs.window_classes({int(pid)})
+    except Exception as exc:
+        return False, f"window inspection failed: {type(exc).__name__}"
+    if not windows:
+        return False, "no visible modal window was attributed to the owned pid"
+    modal = [
+        item for item in windows
+        if item.get("class") in _dialogs.DIALOG_CLASSES
+    ]
+    non_dialog = [
+        item for item in windows
+        if item.get("class") not in _dialogs.DIALOG_CLASSES
+    ]
+    if not modal:
+        return False, "no modal dialog was attributed to the owned pid"
+    if non_dialog:
+        classes = ", ".join(
+            sorted({str(item.get("class") or "unknown") for item in non_dialog})
+        )
+        return False, f"the owned pid has a visible non-dialog window: {classes}"
+    return True, "identity matched and only the owned pid's modal dialog is visible"
+
+
+def _end_owned_powerpoint_at_exit(
+    journal: dict[int, int],
+    owned_presentations: dict[int, set[str]] | None = None,
+) -> dict:
+    """End only journaled PowerPoint automation processes at server exit.
+
+    Every target must still match the recorded creation time, executable
+    image and /Automation command line.  An unreadable or mismatched fact
+    leaves the process alone.
+    """
+    result: dict = {"ended": [], "left": []}
+    if sys.platform != "win32":
+        return result
+    import ctypes
+    from ctypes import wintypes
+
+    k32 = _kernel32()
+    k32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    owned_presentations = owned_presentations or {}
+    for pid, created in sorted(journal.items()):
+        process = k32.OpenProcess(
+            _PROCESS_TERMINATE | _PROCESS_QUERY_LIMITED_INFORMATION,
+            False,
+            int(pid),
+        )
+        if not process:
+            result["left"].append({"pid": pid, "why": "gone or not openable"})
+            continue
+        try:
+            if _creation_time(pid, handle=process) != created:
+                result["left"].append(
+                    {"pid": pid, "why": "creation time does not match"}
+                )
+                continue
+            image = ctypes.create_unicode_buffer(1024)
+            size = wintypes.DWORD(len(image))
+            if (
+                not k32.QueryFullProcessImageNameW(
+                    process, 0, image, ctypes.byref(size)
+                )
+                or not image.value.lower().endswith("\\powerpnt.exe")
+            ):
+                result["left"].append({"pid": pid, "why": "not POWERPNT.EXE"})
+                continue
+            if _is_automation_instance(pid) is not True:
+                result["left"].append(
+                    {"pid": pid, "why": "not read as an /Automation instance"}
+                )
+                continue
+            safe_to_end, why = _inspect_exit_ownership(
+                pid, set(owned_presentations.get(pid) or set())
+            )
+            if not safe_to_end:
+                identity_safe, identity_why = _identity_only_modal_cleanup_safe(
+                    pid,
+                    set(owned_presentations.get(pid) or set()),
+                    why,
+                )
+                if not identity_safe:
+                    result["left"].append(
+                        {"pid": pid, "why": f"{why}; {identity_why}"}
+                    )
+                    continue
+            if k32.TerminateProcess(process, 1):
+                result["ended"].append(pid)
+            else:
+                result["left"].append({"pid": pid, "why": "could not be ended"})
+        finally:
+            k32.CloseHandle(process)
+    return result
+
+
+def _cancel_hung_call(worker_tid: int | None) -> dict:
+    """Attempt to end only the hidden PowerPoint owned by one hung worker.
+
+    The journal is necessary but not sufficient authority.  The shared
+    reaper revalidates process identity and inspects current presentations;
+    any foreign, unsaved, untitled, visible, unreadable, or otherwise
+    ambiguous state leaves the process alone.  No journal means no attempt.
+    """
+    if worker_tid is None:
+        return {"attempted": False, "ended": [], "left": []}
+    journal = dict(_OWNED_JOURNAL.get(worker_tid) or {})
+    if not journal:
+        return {"attempted": False, "ended": [], "left": []}
+    paths = set(_OWNED_PRESENTATION_JOURNAL.get(worker_tid) or set())
+    if worker_tid in _OWNED_WRITE_INTENT_TIDS:
+        # Identity-only cleanup is allowed only for read-only opens.  Passing
+        # no owned paths makes the fallback refuse while the normal COM
+        # inspection can still prove a safe cleanup when PowerPoint answers.
+        paths = set()
+    presentations = {pid: set(paths) for pid in journal}
+    try:
+        result = _end_owned_powerpoint_at_exit(journal, presentations)
+    except Exception as exc:  # cancellation failure must not mask timeout
+        result = {
+            "ended": [],
+            "left": [
+                {
+                    "pid": pid,
+                    "why": f"cancellation check failed: {type(exc).__name__}",
+                }
+                for pid in sorted(journal)
+            ],
+        }
+    return {"attempted": True, **result}
+
+
+def _drain_on_exit(timeout: float = SHUTDOWN_JOIN_S) -> dict:
+    """Wait once for COM workers, then reap only positively owned instances."""
+    end = time.monotonic() + max(0.0, float(timeout))
+    with _COM_WORKERS_LOCK:
+        workers = list(_COM_WORKERS)
+    for worker in workers:
+        worker.join(max(0.0, end - time.monotonic()))
+    still = [worker for worker in workers if worker.is_alive()]
+    journal = {
+        pid: created
+        for worker in still
+        for pid, created in (_OWNED_JOURNAL.get(worker.ident) or {}).items()
+    }
+    owned_presentations = {
+        pid: (
+            set()
+            if worker.ident in _OWNED_WRITE_INTENT_TIDS
+            else set(_OWNED_PRESENTATION_JOURNAL.get(worker.ident) or set())
+        )
+        for worker in still
+        for pid in (_OWNED_JOURNAL.get(worker.ident) or {})
+    }
+    ended = (
+        _end_owned_powerpoint_at_exit(journal, owned_presentations)
+        if journal
+        else {"ended": [], "left": []}
+    )
+    if ended["ended"]:
+        sys.stderr.write(
+            "[kitchensink4ppt] ended the hidden PowerPoint instance(s) this "
+            "server started after the bounded exit wait: "
+            + ", ".join(map(str, ended["ended"]))
+            + "\n"
+        )
+    for item in ended["left"]:
+        sys.stderr.write(
+            f"[kitchensink4ppt] left PowerPoint pid {item['pid']} running: "
+            f"{item['why']}\n"
+        )
+    if still and not ended["ended"] and not ended["left"]:
+        sys.stderr.write(
+            f"[kitchensink4ppt] {len(still)} PowerPoint call(s) remain after "
+            f"the {max(0.0, float(timeout)):g}s exit wait; no unverified "
+            "process was touched\n"
+        )
+    return {
+        "waited_for": len(workers),
+        "still_running": len(still),
+        "ended": ended["ended"],
+        "left": ended["left"],
+    }
 
 
 @contextlib.contextmanager
@@ -424,15 +822,15 @@ def _run_bounded(name: str, timeout: float, fn):
 
     On expiry: if the worker never got the lock, that is queue contention
     and PowerPointBusy names the operation actually running. If it got the
-    lock and then stalled, NOTHING IS CANCELLED: the deadline bounds how
-    long the CALLER waits, not how long the work runs. The worker thread is
-    still inside the COM call, can finish later, and can still save its
-    output.
+    lock and then stalled, a grace wait avoids false timeouts before an
+    identity-checked cancellation attempt. Cancellation can end only the
+    hidden process positively journalled for this worker and currently
+    confirmed to contain no foreign, unsaved, or untitled presentation.
 
-    So `timeout` is NOT a hard deadline and NOT a maximum elapsed time: it
-    is how long the caller waits for PowerPoint to answer, after which
-    TIMEOUT_GRACE_SECONDS more and a dialog inspection follow, and a
-    result that arrives in that window is still returned.
+    `timeout` is the PowerPoint response deadline rather than the maximum
+    caller elapsed time: TIMEOUT_GRACE_SECONDS, dialog inspection, and the
+    bounded identity/presentation checks follow. A result that arrives
+    before cancellation begins is still returned.
 
     The completion check is TWO-STAGE: once the instant the grace wait
     ends, before any process or dialog inspection, so a completed success
@@ -440,18 +838,18 @@ def _run_bounded(name: str, timeout: float, fn):
     inspection, which can itself take long enough for the worker to finish
     inside it. Either way the worker's own answer wins, its result
     returned or its exception raised, because reporting a timeout for an
-    operation that succeeded is a false failure the caller acts on. Only if it is still not done is the refusal built, and
-    everything it says about a process is read at that same moment and is
-    state-neutral: what was observed, and what this path did not do.
-    No process is force-terminated here, and none anywhere else in this
-    package."""
-    # Preserve the bridge's documented side effect: before v1.1 every public
-    # operation ran ON THE CALLING THREAD and left that thread's COM
+    operation that succeeded is a false failure the caller acts on. Only if
+    it is still not done does cancellation begin. The
+    resulting refusal distinguishes an ended owned instance from a process
+    left alone because ownership or document safety could not be proved.
+    """
+    # Preserve the bridge's documented side effect: every public
+    # operation once ran ON THE CALLING THREAD and left that thread's COM
     # apartment initialized (this module initializes freely and never
     # uninitializes, by design). Moving the body to a worker thread moved
     # the CoInitialize with it, so callers that went on to make their own
     # COM calls afterwards started failing with "CoInitialize has not been
-    # called". Initialize
+    # called" (caught by test_av's media scenario). Initialize
     # the caller's apartment too, so the contract survives the port.
     # The failure used to be swallowed by contextlib.suppress, which meant a
     # caller thread whose apartment could not be armed produced no evidence
@@ -504,14 +902,21 @@ def _run_bounded(name: str, timeout: float, fn):
                 # two different slides). An abandoned call releases the
                 # lock and exits WITHOUT touching PowerPoint.
                 if not _elect("started"):
+                    _serial._mark_outcome(
+                        threading.get_ident(), "abandoned"
+                    )
                     return
                 result["value"] = fn()
         except BaseException as exc:  # noqa: BLE001 - re-raised in caller
             result["error"] = exc
         finally:
             done.set()
+            with _COM_WORKERS_LOCK:
+                _COM_WORKERS.discard(threading.current_thread())
 
     t = threading.Thread(target=worker, daemon=True, name=f"ks4p-{name}")
+    with _COM_WORKERS_LOCK:
+        _COM_WORKERS.add(t)
     t.start()
     if done.wait(timeout):
         if "error" in result:
@@ -541,10 +946,10 @@ def _run_bounded(name: str, timeout: float, fn):
     # The worker won the decision, so fn IS running, or has already
     # finished. This is no longer queue contention and the caller must not
     # be told to simply retry: the grace path decides from here, and an
-    # operation still running gets the uncancelled-operation refusal.
-    # The deadline has passed, but the work has NOT been cancelled, so the
-    # grace wait below is a real second chance rather than a formality. A
-    # worker that finishes during it finished, and reporting a timeout for
+    # operation still running reaches the cancellation decision.
+    # The deadline has passed, but cancellation has not been attempted yet,
+    # so the grace wait below is a real second chance rather than a formality.
+    # A worker that finishes during it finished, and reporting a timeout for
     # an operation that succeeded is a false failure the caller would act
     # on.
     done.wait(TIMEOUT_GRACE_SECONDS)
@@ -578,42 +983,84 @@ def _run_bounded(name: str, timeout: float, fn):
     ours = _self_launched_pids_for_thread(
         worker_tid[0] if worker_tid else None
     )
-    # STATE-NEUTRAL: this path reports what it OBSERVED and what it did not
-    # do. It does not know the process's current state, it did not
-    # re-check it, and an empty token is not evidence that PowerPoint was
-    # already running: the table may have been unreadable, the ownership
-    # gate may have refused, no token may have been recorded yet, or the
-    # worker may never have touched PowerPoint at all.
-    if ours:
+    timed_out_tid = worker_tid[0] if worker_tid else None
+    _serial._mark_outcome(timed_out_tid, "timed_out")
+    cancellation = _cancel_hung_call(timed_out_tid)
+    _serial._mark_outcome(
+        timed_out_tid, "timed_out", cancellation=cancellation
+    )
+
+    ended = cancellation["ended"]
+    left = cancellation["left"]
+    if ended:
+        pids = ", ".join(str(pid) for pid in ended)
+        detail = ""
+        action = (
+            "This server ended the hidden PowerPoint it had started for this call "
+            f"(pid {pids}), so the output file may be incomplete or missing; check "
+            "it before you retry."
+        )
+    elif left:
+        reasons = "; ".join(
+            f"pid {item['pid']}: {item['why']}" for item in left[:3]
+        )
+        detail = (
+            " PowerPoint was not ended, because ending it was not safe or not possible "
+            f"({reasons})."
+        )
+        action = (
+            "The operation was NOT cancelled: it may still be running and "
+            "may still finish and save its output. Do not retry yet: call "
+            "powerpoint_status and wait until it reports no COM operation "
+            "in progress, then check the output file before repeating the "
+            "call."
+        )
+    elif ours:
         pids = ", ".join(str(p) for p in sorted(ours))
         detail = (
             f" (PowerPoint process pid {pids} was not running when this "
             "call began; this call did not force-end it, and its current "
             "state was not re-checked)"
         )
+        action = (
+            "The operation was NOT cancelled: it may still be running and "
+            "may still finish and save its output. Do not retry yet: call "
+            "powerpoint_status and wait until it reports no COM operation "
+            "in progress, then check the output file before repeating the "
+            "call."
+        )
     else:
         detail = (
             " (no newly started PowerPoint process could be identified; no "
             "process was force-ended)"
         )
+        action = (
+            "The operation was NOT cancelled: it may still be running and "
+            "may still finish and save its output. Do not retry yet: call "
+            "powerpoint_status and wait until it reports no COM operation "
+            "in progress, then check the output file before repeating the "
+            "call."
+        )
+    message = action + detail
     if dialogs_seen:
         titles = ", ".join(
             d.get("title") or d.get("class", "?") for d in dialogs_seen[:3]
         )
-        detail += f". PowerPoint has a dialog open: {titles}"
-    # NOTHING WAS CANCELLED. The old sentence said the operation "was
-    # aborted", which is false: the deadline bounds the caller's wait, the
-    # worker is still inside the COM call, and it can still finish and
-    # save. A caller told it was aborted retries, and a retry on top of a
-    # live operation is how a deck gets written twice.
-    raise PowerPointBlocked(
-        f"PowerPoint did not answer within {timeout:.0f} s. The operation "
-        "was NOT cancelled: it may still be running and may still finish "
-        "and save its output. Do not retry yet: call powerpoint_status and "
-        "wait until it reports no COM operation in progress, then check the "
-        "output file before repeating the call."
-        + detail
+        # The note follows text that may already end in a full stop; join
+        # it without doubling the stop, and end the note with one.
+        message = (
+            message.rstrip(".") + f". PowerPoint has a dialog open: {titles}."
+        )
+    blocked = PowerPointBlocked(
+        f"PowerPoint did not answer within {timeout:.0f} s. " + message
     )
+    # What happened, on the exception itself, so a caller tells a time
+    # limit from every other refusal without reading the words.
+    blocked.timed_out = True
+    blocked.time_limit_s = timeout
+    blocked.ended = list(ended)
+    blocked.left = list(left)
+    raise blocked
 
 
 def _bounded_op(name: str, default: float):
@@ -669,7 +1116,8 @@ def _acquisition_token(app, before_pids) -> set | None:
     The last part is the only one a concurrent launch cannot fake. A
     PowerPoint the user started is visible and, as soon as they open
     anything, has a presentation and a window; a fresh DispatchEx instance
-    reports Visible 0, Presentations.Count 0 and Windows.Count 0. Doubt means NOT ours, and not ours
+    reports Visible 0, Presentations.Count 0 and Windows.Count 0 (measured
+    on PowerPoint 16). Doubt means NOT ours, and not ours
     means this session behaves as an attach: nothing quit, nothing killed.
     """
     if before_pids is None or before_pids:
@@ -717,7 +1165,7 @@ def _powerpoint():
     a bounded poll confirming the process exited. CoUninitialize is never
     called (see module docstring).
 
-    v1.1: the whole session runs under the process-wide COM lock, so callers
+    The whole session runs under the process-wide COM lock, so callers
     that enter here directly (the com_gates scripts) are serialized without
     having to remember to be. When this call LAUNCHES PowerPoint its pid is
     recorded as evidence for a timeout refusal; when it attaches to the
@@ -813,7 +1261,7 @@ def _powerpoint_locked():
     # handled in _ensure_apartment; never paired with CoUninitialize.
     state = _ensure_apartment(pythoncom)
     if state.startswith("failed:"):
-        # N1: an apartment that genuinely could not be armed is not
+        # An apartment that genuinely could not be armed is not
         # something Dispatch can recover from. Refusing here names the real
         # cause instead of letting a second, vaguer COM failure speak for it.
         raise PowerPointNotRunning(
@@ -840,6 +1288,11 @@ def _powerpoint_locked():
     if created:
         # Record exactly the process we can show is ours, as evidence.
         _SELF_LAUNCHED_PIDS[tid] = created
+        stamps = {pid: _creation_time(pid) for pid in created}
+        stamps = {pid: stamp for pid, stamp in stamps.items() if stamp is not None}
+        if stamps:
+            _OWNED_JOURNAL[tid] = stamps
+            _OWNED_PRESENTATION_JOURNAL[tid] = set()
     launched = created is not None
     session = _PowerPointSession(app, launched)
     completed = False
@@ -860,6 +1313,9 @@ def _powerpoint_locked():
         completed = True
     finally:
         _SELF_LAUNCHED_PIDS.pop(tid, None)
+        _OWNED_JOURNAL.pop(tid, None)
+        _OWNED_PRESENTATION_JOURNAL.pop(tid, None)
+        _OWNED_WRITE_INTENT_TIDS.discard(tid)
         for pres in reversed(session.opened):
             with contextlib.suppress(Exception):
                 pres.Close()
@@ -923,14 +1379,28 @@ def open_presentation(session: _PowerPointSession, path: Path, *, read_only: boo
         with contextlib.suppress(Exception):
             for pres in session.app.Presentations:
                 open_names.append(str(pres.FullName))
-        if any(n.lower() == target.lower() for n in open_names):
+        from .live import same_deck
+
+        if any(same_deck(n, target) for n in open_names):
             raise DocumentLocked(
                 f"{path.name} is open in the user's running PowerPoint; this "
                 "tool never operates on the user's open copy. Close it in "
-                "PowerPoint and retry, or use the com-live tools (live_save, "
+                "PowerPoint and retry, or use the live operations (live_save, "
                 "live_scroll_to, live_status; dual-mode editing tools route "
                 "there via live='auto') to work on the open copy."
             )
+    if session.launched:
+        tid = threading.get_ident()
+        if read_only:
+            # Record the attempted open before COM: an encrypted or corrupt
+            # file can block inside Presentations.Open and never return a
+            # proxy to journal afterwards.  This records intent only; the
+            # process identity and modal-only window checks remain required.
+            _OWNED_PRESENTATION_JOURNAL.setdefault(tid, set()).add(
+                safesave.canonical_key(target)
+            )
+        else:
+            _OWNED_WRITE_INTENT_TIDS.add(tid)
     try:
         pres = session.app.Presentations.Open(
             target,
@@ -942,20 +1412,51 @@ def open_presentation(session: _PowerPointSession, path: Path, *, read_only: boo
         typed = _classify(exc)
         if typed is not None:
             raise typed from exc
-        raise DocumentCorrupt(
-            f"PowerPoint could not open {path.name} (with alerts disabled a "
-            f"repair/recovery path surfaces as this error): {exc}"
-        ) from exc
+        raise _open_failure(path, exc) from exc
     session.opened.append(pres)
     return pres
 
 
+#: Names Windows keeps for devices, with or without an extension; PowerPoint
+#: opens nothing at a path with a folder or file named like one.
+#: COM and LPT also take a superscript one, two or three (Windows lists them).
+_SUPERSCRIPT_DIGITS = "".join(map(chr, (0xB9, 0xB2, 0xB3)))
+_DEVICE_NAME = re.compile(
+    r"(?i)^(con|prn|aux|nul|com[0-9" + _SUPERSCRIPT_DIGITS + r"]|lpt[0-9"
+    + _SUPERSCRIPT_DIGITS + r"])(\..*)?$")
+
+
+def _reserved_component(path: Path) -> str | None:
+    """The first folder or file name in `path` that Windows keeps for a
+    device, or None."""
+    for part in Path(path).parts[1:]:
+        if _DEVICE_NAME.match(part.rstrip(" .")):
+            return part
+    return None
+
+
+def _open_failure(path: Path, exc: BaseException) -> DocumentCorrupt:
+    """The refusal for a deck PowerPoint would not open. A path through a
+    device-named folder is named as the cause: the deck itself may be fine,
+    and "damaged" would send the user after the wrong problem."""
+    from ..core.messages import RESERVED_NAME_HINT, RESERVED_NAME_OPEN
+
+    component = _reserved_component(path)
+    if component is not None:
+        refusal = DocumentCorrupt(
+            RESERVED_NAME_OPEN.format(name=Path(path).name, component=component))
+        refusal.hint = RESERVED_NAME_HINT
+        return refusal
+    return DocumentCorrupt(
+        f"PowerPoint could not open {Path(path).name} (with alerts disabled a "
+        f"repair/recovery path surfaces as this error): {exc}"
+    )
+
+
 def _require_file(path: str, purpose: str) -> Path:
     path = check_path(path, purpose)
-    p = Path(path)
-    if not p.exists():
-        raise DocumentNotFound(f"no file at {path}")
-    return p
+    require_deck(path, f"no file at {path}")
+    return Path(path)
 
 
 def _verify_output(out: Path, what: str) -> None:
@@ -965,8 +1466,64 @@ def _verify_output(out: Path, what: str) -> None:
         )
 
 
-@_bounded_op("com_export_pdf", default=600.0)
-def com_export_pdf(path: str, output: str | None = None) -> dict:
+def _settled_pdf_output(
+    source: Path, output: str | None, default: Path, overwrite: bool = False
+) -> Path:
+    """Settle and guard the exact PDF path before any COM method sees it.
+    An existing file passes only with overwrite=True; the deck and its
+    backups never do."""
+    raw = Path(output) if output else default
+    # A trailing dot is an empty extension. Python 3.14 reports it as the
+    # suffix "."; 3.12 and 3.13 report no suffix and would keep the dot, so
+    # strip it first to behave the same on every supported version.
+    if raw.name.rstrip(".") and raw.name.endswith("."):
+        raw = raw.with_name(raw.name.rstrip("."))
+    out = raw.with_suffix(".pdf") if raw.suffix in ("", ".") else raw
+    out = Path(check_path(str(out), "PowerPoint PDF output"))
+    safesave.refuse_protected_output(
+        out, source, purpose="write the PowerPoint PDF export"
+    )
+    if out.is_dir():
+        raise PptMcpError(
+            f"refusing to write the PowerPoint PDF export: {out} is a folder; "
+            "name a .pdf file"
+        )
+    if out.exists() and not overwrite:
+        raise PptMcpError(
+            f"refusing to write the PowerPoint PDF export: {out} already "
+            "exists; send overwrite=true to replace it, or choose a new output path"
+        )
+    return out
+
+
+def _export_target(out: Path) -> Path:
+    """Where PowerPoint writes: the output itself when it is new, or a
+    temporary name beside it when the call replaces a file, so the old file
+    stays whole until the new one is complete (_publish_export)."""
+    if not out.exists():
+        return out
+    return out.with_name(f".~ks4p-{os.getpid()}-{out.name}")
+
+
+def _publish_export(target: Path, out: Path, what: str) -> None:
+    """Put a finished export in place: verify it, then replace the old file
+    in one step. A failed export leaves the old file as it was."""
+    if target == out:
+        _verify_output(out, what)
+        return
+    try:
+        _verify_output(target, what)
+        os.replace(target, out)
+    finally:
+        with contextlib.suppress(OSError):
+            if target.exists():
+                target.unlink()
+
+
+@_bounded_op("com_export_pdf", default=60.0)
+def com_export_pdf(
+    path: str, output: str | None = None, overwrite: bool = False
+) -> dict:
     """Export a .pptx to PDF via PowerPoint (highest fidelity on this machine).
 
     The source is opened ReadOnly and exported with SaveCopyAs (which never
@@ -974,28 +1531,27 @@ def com_export_pdf(path: str, output: str | None = None) -> dict:
     ExportAsFixedFormat; the source file is never modified.
     """
     p = _require_file(path, "PDF export source")
-    if output:
-        output = check_path(output, "PDF export output")
-    out = Path(output) if output else p.with_suffix(".pdf")
+    out = _settled_pdf_output(p, output, p.with_suffix(".pdf"), overwrite)
     out.parent.mkdir(parents=True, exist_ok=True)
+    target = _export_target(out)
     with _powerpoint() as session:
         pres = open_presentation(session, p, read_only=True)
         try:
             try:
-                pres.SaveCopyAs(str(out.resolve()), PP_SAVE_AS_PDF)
+                pres.SaveCopyAs(str(target.resolve()), PP_SAVE_AS_PDF)
             except Exception as first_exc:
                 typed = _classify(first_exc)
                 if typed is not None:
                     raise typed from first_exc
                 try:
                     pres.ExportAsFixedFormat(
-                        str(out.resolve()), PP_FIXED_FORMAT_TYPE_PDF
+                        str(target.resolve()), PP_FIXED_FORMAT_TYPE_PDF
                     )
                 except Exception as exc:
                     _raise_classified(exc, "PDF export failed")
         finally:
             del pres  # release the proxy so the launched instance can exit
-    _verify_output(out, "PDF")
+    _publish_export(target, out, "PDF")
     return {"pdf": str(out), "bytes": out.stat().st_size, "engine": "powerpoint-com"}
 
 
@@ -1015,16 +1571,17 @@ PP_FIXED_FORMAT_INTENT_PRINT = 2  # ppFixedFormatIntentPrint
 PP_PRINT_HANDOUT_HORIZONTAL_FIRST = 2  # ppPrintHandoutHorizontalFirst
 
 
-@_bounded_op("com_export_handout", default=600.0)
+@_bounded_op("com_export_handout", default=60.0)
 def com_export_handout(
     path: str,
     output: str | None = None,
     slides_per_page: int = 3,
     include_notes: bool = False,
+    overwrite: bool = False,
 ) -> dict:
     """Export a .pptx to a handout-layout PDF via PowerPoint COM.
 
-    Route:
+    Route (researched + verified empirically on PowerPoint 365):
     Presentation.ExportAsFixedFormat with ppFixedFormatTypePDF and the
     handout ppPrintOutputType constant. This is the parameter route that
     works headless (WithWindow=False); the PrintOptions route drives the
@@ -1054,14 +1611,14 @@ def com_export_handout(
                 f"{sorted(PP_HANDOUT_OUTPUT)}, got {slides_per_page!r}"
             )
         output_type = PP_HANDOUT_OUTPUT[slides_per_page]
-    if output:
-        output = check_path(output, "handout export output")
-    out = (
-        Path(output)
-        if output
-        else p.with_name(p.stem + ("_notes.pdf" if include_notes else "_handout.pdf"))
+    out = _settled_pdf_output(
+        p,
+        output,
+        p.with_name(p.stem + ("_notes.pdf" if include_notes else "_handout.pdf")),
+        overwrite,
     )
     out.parent.mkdir(parents=True, exist_ok=True)
+    target = _export_target(out)
     with _powerpoint() as session:
         pres = open_presentation(session, p, read_only=True)
         try:
@@ -1069,9 +1626,9 @@ def com_export_handout(
                 # PrintRange=None must be passed EXPLICITLY: the parameter is
                 # a VT_DISPATCH pointer and pywin32 marshals its omitted-value
                 # placeholder into "The Python instance can not be converted
-                # to a COM object".
+                # to a COM object" (verified empirically).
                 pres.ExportAsFixedFormat(
-                    str(out.resolve()),
+                    str(target.resolve()),
                     PP_FIXED_FORMAT_TYPE_PDF,
                     Intent=PP_FIXED_FORMAT_INTENT_PRINT,
                     FrameSlides=-1 if not include_notes else 0,  # msoTriState
@@ -1083,7 +1640,7 @@ def com_export_handout(
                 _raise_classified(exc, "handout PDF export failed")
         finally:
             del pres  # release the proxy so the launched instance can exit
-    _verify_output(out, "handout PDF")
+    _publish_export(target, out, "handout PDF")
     return {
         "pdf": str(out),
         "bytes": out.stat().st_size,
@@ -1092,7 +1649,7 @@ def com_export_handout(
     }
 
 
-@_bounded_op("com_export_slide_images", default=900.0)
+@_bounded_op("com_export_slide_images", default=60.0)
 def com_export_slide_images(
     path: str,
     output_dir: str | None = None,
@@ -1107,18 +1664,26 @@ def com_export_slide_images(
     layer); None means every slide. Default width 1280px; height derives
     from the deck's slide aspect ratio unless given. Files are named
     slideN.png with N the 1-based slide position.
+
+    `output_dir` is a folder a caller named, checked against
+    KS4P_ALLOWED_ROOTS, or a ServerScratch the server made for its own
+    intermediate render (export_shape_image), used as it is.
     """
     p = _require_file(path, "slide image export source")
-    if output_dir:
-        output_dir = check_path(output_dir, "slide image output directory")
-    out_dir = Path(output_dir) if output_dir else p.with_name(p.stem + "_slides")
+    if isinstance(output_dir, ServerScratch):
+        out_dir = Path(output_dir.path)
+    else:
+        if output_dir:
+            output_dir = check_path(output_dir, "slide image output directory")
+        out_dir = Path(output_dir) if output_dir else p.with_name(p.stem + "_slides")
     out_dir.mkdir(parents=True, exist_ok=True)
     if width <= 0:
         raise PptMcpError(f"width must be positive, got {width}")
     # Validate `slides` BEFORE launching PowerPoint. A string is iterable,
     # so list("C:/deck.pptx") used to become a per-character slide list and
     # the caller got "slide index C out of range" after a full launch-open
-    # cycle. Refuse in microseconds with a message that names the actual
+    # cycle (seen in use: 8.7 seconds to produce a nonsense
+    # message). Refuse in microseconds with a message that names the actual
     # mistake.
     if slides is not None:
         if isinstance(slides, (str, bytes)):
@@ -1164,7 +1729,8 @@ def com_export_slide_images(
                         str(out_file.resolve()), "PNG", width, height
                     )
                     _verify_output(out_file, f"PNG for slide {idx + 1}")
-                    images.append({"slide": idx, "file": str(out_file)})
+                    images.append({"slide_number": idx + 1, "slide": idx,
+                                   "file": str(out_file)})
             except PptMcpError:
                 raise
             except Exception as exc:
@@ -1179,7 +1745,7 @@ def com_export_slide_images(
     }
 
 
-@_bounded_op("com_validate_opens_clean", default=600.0)
+@_bounded_op("com_validate_opens_clean", default=60.0)
 def com_validate_opens_clean(path: str) -> dict:
     """Open in invisible PowerPoint (alerts disabled) and force a FULL content
     load: every slide, every top-level shape, every group member, every table
@@ -1212,6 +1778,39 @@ def com_validate_opens_clean(path: str) -> dict:
         finally:
             del pres  # release the proxy so the launched instance can exit
     return {"opens_clean": True, **stats}
+
+
+#: The opens-clean check's time limit grows with what it has to do. Most of
+#: it is the walk: PowerPoint loads each shape the first time it is touched,
+#: about 23 ms a shape on PowerPoint 16 (1,636 shapes over 50 slides in 33 to
+#: 39 s; reading fewer properties a shape did not change that), while start,
+#: open and close took 5 to 8 s and notes pages added nothing measurable.
+#: A fixed 60 s stopped a healthy deck of 47 slides and about 1,400 shapes,
+#: so the limit is the old 60 s plus about two and a half times the measured
+#: cost per shape, an allowance per slide, notes page and megabyte of media
+#: (a busy computer is slower), and never more than the cap.
+OPENS_CLEAN_BASE_S = 60.0
+OPENS_CLEAN_PER_SLIDE_S = 0.25
+OPENS_CLEAN_PER_SHAPE_S = 0.06
+OPENS_CLEAN_PER_NOTES_S = 0.1
+OPENS_CLEAN_PER_MEDIA_MB_S = 0.2
+#: The most the check ever waits.
+OPENS_CLEAN_CAP_S = 300.0
+
+
+def opens_clean_time_limit(
+    slides: int, shapes: int, notes: int = 0, media_bytes: int = 0
+) -> tuple[float, bool]:
+    """(seconds, capped) for the opens-clean check of a deck this size;
+    capped is True when the cap, not the deck, set the limit."""
+    raw = (
+        OPENS_CLEAN_BASE_S
+        + max(0, slides) * OPENS_CLEAN_PER_SLIDE_S
+        + max(0, shapes) * OPENS_CLEAN_PER_SHAPE_S
+        + max(0, notes) * OPENS_CLEAN_PER_NOTES_S
+        + max(0, media_bytes) / 1_000_000 * OPENS_CLEAN_PER_MEDIA_MB_S
+    )
+    return round(min(OPENS_CLEAN_CAP_S, raw), 1), raw >= OPENS_CLEAN_CAP_S
 
 
 class FullLoadFailed(Exception):
@@ -1261,7 +1860,8 @@ def _slide_id_of(slide) -> int | None:
     A COM fault meaning the APPLICATION is busy or gone is classified and
     re-raised first. Swallowing every exception here let a modal dialog or
     a dead proxy pass as "this slide has no readable id", and the walk then
-    carried on and produced a verdict about the FILE. Only an ordinary read failure returns None."""
+    carried on and produced a verdict about the FILE. Only an ordinary read
+    failure returns None."""
     try:
         return int(slide.SlideID)
     except Exception as exc:
@@ -1506,7 +2106,7 @@ def powerpoint_status() -> dict:
     only (open Office documents register a file moniker); nothing is bound
     and the user's instance is never attached to (no GetActiveObject).
 
-    Three v1.1 additions, all answerable without touching COM:
+    Three additions, all answerable without touching COM:
     - pending_dialogs / blocked: modal dialogs read at the OS WINDOW layer.
       COM cannot report these, because a modal dialog is exactly what stops
       COM from answering. A status tool that says "ready" while the user

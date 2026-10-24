@@ -11,7 +11,7 @@ and unconditional, which conflated two very different situations:
   a few seconds after Quit (the bridge's own cleanup allows up to 15s for
   this), so the next test's gate saw a process, assumed it was the user's,
   and skipped honest coverage. Running the COM-heavy files back to back is
-  exactly when this bites, and it produced spurious skips.
+  exactly when this bites, and it produced a run of needless skips.
 
 The fix is to WAIT before judging. If the process count drains to zero
 within the window, it was our own sibling and the test proceeds with full

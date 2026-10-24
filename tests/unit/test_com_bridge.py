@@ -1,4 +1,4 @@
-"""Tests: the COM bridge and the export layer.
+"""Tests for the COM bridge and the export layer.
 
 COM testing rules (singleton contract, non-negotiable):
 - Every COM scenario runs in an ISOLATED SUBPROCESS (one comprehensive
@@ -15,8 +15,8 @@ COM testing rules (singleton contract, non-negotiable):
   user instance: no Quit, close only our presentations, DocumentLocked
   refusal on the user's open file) cannot be exercised without opening a
   presentation in a user-owned instance, which the standing safety rules
-  forbid in agent rounds; it is covered by code review and reserved for a
-  supervised live round.
+  forbid in automated runs; it is covered by code review and reserved for a
+  supervised live run.
 """
 
 from __future__ import annotations
@@ -36,8 +36,6 @@ from kitchensink4ppt.ops import export as export_ops
 
 REPO = Path(__file__).resolve().parents[2]
 CORPUS = REPO / "tests" / "corpus"
-ARTIFACTS = REPO / "tests" / "artifacts"
-DELTA = ARTIFACTS / "process_diagram.pptx"
 
 IS_WIN = sys.platform == "win32"
 
@@ -126,7 +124,7 @@ if mode == "exports":
         str(src), str(art / "process_diagram_auto.pdf"), engine="auto"
     )
     out["images"] = bridge.com_export_slide_images(
-        str(src), str(art / "delta_png"), width=1280
+        str(src), str(art / "process_diagram_png"), width=1280
     )
 
     out["source_bytes_unchanged"] = src.read_bytes() == before_bytes
@@ -145,7 +143,7 @@ elif mode == "handout":
     def pdf_pages(p):
         # PowerPoint's PDF writer keeps the /Pages tree node uncompressed;
         # per-page objects live in object streams, so /Type /Page counting
-        # does NOT work.
+        # does NOT work (verified empirically).
         data = p.read_bytes()
         counts = [
             int(m) for m in re.findall(
@@ -242,9 +240,13 @@ def test_com_export_round(tmp_path):
     """PDF export (bridge + auto routing), PNG slide export, source file
     untouched, zombie-free exit of the launched instance."""
     _com_gate()
-    assert DELTA.exists(), "Process diagram artifact process_diagram.pptx is missing"
-    art = ARTIFACTS / "phase5"
-    out = _run_scenario(tmp_path, "exports", str(DELTA), str(art))
+    source = CORPUS / "proposal_deck.pptx"
+    assert source.exists(), "corpus deck missing (conftest generates stand-ins)"
+    # PDF exports are publish-new operations and correctly refuse existing
+    # files.  A durable artifact folder makes the live gate fail on its second
+    # run, so keep each round in pytest's fresh per-test directory.
+    art = tmp_path / "com_exports"
+    out = _run_scenario(tmp_path, "exports", str(source), str(art))
 
     # PDF via the bridge
     pdf = Path(out["pdf"]["pdf"])
@@ -291,8 +293,9 @@ def test_com_export_handout_round(tmp_path):
     through COM, zombie-free exit. The standalone twin (for contended
     sessions) is tests/com_gates/handout_gate.py."""
     _com_gate()
-    assert DELTA.exists(), "Process diagram artifact process_diagram.pptx is missing"
-    out = _run_scenario(tmp_path, "handout", str(DELTA), str(tmp_path))
+    source = CORPUS / "proposal_deck.pptx"
+    assert source.exists(), "corpus deck missing (conftest generates stand-ins)"
+    out = _run_scenario(tmp_path, "handout", str(source), str(tmp_path))
 
     assert out["n_slides"] >= 1
     for label in ("3up", "9up", "notes"):
@@ -345,7 +348,7 @@ def test_com_validate_round(tmp_path):
     _com_gate()
     good = CORPUS / "proposal_deck.pptx"
     assert good.exists(), "corpus deck missing (conftest generates stand-ins)"
-    out = _run_scenario(tmp_path, "validate", str(good), str(tmp_path), str(DELTA))
+    out = _run_scenario(tmp_path, "validate", str(good), str(tmp_path), str(good))
 
     assert out["good"]["opens_clean"] is True
     assert out["good"]["slides"] > 0
@@ -379,9 +382,10 @@ def test_powerpoint_status_and_zombie_check_inline():
     z = bridge.zombie_check()
     assert isinstance(z["powerpnt_processes"], int)
     assert z["powerpnt_processes"] >= 0
-    # Cross-check the two independent samples only when the process table is
-    # QUIET: a concurrent automation round launching/quitting PowerPoint
+    # Compare the two independent samples only when the process table is
+    # QUIET: a concurrent automation run launching/quitting PowerPoint
     # between the two tasklist calls makes them legitimately disagree
+    # (seen when another process was automating PowerPoint at the same time).
     z2 = bridge.zombie_check()
     if z["powerpnt_processes"] == z2["powerpnt_processes"] == (
         bridge.powerpnt_count()

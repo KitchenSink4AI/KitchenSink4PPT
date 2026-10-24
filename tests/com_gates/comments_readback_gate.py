@@ -1,5 +1,6 @@
 """Standalone COM readback gate for ops/comments.py — run when PowerPoint is
-CLOSED.
+CLOSED (it could not run live during the comments build: sibling test rounds
+held the PowerPoint COM singleton continuously).
 
 What it proves, beyond opens-clean: PowerPoint itself RENDERS the modern
 threaded comments this server writes, read back through PowerPoint's own
@@ -13,7 +14,7 @@ Usage (from the repo root, PowerPoint closed):
 
 Exit codes: 0 = all assertions passed (or honest SKIP, reported loudly),
 1 = a readback assertion failed or PowerPoint could not run the round.
-Prints PASS/FAIL per assertion. Launch discipline follows the COM
+Prints PASS/FAIL per assertion. Launch discipline follows the COM testing
 rules: tasklist gate up front, quit only what this run launched, zombie
 poll at the end. All COM references live inside functions so they die
 before the bridge's cleanup gc pass (a module-level proxy keeps

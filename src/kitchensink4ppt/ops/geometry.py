@@ -5,8 +5,7 @@ This module builds lxml elements only; it never touches a PptxPackage and
 never writes to disk. ops/shapes.py and ops/svg.py assemble these fragments
 into complete p:sp / p:cxnSp / p:grpSp subtrees.
 
-Binding emission rules (verified experimentally, see
-research/20260830_1917_graphics_engine_feasibility.md):
+Binding emission rules (verified experimentally):
 1. custGeom child order is FIXED: avLst, gdLst, ahLst, cxnLst, rect, pathLst.
 2. Path w/h is ALWAYS set equal to the shape's EMU extents and all path
    coordinates are authored in EMU. Guides (gdLst) resolve against the EMU
@@ -20,7 +19,7 @@ research/20260830_1917_graphics_engine_feasibility.md):
 5. Alpha lives INSIDE the color element (a:alpha child), never on the fill.
 6. Multi-contour a:path elements fill EVEN-ODD regardless of winding.
 
-Note: insert_spPr_child() is a local copy of the
+DEDUP FLAG: insert_spPr_child() is a local copy of the
 schema-order rank-insert pattern; ops/text.py may grow an
 equivalent for txBody/pPr children. Consolidate into one shared helper.
 """
@@ -33,13 +32,14 @@ from lxml import etree
 
 from ..core.errors import PptMcpError
 from ..core.package import NSMAP, qn
+from ._textcontent import append_text as _append_paragraph_text
 
 EMU_PER_INCH = 914400
 EMU_PER_PT = 12700
 
 #: PowerPoint's practical coordinate ceiling: 32-bit signed EMU. ECMA-376's
 #: schema maximum is larger, but any offset or extent past 2^31-1 EMU lands
-#: the deck in a repair dialog,
+#: the deck in a repair dialog (verified empirically),
 #: so every emitted xfrm/path coordinate is checked against this bound.
 MAX_EMU = 2_147_483_647
 MAX_COORD_IN = MAX_EMU // EMU_PER_INCH  # ~2348 in
@@ -706,7 +706,7 @@ def cust_geom(paths: list[dict], ext_cx: int, ext_cy: int) -> etree._Element:
 
 
 def txbody(text: str, style: dict | None = None) -> etree._Element:
-    """Minimal single-style p:txBody: bodyPr + lstStyle + one a:p per line.
+    """Minimal single-style p:txBody: ``\n`` paragraphs, ``\v`` soft breaks.
 
     style: {"size": pt, "color": ..., "bold": bool, "italic": bool,
     "align": left|center|right|justify, "anchor": top|middle|bottom,
@@ -740,12 +740,11 @@ def txbody(text: str, style: dict | None = None) -> etree._Element:
         ppr = etree.SubElement(p, qn("a:pPr"))
         ppr.set("algn", align)
         if line:
-            r = etree.SubElement(p, qn("a:r"))
-            rpr = etree.SubElement(r, qn("a:rPr"))
-            rpr.set("lang", "en-US")
-            _apply_rpr(rpr, style)
-            t = etree.SubElement(r, qn("a:t"))
-            t.text = line
+            def configure(rpr):
+                rpr.set("lang", "en-US")
+                _apply_rpr(rpr, style)
+
+            _append_paragraph_text(p, line, configure)
         else:
             endpr = etree.SubElement(p, qn("a:endParaRPr"))
             endpr.set("lang", "en-US")
@@ -836,7 +835,7 @@ _SPPR_EXCLUSIVE_RANKS = {1, 2, 4}
 def insert_spPr_child(sppr: etree._Element, element: etree._Element) -> None:
     """Insert (or replace) a child of a:spPr at its schema-fixed position.
     Appending out of order is a repair dialog; this is the rank-insert
-    pattern from word-mcp (pitfall 2 in the architecture harvest)."""
+    pattern used in the Word editor."""
     rank = _SPPR_ORDER.get(element.tag)
     if rank is None:
         raise PptMcpError(f"not a known a:spPr child: {element.tag}")

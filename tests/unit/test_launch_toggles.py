@@ -1,295 +1,222 @@
-"""The .mcpb launch toggles: KS4P_ALL_TOOLS and KS4P_LOCK_TOOLS.
-
-Claude Desktop writes the LITERAL strings "true" and "false" for a
-user_config boolean, so the parser is tested against exactly those first.
-The three properties that matter, and that this file pins:
-
-1. POLARITY. "true" means the thing the env name says. The checkbox and
-   the variable read the same direction, so a human ticking "Load every
-   tool at startup" gets every tool.
-2. FAIL CLOSED. An absent or empty value resolves to False, never to the
-   enabling side. An empty string is what an unconfigured host writes, and
-   an empty value that silently switched something on is a fail-open
-   defect (the KitchenSink4Web server shipped that bug once and it is not
-   being reproduced here).
-3. REFUSE GARBAGE. An unrecognized value raises at STARTUP, naming the
-   accepted values, rather than shrugging into a default the operator did
-   not ask for.
-
-Plus precedence: KS4P_MODE beats the master checkbox and KS4P_PACK_POLICY
-beats the lock checkbox, in both directions, so a power user's pin survives
-whatever an installer wrote. Section 5 pins the design ruling that there
-are exactly two toggles, and section 7 pins the manifest against the code.
+"""Launch settings for the immutable nine-tool PowerPoint surface.
+These are the replacements for the retired startup mode, tool-pack toggle,
+and runtime enable/disable tests. Settings are parsed once and frozen into a
+SurfacePlan; no call can change the advertised tool list.
 """
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
-
 import pytest
 
-from kitchensink4ppt import packs, server  # noqa: F401  (populates the registry)
-from kitchensink4ppt.core.errors import PptMcpError
-
-TOGGLES = (packs.ENV_ALL_TOOLS, packs.ENV_LOCK_TOOLS)
-
-
-@pytest.fixture(autouse=True)
-def _clean_env(monkeypatch):
-    for name in (packs.ENV_MODE, packs.ENV_PACK_POLICY,
-                 *packs.toggle_env_names()):
-        monkeypatch.delenv(name, raising=False)
-
-
-@pytest.fixture(autouse=True)
-def _restore_surface():
-    """Pack state is process-global and apply_startup_mode flips real
-    FastMCP tools, so snapshot and restore around every test."""
-    before = dict(packs._ENABLED)
-    yield
-    packs._ENABLED.clear()
-    packs._ENABLED.update(before)
-    server._PENDING_VISIBILITY.clear()
-
-
-# --------------------------------------------------------- 1. polarity
-
-
-@pytest.mark.parametrize("name", TOGGLES)
-def test_literal_true_is_true(monkeypatch, name):
-    """The exact string Claude Desktop writes for a ticked checkbox."""
-    monkeypatch.setenv(name, "true")
-    assert packs.toggle(name) is True
-
-
-@pytest.mark.parametrize("name", TOGGLES)
-def test_literal_false_is_false(monkeypatch, name):
-    """The exact string Claude Desktop writes for an unticked checkbox."""
-    monkeypatch.setenv(name, "false")
-    assert packs.toggle(name) is False
-
-
-@pytest.mark.parametrize("value", ["true", "TRUE", " True ", "1", "on", "yes"])
-def test_true_spellings(value):
-    assert packs.parse_toggle("KS4P_ALL_TOOLS", value) is True
-
-
-@pytest.mark.parametrize("value", ["false", "FALSE", " False ", "0", "off",
-                                   "no"])
-def test_false_spellings(value):
-    assert packs.parse_toggle("KS4P_ALL_TOOLS", value) is False
-
-
-# ------------------------------------------------------ 2. fail closed
-
-
-@pytest.mark.parametrize("value", [None, "", "   ", "\t"])
-def test_empty_fails_closed(value):
-    """Empty NEVER enables. The whole point of the property."""
-    assert packs.parse_toggle("KS4P_ALL_TOOLS", value) is False
-
-
-@pytest.mark.parametrize("name", TOGGLES)
-def test_absent_is_false(name):
-    assert packs.toggle(name) is False
-
-
-@pytest.mark.parametrize("name", TOGGLES)
-def test_empty_env_is_false(monkeypatch, name):
-    monkeypatch.setenv(name, "")
-    assert packs.toggle(name) is False
-
-
-def test_empty_all_tools_stays_lite(monkeypatch):
-    monkeypatch.setenv(packs.ENV_ALL_TOOLS, "")
-    assert packs.resolve_startup_mode() == "lite"
-
-
-def test_empty_lock_tools_stays_unlocked(monkeypatch):
-    monkeypatch.setenv(packs.ENV_LOCK_TOOLS, "")
-    assert packs.resolve_lock() is False
-
-
-# --------------------------------------------------- 3. refuse garbage
-
-
-@pytest.mark.parametrize("value", ["ture", "enabled", "full", "2", "-1",
-                                   "y e s", "null", "none"])
-def test_garbage_refuses(value):
-    with pytest.raises(PptMcpError) as exc:
-        packs.parse_toggle("KS4P_ALL_TOOLS", value)
-    message = str(exc.value)
-    assert "KS4P_ALL_TOOLS" in message
-    assert "true" in message and "false" in message
-
-
-@pytest.mark.parametrize("name", TOGGLES)
-def test_garbage_refuses_at_startup(monkeypatch, name):
-    """Not at first use. A typo must stop the server before it serves."""
-    monkeypatch.setenv(name, "yess")
-    with pytest.raises(PptMcpError):
-        packs.apply_startup_mode()
-
-
-# ------------------------------------------------------- 4. precedence
-
-
-def test_all_tools_true_means_full():
-    assert packs.resolve_startup_mode() == "lite"
-
-
-def test_all_tools_toggle_selects_full(monkeypatch):
-    monkeypatch.setenv(packs.ENV_ALL_TOOLS, "true")
-    assert packs.resolve_startup_mode() == "full"
-
-
-def test_explicit_mode_beats_toggle(monkeypatch):
-    """A power user's pack list is never overridden by the checkbox."""
-    monkeypatch.setenv(packs.ENV_MODE, "graphics,com")
-    monkeypatch.setenv(packs.ENV_ALL_TOOLS, "true")
-    assert packs.resolve_startup_mode() == "graphics,com"
-
-
-def test_explicit_mode_beats_toggle_downward(monkeypatch):
-    monkeypatch.setenv(packs.ENV_MODE, "lite")
-    monkeypatch.setenv(packs.ENV_ALL_TOOLS, "true")
-    assert packs.resolve_startup_mode() == "lite"
-
-
-def test_blank_mode_defers_to_toggle(monkeypatch):
-    """A blank KS4P_MODE is not a choice; the checkbox still decides."""
-    monkeypatch.setenv(packs.ENV_MODE, "  ")
-    monkeypatch.setenv(packs.ENV_ALL_TOOLS, "true")
-    assert packs.resolve_startup_mode() == "full"
-
-
-def test_lock_toggle_locks(monkeypatch):
-    monkeypatch.setenv(packs.ENV_LOCK_TOOLS, "true")
-    assert packs.resolve_lock() is True
-
-
-def test_explicit_policy_beats_lock_toggle(monkeypatch):
-    monkeypatch.setenv(packs.ENV_PACK_POLICY, "auto")
-    monkeypatch.setenv(packs.ENV_LOCK_TOOLS, "true")
-    assert packs.resolve_lock() is False
-
-
-def test_explicit_policy_locks_over_false_toggle(monkeypatch):
-    monkeypatch.setenv(packs.ENV_PACK_POLICY, "locked")
-    monkeypatch.setenv(packs.ENV_LOCK_TOOLS, "false")
-    assert packs.resolve_lock() is True
-
-
-def test_lock_toggle_refuses_enable_tools(monkeypatch):
-    """The toggle reaches the same refusal the power-user env does."""
-    monkeypatch.setenv(packs.ENV_LOCK_TOOLS, "true")
-    with pytest.raises(PptMcpError) as exc:
-        packs.enable(["graphics"])
-    assert getattr(exc.value, "code", None) == "CONFLICT"
-
-
-# ------------------------------- 5. no per-pack toggles, by decision
-
-
-def test_only_two_toggles_exist():
-    """Design ruling: no per-pack startup toggle. Claude
-    Desktop's own per-tool permissions own the consent layer and
-    enable_tools already loads a pack mid-session on demand, so a checkbox
-    per pack would duplicate both. This asserts the decision so a future
-    session does not quietly re-add them."""
-    assert packs.toggle_env_names() == [packs.ENV_ALL_TOOLS,
-                                        packs.ENV_LOCK_TOOLS]
-    assert not hasattr(packs, "pack_env_names")
-
-
-# ------------------------------------------------- 6. the startup note
-
-
-def test_note_names_the_default():
-    assert "lite core only" in packs.startup_note()
-
-
-def test_note_names_the_master_toggle(monkeypatch):
-    monkeypatch.setenv(packs.ENV_ALL_TOOLS, "true")
-    assert packs.ENV_ALL_TOOLS in packs.startup_note()
-
-
-def test_note_names_the_mode_pin(monkeypatch):
-    monkeypatch.setenv(packs.ENV_MODE, "design")
-    assert "design" in packs.startup_note()
-
-
-def test_note_says_the_mode_pin_ignored_the_checkbox(monkeypatch):
-    """The case that most needs saying out loud: a human ticked the box in
-    an installer and a KS4P_MODE pin quietly overrode it."""
-    monkeypatch.setenv(packs.ENV_MODE, "lite")
-    monkeypatch.setenv(packs.ENV_ALL_TOOLS, "true")
-    note = packs.startup_note()
-    assert packs.ENV_MODE in note
-    assert "IGNORED" in note
-
-
-def test_master_toggle_applies_for_real(monkeypatch):
-    """End to end through apply_startup_mode: the master checkbox alone
-    opens every pack."""
-    monkeypatch.setenv(packs.ENV_ALL_TOOLS, "true")
-    for pack in packs.PACK_SUMMARIES:
-        for name in packs.tool_names()[pack]:
-            packs._ENABLED[name] = False
-    assert packs.apply_startup_mode() == "full"
-    for pack in packs.PACK_SUMMARIES:
-        names = packs.tool_names()[pack]
-        assert names, f"{pack} registered no tools; the check would be vacuous"
-        for name in names:
-            assert packs.is_tool_enabled(name), f"{pack}/{name}"
-
-
-# ------------------------------------------- 7. manifest <-> code parity
-
-
-def _manifest() -> dict:
-    path = Path(__file__).resolve().parents[2] / "bundle" / "manifest.json"
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
-def test_manifest_declares_every_toggle():
-    """A pack added in code without a checkbox is invisible to installers,
-    and a checkbox with no env behind it does nothing. Neither drifts
-    silently."""
-    manifest = _manifest()
-    declared = set(manifest["server"]["mcp_config"]["env"])
-    assert declared == set(packs.toggle_env_names())
-
-
-def test_manifest_env_values_point_at_real_user_config():
-    manifest = _manifest()
-    config = manifest["user_config"]
-    for env, ref in manifest["server"]["mcp_config"]["env"].items():
-        key = ref.removeprefix("${user_config.").removesuffix("}")
-        assert key in config, f"{env} points at a missing checkbox {key!r}"
-        assert config[key]["type"] == "boolean"
-        assert config[key]["default"] is False, "every checkbox ships off"
-
-
-def test_manifest_checkbox_copy_is_a_sentence():
-    for key, entry in _manifest()["user_config"].items():
-        assert entry["title"], key
-        assert entry["description"].endswith("."), key
-        assert "_" not in entry["description"], f"{key}: no env names in copy"
-
-
-def test_note_reaches_stderr(monkeypatch, capsys):
-    monkeypatch.setenv(PACK_ENVS["review"], "true")
-    packs.apply_startup_mode()
-    captured = capsys.readouterr()
-    assert captured.out == "", "stdout carries the protocol and stays clean"
-    assert PACK_ENVS["review"] in captured.err
-
-
-def test_note_reaches_stderr(monkeypatch, capsys):
-    monkeypatch.setenv(packs.ENV_ALL_TOOLS, "true")
-    packs.apply_startup_mode()
-    captured = capsys.readouterr()
-    assert captured.out == "", "stdout carries the protocol and stays clean"
-    assert packs.ENV_ALL_TOOLS in captured.err
+from kitchensink4ppt.settings import (
+    ENV_CALL_TIMEOUT,
+    ENV_FORBID,
+    ENV_MAX_OUTPUT,
+    ENV_READ_ONLY,
+    LEGACY_ENV_NAMES,
+    LEGACY_REFUSAL,
+    Settings,
+    SettingsError,
+    legacy_notice,
+)
+from kitchensink4ppt.surface.plan import ALL_TOOLS, build
+
+
+@pytest.mark.parametrize("value", ["1", "true", "YES", "on"])
+def test_read_only_truthy_values(value):
+    settings = Settings.from_env({ENV_READ_ONLY: value})
+    assert settings.read_only is True
+
+
+@pytest.mark.parametrize("value", ["", "0", "false", "NO", "off"])
+def test_read_only_false_values(value):
+    settings = Settings.from_env({ENV_READ_ONLY: value})
+    assert settings.read_only is False
+
+
+def test_read_only_rejects_ambiguous_value():
+    with pytest.raises(SettingsError, match=ENV_READ_ONLY):
+        Settings.from_env({ENV_READ_ONLY: "sometimes"})
+
+
+def test_forbid_is_trimmed_deduplicated_and_sorted():
+    settings = Settings.from_env({
+        ENV_FORBID: " get_text, ppt_graphics,get_text, ppt_help "
+    })
+    assert settings.forbid == ("get_text", "ppt_graphics", "ppt_help")
+
+
+def test_unknown_forbid_fails_startup():
+    with pytest.raises(SettingsError, match="not a tool or op"):
+        build(Settings.from_env({ENV_FORBID: "not-a-real-op"}))
+
+
+def test_read_only_surface_contains_only_read_and_inspect_plus_help():
+    plan = build(Settings.from_env({ENV_READ_ONLY: "1"}))
+    assert tuple(plan.tools) == ("ppt_read", "ppt_inspect", "ppt_help")
+    assert all(tool.read_only for tool in plan.tools.values())
+
+
+def test_forbid_can_remove_a_tool_and_one_operation():
+    plan = build(Settings.from_env({
+        ENV_FORBID: "ppt_graphics,get_text,ppt_help"
+    }))
+    assert "ppt_graphics" not in plan.tools
+    assert "ppt_help" not in plan.tools
+    assert "get_text" not in plan.tools["ppt_read"].ops
+    assert plan.forbidden_ops == frozenset({"get_text"})
+    assert plan.forbidden_tools == frozenset({"ppt_graphics", "ppt_help"})
+
+
+LEGACY_MODE = "KS4P_MODE"
+LEGACY_POLICY = "KS4P_PACK_POLICY"
+LEGACY_ALL = "KS4P_ALL_TOOLS"
+LEGACY_LOCK = "KS4P_LOCK_TOOLS"
+
+ACCEPTED_LEGACY = (
+    [(LEGACY_MODE, v) for v in ("lite", "full", "everything", "LITE", " Full ", "\tEverything\n")]
+    + [(LEGACY_POLICY, v) for v in ("auto", "AUTO", "  Auto ")]
+    + [(LEGACY_ALL, v) for v in (
+        "1", "true", "on", "yes", "0", "false", "off", "no", "TRUE", " False ", "No",
+    )]
+    + [(LEGACY_LOCK, v) for v in ("0", "false", "off", "no", "FALSE", " Off ")]
+)
+
+REFUSED_LEGACY = [
+    (LEGACY_MODE, "lite,graphics"),
+    (LEGACY_MODE, "graphics"),
+    (LEGACY_MODE, "full,typo-pack"),
+    (LEGACY_MODE, "zzmarker"),
+    (LEGACY_POLICY, "locked"),
+    (LEGACY_POLICY, "LOCKED"),
+    (LEGACY_POLICY, "zzmarker"),
+    (LEGACY_ALL, "zzmarker"),
+    (LEGACY_ALL, "2"),
+    (LEGACY_LOCK, "1"),
+    (LEGACY_LOCK, "true"),
+    (LEGACY_LOCK, " ON "),
+    (LEGACY_LOCK, "yes"),
+    (LEGACY_LOCK, "zzmarker"),
+]
+
+
+def test_no_legacy_settings_means_nothing_ignored():
+    assert Settings.from_env({}).ignored_legacy == ()
+    assert Settings().has_legacy_notice is False
+
+
+@pytest.mark.parametrize("name,value", ACCEPTED_LEGACY)
+def test_old_defaults_are_accepted_and_recorded_as_ignored(name, value):
+    settings = Settings.from_env({name: value})
+    assert settings.ignored_legacy == (name,)
+    assert settings.has_legacy_notice is True
+    assert settings.read_only is False and settings.forbid == ()
+
+
+def test_the_old_bundle_defaults_together_are_accepted():
+    settings = Settings.from_env({
+        LEGACY_MODE: "lite",
+        LEGACY_POLICY: "auto",
+        LEGACY_ALL: "false",
+        LEGACY_LOCK: "false",
+    })
+    assert settings.ignored_legacy == LEGACY_ENV_NAMES
+
+
+@pytest.mark.parametrize("name", LEGACY_ENV_NAMES)
+@pytest.mark.parametrize("value", ["", "   ", "\t"])
+def test_blank_old_settings_are_accepted_and_not_listed(name, value):
+    settings = Settings.from_env({name: value})
+    assert settings.ignored_legacy == ()
+    assert settings.has_legacy_notice is False
+
+
+@pytest.mark.parametrize("name,value", REFUSED_LEGACY)
+def test_old_settings_that_limited_the_tools_stop_the_start(name, value):
+    with pytest.raises(SettingsError) as caught:
+        Settings.from_env({name: value})
+    assert str(caught.value) == LEGACY_REFUSAL.format(name=name)
+    assert "zzmarker" not in str(caught.value)
+    assert ENV_READ_ONLY in str(caught.value) and ENV_FORBID in str(caught.value)
+
+
+@pytest.mark.parametrize("name,value", REFUSED_LEGACY)
+def test_a_refused_old_setting_still_stops_the_start_beside_mode_lite(name, value):
+    env = {LEGACY_MODE: "lite", name: value}
+    if name == LEGACY_MODE:
+        env = {LEGACY_POLICY: "auto", LEGACY_ALL: "false", name: value}
+    with pytest.raises(SettingsError) as caught:
+        Settings.from_env(env)
+    assert str(caught.value) == LEGACY_REFUSAL.format(name=name)
+
+
+def test_mode_lite_does_not_loosen_the_present_day_restrictions():
+    old = {LEGACY_MODE: "lite", LEGACY_POLICY: "auto", LEGACY_ALL: "false", LEGACY_LOCK: "false"}
+    read_only = Settings.from_env({**old, ENV_READ_ONLY: "1"})
+    plan = build(read_only)
+    assert tuple(plan.tools) == ("ppt_read", "ppt_inspect", "ppt_help")
+    forbidding = Settings.from_env({**old, ENV_FORBID: "get_text,ppt_graphics"})
+    plan = build(forbidding)
+    assert "ppt_graphics" not in plan.tools
+    assert "get_text" not in plan.tools["ppt_read"].ops
+    assert plan.forbidden_ops == frozenset({"get_text"})
+    with pytest.raises(SettingsError, match=ENV_READ_ONLY):
+        Settings.from_env({**old, ENV_READ_ONLY: "sometimes"})
+    with pytest.raises(SettingsError, match=ENV_CALL_TIMEOUT):
+        Settings.from_env({**old, ENV_CALL_TIMEOUT: "0"})
+    with pytest.raises(SettingsError, match="not a tool or op"):
+        build(Settings.from_env({**old, ENV_FORBID: "not-a-real-op"}))
+
+
+def test_the_startup_notice_is_one_line_naming_only_the_ignored_settings():
+    line = legacy_notice(("KS4P_MODE", "KS4P_ALL_TOOLS"))
+    assert line == (
+        "Ignored old settings: KS4P_MODE, KS4P_ALL_TOOLS. This version lists every "
+        "tool from the start, and the server started normally. To limit the tools, "
+        "use KS4P_READ_ONLY=1 or KS4P_FORBID=<tool or op names>. Remove these "
+        "settings to stop this notice."
+    )
+    assert chr(10) not in line and chr(0x2014) not in line
+
+
+@pytest.mark.parametrize(
+    "name,value",
+    [
+        (ENV_CALL_TIMEOUT, "not-a-number"),
+        (ENV_CALL_TIMEOUT, "0"),
+        (ENV_CALL_TIMEOUT, "3601"),
+        (ENV_MAX_OUTPUT, "1.5"),
+        (ENV_MAX_OUTPUT, "1999"),
+        (ENV_MAX_OUTPUT, "2000001"),
+    ],
+)
+def test_numeric_setting_errors_fail_loudly(name, value):
+    with pytest.raises(SettingsError, match=name):
+        Settings.from_env({name: value})
+
+
+def test_numeric_settings_are_frozen_into_plan():
+    settings = Settings.from_env({
+        ENV_CALL_TIMEOUT: "45.5",
+        ENV_MAX_OUTPUT: "64000",
+    })
+    plan = build(settings)
+    assert plan.settings.call_timeout_s == 45.5
+    assert plan.settings.max_output_chars == 64000
+
+
+def test_an_unknown_variable_name_is_ignored_and_the_readme_says_so():
+    """The README said any setting the server does not understand stops
+    startup. Only values it cannot use and retired names do; a misspelled
+    name such as KS4P_READ_ONY is ignored (environment variables are shared
+    with everything else on the machine), so the README now says that."""
+    from pathlib import Path
+
+    from kitchensink4ppt import server  # noqa: F401 - populates the registry
+
+    settings = Settings.from_env({"KS4P_READ_ONY": "1"})
+    assert settings.read_only is False
+    assert "ppt_edit" in build(settings).tools
+    readme = (Path(__file__).resolve().parents[2] / "README.md").read_text(encoding="utf-8")
+    assert "A setting the server does not understand stops startup" not in readme
+    assert "A variable name the server does not know is ignored" in readme

@@ -24,7 +24,9 @@ from __future__ import annotations
 
 from lxml import etree
 
+from ..core import xmlsafe
 from ..core.package import PptxPackage, resolve_target
+from ..core.xmlbool import attr_bool
 
 LABEL_PART = "docMetadata/LabelInfo.xml"
 RT_LABELS = (
@@ -59,11 +61,11 @@ def read_label(pkg: PptxPackage) -> dict | None:
     if part is None:
         return None
     try:
-        root = etree.fromstring(pkg.raw_part(part))
+        root = xmlsafe.fromstring(pkg.raw_part(part), doc=pkg.path.name, part=part)
     except etree.XMLSyntaxError:
         return None
     for el in root.iter(f"{_CLBL}label"):
-        if el.get("removed") == "1" or el.get("enabled") == "0":
+        if attr_bool(el, "removed") or not attr_bool(el, "enabled", True):
             continue
         label_id = el.get("id")
         if not label_id:

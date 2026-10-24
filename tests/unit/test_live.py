@@ -277,6 +277,17 @@ def test_probe_with_timeout_blocked_and_not_running(monkeypatch):
     assert live.probe_with_timeout(timeout=2.0) == "not_running"
 
 
+def test_probe_without_pywin32_returns_not_running(monkeypatch):
+    """Unsupported platforms report capability absence without leaking an
+    unhandled exception from the probe thread."""
+    monkeypatch.setattr(
+        live,
+        "_com_modules",
+        lambda: (_ for _ in ()).throw(RuntimeError("pywin32 unavailable")),
+    )
+    assert live.probe_with_timeout(timeout=2.0) == "not_running"
+
+
 # ============================== in-process: live_ops pre-attach validation
 
 
@@ -671,6 +682,8 @@ def test_live_edit_round(make_deck, tmp_path):
     # dirty until asked; live_save is the explicit ask
     assert out["dirty_before_save"] is True
     assert out["save"]["save_confirmed"] is True
+    # the deck was clean when this server made its first live edit
+    assert out["save"]["unsaved_before_our_edits"] is False
     assert out["dirty_after_save"] is False
 
     # the saved file carries the edits (verified with PowerPoint GONE)

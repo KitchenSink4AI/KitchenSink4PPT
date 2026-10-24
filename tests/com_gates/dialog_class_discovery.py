@@ -1,7 +1,7 @@
-"""Empirical discovery of PowerPoint's window classes (v1.1 dialog detector).
+"""Empirical discovery of PowerPoint's window classes (dialog detector).
 
 The dialog detector's DIALOG_CLASSES set must match what THIS PowerPoint
-build actually registers. This script:
+build actually registers, not what Word registers. This script:
 
 1. Refuses to run if POWERPNT.EXE is already up (the user's instance; the
    singleton means we would attach to it).

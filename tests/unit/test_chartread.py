@@ -74,7 +74,7 @@ def test_roundtrip_pie_and_line(deck):
 
 
 def test_roundtrip_scatter_xy(deck):
-    """The scatter (probed generically: xVal/yVal caches)."""
+    """A scatter chart (probed generically: xVal/yVal caches)."""
     made = charts.create_chart(
         deck, 0, "scatter", None,
         [
@@ -142,7 +142,7 @@ def test_combo_multi_group(deck):
 
 def _foreign_deck(tmp_path):
     """A chart deck written by python-pptx: the independent oracle standing
-    in for legacy decks (corpus heavy_deck/pmr carry no charts)."""
+    in for legacy decks (corpus heavy_deck/table_deck carry no charts)."""
     from pptx import Presentation
     from pptx.chart.data import CategoryChartData, XyChartData
     from pptx.enum.chart import XL_CHART_TYPE

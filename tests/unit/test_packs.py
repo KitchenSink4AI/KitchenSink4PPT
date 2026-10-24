@@ -1,208 +1,108 @@
-"""Pack registry and enable/disable machinery (packs.py + server wiring)."""
+"""Registry and planning guarantees for the fixed PowerPoint surface.
+This replaces the retired pack registry and runtime toggle suite. The
+operation catalog is still tested exhaustively, but its public MCP projection
+is now immutable for the life of a server process.
+"""
 
 from __future__ import annotations
 
-import asyncio
+from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
-from kitchensink4ppt import packs, server
-from kitchensink4ppt.core.errors import PptMcpError
-
-
-@pytest.fixture(autouse=True)
-def _restore_surface():
-    """Pack state is process-global; snapshot and restore around each test."""
-    before = dict(packs._ENABLED)
-    yield
-    packs._ENABLED.clear()
-    packs._ENABLED.update(before)
-    server._PENDING_VISIBILITY.clear()
+from kitchensink4ppt import server
+from kitchensink4ppt.registry import GROUP_OPS, OP_TO_GROUP, public_ops
+from kitchensink4ppt.settings import Settings
+from kitchensink4ppt.surface.plan import ALL_TOOLS, build
 
 
-def test_registry_matches_fastmcp():
-    """Every registered pack tool exists on the server, and every server
-    tool belongs to exactly one pack (or lite)."""
-    tools = packs.tool_objects()
-    seen = set()
-    for pack, names in packs.tool_names().items():
-        for name in names:
-            assert name in tools, f"{pack} registers unknown tool {name}"
-            assert name not in seen, f"{name} is in two packs"
-            seen.add(name)
-    assert seen == set(tools), f"unassigned tools: {set(tools) - seen}"
+ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_lite_is_enabled_and_packs_are_not():
-    for name in packs.tool_names()["lite"]:
-        assert packs.is_tool_enabled(name), (
-            f"lite tool {name} should start enabled"
-        )
-    for pack in packs.pack_names():
-        for name in packs.tool_names()[pack]:
-            assert not packs.is_tool_enabled(name), (
-                f"{pack} tool {name} should start disabled"
-            )
+def test_retired_pack_module_and_toggle_operations_are_absent():
+    assert not (ROOT / "src" / "kitchensink4ppt" / "packs.py").exists()
+    assert not hasattr(server, "enable_tools")
+    assert not hasattr(server, "disable_tools")
 
 
-def test_lite_has_no_pack_standins():
-    """Discoverability rule 1: no shape, table-structure, or chart tools in
-    lite that could be misused as workarounds for pack capabilities."""
-    for name in packs.tool_names()["lite"]:
-        assert not name.startswith(
-            ("insert_shape", "create_table", "create_chart", "merge_")
-        ), f"{name} is a pack capability leaking into lite"
+def test_registry_contains_each_released_operation_once():
+    registry = public_ops()
+    expected = {name for names in GROUP_OPS.values() for name in names}
+    assert set(registry) == expected
+    assert len(registry) == len(OP_TO_GROUP) == 145
+    assert sum(len(names) for names in GROUP_OPS.values()) == 145
 
 
-def test_enable_disable_idempotent():
-    r1 = packs.enable(["graphics"])
-    assert r1["enabled"] == ["graphics"]
-    assert r1["approx_tokens_added"] > 0
-    r2 = packs.enable(["graphics"])
-    assert r2["enabled"] == []
-    assert r2["already_enabled"] == ["graphics"]
-    assert r2["approx_tokens_added"] == 0
-
-    d1 = packs.disable(["graphics"])
-    assert d1["disabled"] == ["graphics"]
-    d2 = packs.disable(["graphics"])
-    assert d2["already_disabled"] == ["graphics"]
-    assert d2["approx_tokens_removed"] == 0
+def test_registry_handlers_are_the_exported_server_functions():
+    for name, spec in public_ops().items():
+        assert spec.handler is getattr(server, name)
+        assert spec.name == name
+        assert spec.group == OP_TO_GROUP[name]
+        assert spec.summary
+        assert "\n" not in spec.summary
 
 
-def test_enable_reports_surface():
-    before = packs.surface_report()["active_tools"]
-    r = packs.enable(["tables-charts"])
-    grown = len(packs.tool_names()["tables-charts"])
-    assert r["active_tools"] == before + grown
-    assert r["approx_active_tokens"] > 0
-    assert "packs" in r
+def test_every_argument_model_forbids_unknown_fields():
+    for name, spec in public_ops().items():
+        with pytest.raises(ValidationError):
+            spec.args.model_validate({"__unknown_surface_argument__": True})
 
 
-def test_everything_alias():
-    r = packs.enable(["everything"])
-    total = sum(len(v) for v in packs.tool_names().values())
-    assert r["active_tools"] == total
+def test_default_plan_is_exactly_eight_groups_plus_help():
+    plan = build(Settings())
+    assert tuple(plan.tools) == ALL_TOOLS
+    assert len(plan.tools) == 9
+    listed = [op for tool in plan.tools.values() if tool.name != "ppt_help"
+              for op in tool.ops]
+    assert len(listed) == 145
+    assert len(set(listed)) == 145
+    assert set(listed) == set(public_ops())
 
 
-def test_unknown_pack_lists_valid_names():
-    with pytest.raises(PptMcpError) as exc:
-        packs.enable(["grafics"])
-    msg = str(exc.value)
-    for name in packs.pack_names():
-        assert name in msg
-    assert "everything" in msg
+def test_group_membership_matches_the_adopted_map():
+    plan = build(Settings())
+    for group, expected in GROUP_OPS.items():
+        assert plan.tools[group].ops == expected
+        for op in expected:
+            assert plan.op_tool[op] == group
 
 
-def test_lite_cannot_be_toggled():
-    with pytest.raises(PptMcpError):
-        packs.enable(["lite"])
-    with pytest.raises(PptMcpError):
-        packs.disable(["lite"])
+def test_font_inventory_is_a_read_only_inspection_operation():
+    """Font discovery belongs beside audits, not design mutations."""
+    plan = build(Settings())
+    assert OP_TO_GROUP["font_inventory"] == "ppt_inspect"
+    assert "font_inventory" in plan.tools["ppt_inspect"].ops
+    assert "font_inventory" not in plan.tools["ppt_design"].ops
+    assert plan.tools["ppt_inspect"].annotations["readOnlyHint"] is True
 
 
-def test_locked_policy_refuses(monkeypatch):
-    monkeypatch.setenv("KS4P_PACK_POLICY", "locked")
-    with pytest.raises(PptMcpError) as exc:
-        packs.enable(["graphics"])
-    assert getattr(exc.value, "code", None) == "CONFLICT"
-    with pytest.raises(PptMcpError):
-        packs.disable(["graphics"])
-    # the server tool returns the envelope, not a raw exception
-    out = asyncio.run(
-        packs.tool_objects()["enable_tools"].fn(packs=["graphics"])
-    )
-    assert out["ok"] is False
-    assert out["error"]["code"] == "CONFLICT"
+def test_fixed_plan_has_no_runtime_mutation_api():
+    plan = build(Settings())
+    assert not hasattr(plan, "enable")
+    assert not hasattr(plan, "disable")
+    assert not hasattr(plan, "toggle")
+    before = tuple(plan.tools)
+    assert tuple(plan.tools) == before == ALL_TOOLS
 
 
-def test_startup_mode_lite_default(monkeypatch):
-    monkeypatch.delenv("KS4P_MODE", raising=False)
-    assert packs.apply_startup_mode() == "lite"
-    assert packs.surface_report()["active_tools"] == len(
-        packs.tool_names()["lite"]
-    )
+def test_plans_are_independent_immutable_startup_views():
+    default = build(Settings())
+    restricted = build(Settings(forbid=("ppt_graphics", "get_text")))
+    assert tuple(default.tools) == ALL_TOOLS
+    assert "ppt_graphics" not in restricted.tools
+    assert "get_text" not in restricted.tools["ppt_read"].ops
+    assert "ppt_graphics" in default.tools
+    assert "get_text" in default.tools["ppt_read"].ops
 
 
-def test_startup_mode_full(monkeypatch):
-    monkeypatch.setenv("KS4P_MODE", "full")
-    packs.apply_startup_mode()
-    total = sum(len(v) for v in packs.tool_names().values())
-    assert packs.surface_report()["active_tools"] == total
-
-
-def test_startup_mode_pack_list(monkeypatch):
-    monkeypatch.setenv("KS4P_MODE", "graphics, com")
-    packs.apply_startup_mode()
-    assert all(
-        packs.is_tool_enabled(n) for n in packs.tool_names()["graphics"]
-    )
-    assert all(packs.is_tool_enabled(n) for n in packs.tool_names()["com"])
-    assert not any(
-        packs.is_tool_enabled(n) for n in packs.tool_names()["tables-charts"]
-    )
-
-
-def test_startup_mode_bad_pack_fails_loudly(monkeypatch):
-    monkeypatch.setenv("KS4P_MODE", "graphics,typo-pack")
-    with pytest.raises(PptMcpError):
-        packs.apply_startup_mode()
-
-
-def test_pack_costs_positive():
-    menu = packs.menu()
-    assert set(menu) == set(packs.pack_names())
-    for pack, entry in menu.items():
-        assert entry["approx_tokens"] > 0
-        assert entry["tools"], f"pack {pack} has no tools"
-
-
-# ------------------------------------------------- v1.1 pack consolidation
-
-# The author's cost rule: a pack has to earn its own menu line. Anything
-# under ~1.5k tokens belongs inside a neighbour, unless it is gated on an
-# environment the file packs do not share (the COM tier, Windows only).
-_ENV_GATED = {"com"}
-
-
-def test_every_pack_clears_the_cost_floor():
-    for pack, entry in packs.menu().items():
-        if pack in _ENV_GATED:
-            continue
-        assert entry["approx_tokens"] >= 1500, (
-            f"pack {pack} bills ~{entry['approx_tokens']} tokens; sub-1.5k "
-            "packs fold into a neighbour or lite"
-        )
-
-
-def test_com_tier_is_one_pack():
-    """com and com-live merged: two environment-gated packs was one too
-    many, and both need the same PowerPoint install to do anything."""
-    assert "com-live" not in packs.pack_names()
-    tools = set(packs.tool_names()["com"])
-    assert {"powerpoint_status", "zombie_check"} <= tools
-    assert {"live_save", "live_scroll_to", "live_status"} <= tools
-
-
-@pytest.mark.parametrize(
-    "old,new",
-    [
-        ("transitions-animations", "assembly-export"),
-        ("review", "review-sweeps"),
-        ("sweeps", "review-sweeps"),
-        ("com-live", "com"),
-    ],
-)
-def test_v1_0_pack_names_still_resolve(old, new):
-    """A cached recipe or an old KS4P_MODE string must not brick a session
-    over a rename."""
-    r = packs.enable([old])
-    assert r["enabled"] == [new]
-    d = packs.disable([old])
-    assert d["disabled"] == [new]
-
-
-def test_old_name_in_startup_mode(monkeypatch):
-    monkeypatch.setenv("KS4P_MODE", "com-live")
-    packs.apply_startup_mode()
-    assert all(packs.is_tool_enabled(n) for n in packs.tool_names()["com"])
+def test_group_annotations_match_read_write_boundary():
+    plan = build(Settings())
+    for name in ("ppt_read", "ppt_inspect", "ppt_help"):
+        assert plan.tools[name].annotations["readOnlyHint"] is True
+        assert plan.tools[name].annotations["destructiveHint"] is False
+    for name in (
+        "ppt_edit", "ppt_graphics", "ppt_tables", "ppt_design",
+        "ppt_review", "ppt_deck",
+    ):
+        assert plan.tools[name].annotations["readOnlyHint"] is False

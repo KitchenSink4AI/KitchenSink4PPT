@@ -1,43 +1,272 @@
 name: Publish to PyPI
 
-# A published GitHub Release is the only trigger that publishes a version.
+# A published GitHub Release is the ONLY thing that publishes a version.
+#
+# workflow_dispatch was removed in a security pass. It
+# let anyone holding a gh token with workflow scope publish to PyPI from a
+# branch, with no Release, no tag and no approval step, and Trusted Publishing did
+# nothing to stop that: it authenticates the repository, not the intent. The
+# pypi environment now also requires manual approval and only accepts main
+# or a v* tag, so the dispatch path was the last way around a human.
 #
 # To publish: cut a Release. To retry a failed publish: re-run this workflow
-# from its own Actions run.
+# from its own Actions run, which keeps the Release as the thing that authorized
+# it.
 on:
   release:
     types: [published]
 
+# One run per release tag at a time, and a run is never cancelled part-way through a
+# publish: a re-run or a duplicate event waits for the run in progress. (A concurrency
+# group cannot coordinate different repositories; the shared license adapter therefore
+# has one publisher, the license repository KitchenSink4AI/kitchensink4-license-community, and every
+# editor only verifies the exact wheel it published.)
+concurrency:
+  group: publish-${{ github.repository }}-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  # The public repository builds and tests the Community edition only.
+  KS4_ADAPTER_EDITION: community
+
 jobs:
-  build:
+  # ------------------------------------------------------------ release gate
+  # Public-copy checks stay dormant in ordinary test runs. A release enables
+  # them explicitly, then runs the complete non-live unit suite and site guard
+  # before any artifact is built or any PyPI identity token is requested.
+  release-gate:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      # A release publishes only a commit that is already on public main.
+      - name: The release commit is on public main
+        shell: bash
+        env:
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          git merge-base --is-ancestor "$RELEASE_SHA" refs/remotes/origin/main
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.12"
-      - name: Build sdist and wheel
-        run: |
-          python -m pip install --upgrade build
-          python -m build
-      - uses: actions/upload-artifact@v7
+      # The Community license adapter is one shared source, read from the reviewed public
+      # KitchenSink4Word release commit that scripts/adapter_source.py pins
+      # (PUBLIC_ADAPTER_COMMIT) and checked against COMMUNITY_DIGEST before any use.
+      # The Business adapter is never part of a public run.
+      - name: Community license adapter pin
+        id: adapter-pin
+        shell: bash
+        run: python scripts/adapter_source.py --public-pin >> "$GITHUB_OUTPUT"
+      - name: Community license adapter (pinned public commit)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          name: dist
-          path: dist/
+          repository: ${{ steps.adapter-pin.outputs.repository }}
+          ref: ${{ steps.adapter-pin.outputs.commit }}
+          path: _adapter_source
+          persist-credentials: false
+      - name: Move the Community adapter outside the source tree
+        shell: bash
+        env:
+          PIN_COMMIT: ${{ steps.adapter-pin.outputs.commit }}
+          PIN_PATH: ${{ steps.adapter-pin.outputs.path }}
+        run: |
+          set -euo pipefail
+          test "$(git -C _adapter_source rev-parse HEAD)" = "$PIN_COMMIT"
+          mkdir "$RUNNER_TEMP/ks4-license-adapters"
+          cp -r "_adapter_source/$PIN_PATH" "$RUNNER_TEMP/ks4-license-adapters/"
+          rm -rf _adapter_source
+          echo "KS4PPT_ADAPTER_SOURCE=$RUNNER_TEMP/ks4-license-adapters" >> "$GITHUB_ENV"
+      - name: Check the Community adapter against its recorded digest
+        shell: bash
+        run: python scripts/adapter_source.py
+      - name: Install test dependencies
+        run: pip install -e ".[dev,metrics,optimize]"
+      - name: Release tests and public-copy gate
+        env:
+          KS4P_RELEASE_GATE: "1"
+        run: |
+          python -m pytest tests/unit -q -m "not live"
+          python -X utf8 scripts/check_site.py
 
-  publish:
+  build:
+    needs: release-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      # The Community license adapter is one shared source, read from the reviewed public
+      # KitchenSink4Word release commit that scripts/adapter_source.py pins
+      # (PUBLIC_ADAPTER_COMMIT) and checked against COMMUNITY_DIGEST before any use.
+      # The Business adapter is never part of a public run.
+      - name: Community license adapter pin
+        id: adapter-pin
+        shell: bash
+        run: python scripts/adapter_source.py --public-pin >> "$GITHUB_OUTPUT"
+      - name: Community license adapter (pinned public commit)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: ${{ steps.adapter-pin.outputs.repository }}
+          ref: ${{ steps.adapter-pin.outputs.commit }}
+          path: _adapter_source
+          persist-credentials: false
+      - name: Move the Community adapter outside the source tree
+        shell: bash
+        env:
+          PIN_COMMIT: ${{ steps.adapter-pin.outputs.commit }}
+          PIN_PATH: ${{ steps.adapter-pin.outputs.path }}
+        run: |
+          set -euo pipefail
+          test "$(git -C _adapter_source rev-parse HEAD)" = "$PIN_COMMIT"
+          mkdir "$RUNNER_TEMP/ks4-license-adapters"
+          cp -r "_adapter_source/$PIN_PATH" "$RUNNER_TEMP/ks4-license-adapters/"
+          rm -rf _adapter_source
+          echo "KS4PPT_ADAPTER_SOURCE=$RUNNER_TEMP/ks4-license-adapters" >> "$GITHUB_ENV"
+      - name: Check the Community adapter against its recorded digest
+        shell: bash
+        run: python scripts/adapter_source.py
+      # One Community app owns both core and launcher modules. The shared license
+      # adapter is fetched at its pinned published bytes and verified separately.
+      - name: Build the app and license wheels
+        shell: bash
+        env:
+          PUBLISHED_AT: ${{ github.event.release.published_at }}
+        run: |
+          set -euo pipefail
+          archive_dir="$RUNNER_TEMP/release-source"
+          mkdir -p "$archive_dir"
+          git archive "$GITHUB_SHA" | tar -x -C "$archive_dir"
+          python -m pip install --upgrade pip "packaging>=24"
+          python -m pip install -e "${archive_dir}[dev]"
+          python "$archive_dir/scripts/build_editions.py" \
+            --edition community \
+            --output "$RUNNER_TEMP/edition-dist" \
+            --release-date "${PUBLISHED_AT%%T*}" \
+            --owner-test
+          mkdir -p pypi-dist/license pypi-dist/app
+          python scripts/adapter_source.py --fetch-wheel pypi-dist/license
+          cp "$RUNNER_TEMP"/edition-dist/community/kitchensink4ppt-[0-9]*.whl pypi-dist/app/
+      # Fail before anything is uploaded unless the tag is exactly "v" + the canonical
+      # version, every source version field equals it, there is exactly one wheel of each
+      # kind, and the app pins the license adapter with one exact ==
+      # (parsed as PEP 508 requirements, canonical names).
+      - name: Check the release identity and app license pin
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: python scripts/release_verify.py check-build --product ppt --tag "$RELEASE_TAG" --dist pypi-dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: pypi-dist
+          path: pypi-dist/
+          if-no-files-found: error
+
+  # ------------------------------------------------------------------ plan
+  # Which wheels are already on PyPI? A version that exists is skipped ONLY after its
+  # exact filename, its downloaded sha256 and its unpacked contents match the wheel built
+  # here (ZIP timestamps ignored). A mismatch fails the run: PyPI files cannot be
+  # replaced, so it needs a new version.
+  # This repository never uploads the shared license adapter: the license repository
+  # (KitchenSink4AI/kitchensink4-license-community) publishes it, and this run requires that exact
+  # wheel (pinned by sha256 in scripts/adapter_source.py) on PyPI.
+  plan:
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      license: ${{ steps.plan.outputs.license }}
+      app: ${{ steps.plan.outputs.app }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      - run: python -m pip install "packaging>=24"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: pypi-dist
+          path: pypi-dist/
+      - name: Plan the uploads
+        id: plan
+        run: python scripts/release_verify.py plan --product ppt --dist pypi-dist --license-mode require
+
+  # --------------------------------------------------------------- publish
+  # The existing app publisher remains the only publishing job. The shared
+  # license adapter must already be published and match this run's wheel.
+  verify-dependencies:
+    needs: plan
+    if: ${{ !cancelled() && !failure() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      - run: python -m pip install "packaging>=24"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: pypi-dist
+          path: pypi-dist/
+      - name: The license adapter is on PyPI and identical
+        run: python scripts/release_verify.py verify-remote --product ppt --dist pypi-dist --kinds license --wait 900
+
+  publish-launcher:
+    needs: [plan, verify-dependencies]
+    if: ${{ !cancelled() && !failure() && needs.plan.outputs.app == 'upload' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     environment: pypi
     permissions:
       id-token: write  # trusted publishing, no tokens anywhere
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
-          name: dist
+          name: pypi-dist
           path: dist/
-      # Pinned by commit (v1.14.2), not by the moving release/v1 branch.
-      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33
+      - name: Publish kitchensink4ppt
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33
+        with:
+          packages-dir: dist/app/
+          attestations: true
+
+  # App and license on PyPI and identical to this run's wheels, before anything else depends
+  # on the release (the registry job below).
+  post-verify:
+    needs: [plan, verify-dependencies, publish-launcher]
+    if: ${{ !cancelled() && !failure() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      - run: python -m pip install "packaging>=24"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: pypi-dist
+          path: pypi-dist/
+      - name: The app and license wheels are on PyPI and identical
+        run: python scripts/release_verify.py verify-remote --product ppt --dist pypi-dist --wait 900
 
   # ---------------------------------------------------------------- registry
   # The MCP Registry entry, published after PyPI and never in front of it.
@@ -53,11 +282,12 @@ jobs:
   # polls for it and the publish step retries, because "live on the JSON API"
   # and "rendered on the project page" are not the same instant.
   #
-  # Steps follow the registry's GitHub Actions example (OIDC variant), with the
-  # tool pinned to a release rather than `latest`. If a run fails with
-  # "invalid audience", bump PUBLISHER_VERSION.
+  # Steps follow the registry's own GitHub Actions example (OIDC variant) in
+  # docs/modelcontextprotocol-io/github-actions.mdx, with the tool pinned to a
+  # release rather than `latest`. If a run ever fails with "invalid audience",
+  # that is the pin being too old for the deployed registry: bump PUBLISHER_VERSION.
   registry:
-    needs: publish
+    needs: post-verify
     runs-on: ubuntu-latest
     continue-on-error: true
     permissions:
@@ -67,7 +297,7 @@ jobs:
       PUBLISHER_VERSION: v1.8.1
       PYPI_PACKAGE: kitchensink4ppt
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Wait for the new version to be live on PyPI
         run: |

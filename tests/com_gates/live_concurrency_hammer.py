@@ -1,13 +1,15 @@
 """Concurrency hammer: many threads, ONE live deck, through the SERVER layer.
 
-This is the acceptance test for COM serialization. It drives the real server tool functions (not the com layer directly)
+This is the KS4P equivalent of the Word live COM stress test that produced
+the v1.1 fix list, and it is the acceptance test for the serialization
+port. It drives the real server tool functions (not the com layer directly)
 from N threads at once against a single presentation open in a PowerPoint
-this script launched, then checks three things:
+this script launched, then checks the three things that broke on Word:
 
 1. NO INTERLEAVING: every serialized COM operation's [start, end) span must
    be disjoint. Overlap means the lock is not covering some path.
 2. NO CORRUPTION: concurrent live_set_text writes to distinct shapes must
-   each land verbatim. Without serialization, the failure mode is character-level garbling of
+   each land verbatim. Word's failure mode was character-level garbling of
    one write by another.
 3. NO SILENT LOSS: every call returns either a clean result or a typed
    refusal. A hang or an unhandled COM error is a failure.
@@ -64,19 +66,16 @@ def main() -> int:
     import pythoncom
     import win32com.client
 
-    from kitchensink4ppt import packs, server
+    from kitchensink4ppt import server
     from kitchensink4ppt.com import serial as com_serial
     from kitchensink4ppt.core import errors as err
 
     def tool(name):
-        """The real server-layer entry point. @_tool() registers each
-        function as a FastMCP FunctionTool, so .fn is the callable the
-        MCP client ultimately reaches; calling it is what makes this a
-        SERVER-layer hammer rather than a com-layer one."""
-        t = packs.tool_objects().get(name)
+        """The released operation handler below grouped MCP dispatch."""
+        t = getattr(server, name, None)
         if t is None:
             raise SystemExit(f"tool {name!r} is not registered")
-        return t.fn
+        return t
 
     insert_textbox = tool("insert_textbox")
     get_text = tool("get_text")
@@ -144,7 +143,7 @@ def main() -> int:
         # Every thread owns its own SLIDE, so writes are independent and any
         # cross-contamination is unambiguous. Each round inserts a textbox
         # carrying a payload unique to (thread, round): if concurrent COM
-        # calls garble each other the way unserialized writes do, the payload comes back
+        # calls garble each other the way Word's did, the payload comes back
         # mangled or missing, and if the lock leaks the same payload lands
         # twice.
         expected: list = []

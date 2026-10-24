@@ -1,13 +1,11 @@
-"""CJK / i18n coverage : Korean and mixed-script content through
-the full pipeline. The author works bilingually (English/Korean), so Korean
-text, Korean filenames, and East Asian typography are first-class inputs, not
-edge cases.
+"""CJK / i18n coverage: Korean and mixed-script content through
+the full pipeline. Korean text, Korean filenames, and East Asian typography
+are first-class inputs, not edge cases.
 
 Decks are built inline via the make_deck fixture plus the server's own ops
 (never by hand-editing XML), then verified through the read layer, saved
 through the validated save path, and reopened. Nothing in src/ is modified by
-this file; behavior gaps are pinned as xfail with a FINDING tag rather than
-patched.
+this file; behavior gaps are pinned as xfail rather than patched.
 
 COM rules follow test_com_bridge.py exactly: one scenario per isolated
 subprocess, tasklist gate (skip honestly if the user's POWERPNT.EXE is
@@ -67,8 +65,8 @@ REPO = Path(__file__).resolve().parents[2]
 # ---------------------------------------------------------------- test data
 
 KO_TITLE = "한국어 제목입니다"
-KO_MIXED = "한미동맹의 정당성과 authority는 상호 보완적이다"
-KO_PARA2 = "제도적 권위는 perceived consequences에서 나온다"
+KO_MIXED = "신제품의 판매량과 quality는 상호 보완적이다"
+KO_PARA2 = "제품의 가치는 customer feedback에서 나온다"
 KO_FONT = "맑은 고딕"  # Malgun Gothic, the standard Korean UI font
 
 A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
@@ -153,13 +151,13 @@ class TestKoreanTextEndToEnd:
         idx = _blank_slide(pkg)
         insert_textbox(pkg, idx, KO_MIXED, 1, 1, 6, 1)
 
-        hit = find_text(pkg, "authority", scope=idx)
+        hit = find_text(pkg, "quality", scope=idx)
         assert hit["count"] == 1
         m = hit["matches"][0]
-        assert m["start"] == KO_MIXED.find("authority")
-        assert m["end"] == m["start"] + len("authority")
-        assert KO_MIXED[m["start"]:m["end"]] == "authority"
-        assert m["match"] == "authority"
+        assert m["start"] == KO_MIXED.find("quality")
+        assert m["end"] == m["start"] + len("quality")
+        assert KO_MIXED[m["start"]:m["end"]] == "quality"
+        assert m["match"] == "quality"
 
     def test_find_text_korean_query_offsets(self, make_deck):
         path = make_deck("findko.pptx", extra_slides=0)
@@ -167,16 +165,16 @@ class TestKoreanTextEndToEnd:
         idx = _blank_slide(pkg)
         insert_textbox(pkg, idx, KO_MIXED, 1, 1, 6, 1)
 
-        hit = find_text(pkg, "정당성", scope=idx)
+        hit = find_text(pkg, "판매량", scope=idx)
         assert hit["count"] == 1
         m = hit["matches"][0]
         assert (m["start"], m["end"]) == (
-            KO_MIXED.find("정당성"),
-            KO_MIXED.find("정당성") + 3,
+            KO_MIXED.find("판매량"),
+            KO_MIXED.find("판매량") + 3,
         )
-        assert KO_MIXED[m["start"]:m["end"]] == "정당성"
+        assert KO_MIXED[m["start"]:m["end"]] == "판매량"
         # context snippet must carry intact Korean, no mojibake
-        assert "정당성" in m["context"]
+        assert "판매량" in m["context"]
         assert "�" not in m["context"]
 
     def test_search_replace_korean_across_fragmented_runs(
@@ -187,7 +185,7 @@ class TestKoreanTextEndToEnd:
         path = make_deck("frag.pptx", extra_slides=0)
         pkg = PptxPackage(path)
         idx = _blank_slide(pkg)
-        text = "동맹구조의 정당성 분석"
+        text = "시장구조의 판매량 분석"
         sid = insert_textbox(pkg, idx, text, 1, 1, 6, 1)["shape_id"]
         # Bold chars [2, 4) = "구조": splits the single run mid-word.
         format_text(pkg, idx, sid, paragraph=0, start=2, end=4, bold=True)
@@ -195,24 +193,24 @@ class TestKoreanTextEndToEnd:
         runs = elem.findall(f".//{qn('a:r')}")
         assert len(runs) >= 3, "range format should have fragmented the run"
 
-        # "동맹구조" now spans two runs; the match must resolve as one edit.
-        res = search_and_replace(pkg, "동맹구조", "제도적 구조", scope=idx)
+        # "시장구조" now spans two runs; the match must resolve as one edit.
+        res = search_and_replace(pkg, "시장구조", "유통 구조", scope=idx)
         assert res["total"] == 1
-        assert _slide_text(pkg, idx) == "제도적 구조의 정당성 분석"
+        assert _slide_text(pkg, idx) == "유통 구조의 판매량 분석"
 
         out = tmp_path / "frag_saved.pptx"
         pkg.save(out)
-        assert _slide_text(PptxPackage(out), idx) == "제도적 구조의 정당성 분석"
+        assert _slide_text(PptxPackage(out), idx) == "유통 구조의 판매량 분석"
 
     def test_search_replace_korean_to_english(self, make_deck):
         path = make_deck("k2e.pptx", extra_slides=0)
         pkg = PptxPackage(path)
         idx = _blank_slide(pkg)
         insert_textbox(pkg, idx, KO_MIXED, 1, 1, 6, 1)
-        res = search_and_replace(pkg, "정당성", "legitimacy", scope=idx)
+        res = search_and_replace(pkg, "판매량", "sales", scope=idx)
         assert res["total"] == 1
-        assert "legitimacy과 authority는" in _slide_text(pkg, idx)
-        assert "정당성" not in _slide_text(pkg, idx)
+        assert "sales과 quality는" in _slide_text(pkg, idx)
+        assert "판매량" not in _slide_text(pkg, idx)
 
     def test_view_korean_anchors_stable_no_mojibake(self, make_deck, tmp_path):
         path = make_deck("view.pptx", extra_slides=0)
@@ -268,12 +266,12 @@ class TestKoreanContainers:
             [
                 {"row": 0, "col": 0, "text": "구분"},
                 {"row": 0, "col": 1, "text": "내용"},
-                {"row": 1, "col": 0, "text": "정당성"},
+                {"row": 1, "col": 0, "text": "판매량"},
                 {"row": 1, "col": 1, "text": "한/영 mixed value"},
             ],
         )
         data = export_table(pkg, idx, {"shape_id": tid})["data"]
-        assert data == [["구분", "내용"], ["정당성", "한/영 mixed value"]]
+        assert data == [["구분", "내용"], ["판매량", "한/영 mixed value"]]
 
         out = tmp_path / "tbl_saved.pptx"
         pkg.save(out)
@@ -294,8 +292,8 @@ class TestKoreanContainers:
         csv_path = tmp_path / "표_데이터.csv"  # Korean CSV filename too
         export_table(pkg, idx, {"shape_id": tid}, str(csv_path), format="csv")
         raw = csv_path.read_bytes()
-        assert not raw.startswith(b"\xef\xbb\xbf"), "unexpected BOM"
-        parsed = list(csv.reader(io.StringIO(raw.decode("utf-8"))))
+        assert raw.startswith(b"\xef\xbb\xbf"), "Excel-friendly UTF-8 BOM missing"
+        parsed = list(csv.reader(io.StringIO(raw.decode("utf-8-sig"))))
         assert parsed == rows
 
         # import back as a NEW table and compare cell for cell
@@ -338,24 +336,24 @@ class TestKoreanContainers:
         path = make_deck("notes.pptx", extra_slides=0)
         pkg = PptxPackage(path)
         idx = _blank_slide(pkg)
-        note = "발표자 노트: 여기서 정당성 개념을 강조할 것.\n둘째 단락 with English."
+        note = "발표자 노트: 여기서 판매량 개념을 강조할 것.\n둘째 단락 with English."
         set_notes(pkg, idx, note)
         got = get_notes(pkg, idx)
         assert got["has_notes"] is True
         assert got["text"] == note
 
-        hit = find_text(pkg, "정당성", scope=idx, include_notes=True)
+        hit = find_text(pkg, "판매량", scope=idx, include_notes=True)
         assert any(m["where"] == "notes" for m in hit["matches"])
 
         res = search_and_replace(
-            pkg, "정당성", "legitimacy", scope=idx, include_notes=True
+            pkg, "판매량", "sales", scope=idx, include_notes=True
         )
         assert res["total"] == 1
-        assert "legitimacy" in get_notes(pkg, idx)["text"]
+        assert "sales" in get_notes(pkg, idx)["text"]
 
         out = tmp_path / "notes_saved.pptx"
         pkg.save(out)
-        assert "legitimacy 개념을" in get_notes(PptxPackage(out), idx)["text"]
+        assert "sales 개념을" in get_notes(PptxPackage(out), idx)["text"]
 
 
 # ======================================================== 3. Korean filenames
@@ -435,7 +433,7 @@ class TestEastAsianFontAttribute:
     through a:cs), not a:latin. If font_name writes only a:latin, Korean
     text keeps the theme's East Asian font and the user's chosen font
     silently does not apply to the Hangul. These tests pin the actual
-    behavior; a missing a:ea is an xfail-documented FINDING, not a patch."""
+    behavior; a missing a:ea is an xfail-documented gap, not a patch."""
 
     def _assert_ea(self, rpr: etree._Element, where: str):
         latin = rpr.find(qn("a:latin"))
@@ -443,7 +441,7 @@ class TestEastAsianFontAttribute:
         ea = rpr.find(qn("a:ea"))
         if ea is None:
             pytest.xfail(
-                f"FINDING I18N-EA ({where}): font_name writes a:latin only; "
+                f"Known gap, East Asian font ({where}): font_name writes a:latin only; "
                 "no a:ea, so the chosen font does NOT apply to Korean "
                 "characters (they fall back to the theme East Asian font)"
             )
@@ -532,7 +530,7 @@ class TestUnicodeEdges:
         insert_textbox(pkg, idx, f"{nfc} 자료", 1, 1, 5, 1)
 
         assert find_text(pkg, nfc, scope=idx)["count"] == 1
-        # FINDING I18N-NFD: no unicode normalization before matching.
+        # Known gap: no unicode normalization before matching.
         assert find_text(pkg, nfd, scope=idx)["count"] == 0
         assert search_and_replace(pkg, nfd, "X", scope=idx)["total"] == 0
 
@@ -540,12 +538,12 @@ class TestUnicodeEdges:
         path = make_deck("fw.pptx", extra_slides=0)
         pkg = PptxPackage(path)
         idx = _blank_slide(pkg)
-        insert_textbox(pkg, idx, "（주）한국전력의 발표。이상입니다。", 1, 1, 6, 1)
+        insert_textbox(pkg, idx, "（주）가나상사의 발표。이상입니다。", 1, 1, 6, 1)
         res = search_and_replace(pkg, "。", ". ", scope=idx)
         assert res["total"] == 2
         res2 = search_and_replace(pkg, "（주）", "(주) ", scope=idx)
         assert res2["total"] == 1
-        assert "(주) 한국전력의 발표. " in _slide_text(pkg, idx)
+        assert "(주) 가나상사의 발표. " in _slide_text(pkg, idx)
 
     def test_astral_plane_text_roundtrip(self, make_deck, tmp_path):
         """Non-BMP characters (surrogate pairs in UTF-16 XML land) survive
@@ -691,8 +689,8 @@ def _build_korean_heavy_deck(make_deck, name: str) -> Path:
         [
             {"row": 0, "col": 0, "text": "구분"},
             {"row": 0, "col": 1, "text": "값, \"따옴표\" 포함"},
-            {"row": 1, "col": 0, "text": "정당성"},
-            {"row": 1, "col": 1, "text": "authority"},
+            {"row": 1, "col": 0, "text": "판매량"},
+            {"row": 1, "col": 1, "text": "quality"},
         ],
     )
     create_chart(
@@ -703,14 +701,14 @@ def _build_korean_heavy_deck(make_deck, name: str) -> Path:
     # Korean notes via the REPLACE path (slide 0 of the synthetic deck
     # already has notes). The notes-part CREATION path on this deck family
     # duplicates the notesMaster and PowerPoint then refuses the file; see
-    # TestNotesMasterDuplicationFinding (FINDING NOTES-DUP, not i18n).
+    # TestNotesMasterDuplicationFinding (a general defect, not i18n).
     set_notes(pkg, 0, "한국어 발표자 노트입니다.")
     pkg.save()
     return path
 
 
 class TestNotesMasterDuplicationFinding:
-    """FINDING NOTES-DUP (general, found during the i18n round, pinned here
+    """Known defect (general, found while testing i18n, pinned here
     at XML level so it flips when fixed): on decks whose notesMaster is
     registered in ppt/_rels/presentation.xml.rels but NOT in
     p:notesMasterIdLst (python-pptx output, incl. this repo's synthetic
@@ -740,7 +738,7 @@ class TestNotesMasterDuplicationFinding:
         ]
         if len(masters_after) > 1:
             pytest.xfail(
-                "FINDING NOTES-DUP: set_notes creation path added a second "
+                "Known gap, duplicate notes master: set_notes creation path added a second "
                 f"notesMaster ({masters_after}); PowerPoint refuses such "
                 "decks (0x800706F0). See class docstring for the COM repro."
             )
@@ -750,8 +748,8 @@ class TestNotesMasterDuplicationFinding:
 @pytest.mark.live
 @pytest.mark.timeout(600)
 def test_com_korean_deck_validates_and_exports(make_deck, tmp_path):
-    """The Korean-heavy deck, under a Korean FILENAME, opens clean in the
-    author's real PowerPoint and exports to PDF/PNG with Korean output
+    """The Korean-heavy deck, under a Korean FILENAME, opens clean in a
+    real PowerPoint and exports to PDF/PNG with Korean output
     names. This is the ultimate Korean-rendering authority on this machine."""
     _com_gate()
     src = _build_korean_heavy_deck(make_deck, "한글 검증용 자료.pptx")

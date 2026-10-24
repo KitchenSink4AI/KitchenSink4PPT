@@ -2,7 +2,7 @@
 
 Three labeled vertex nodes (Plan, Build, Ship), a central Hub node, three
 straight connectors GLUED Hub -> vertex, three curved perimeter connectors
-with arrowheads (P -> B -> S cycle), L and A badges beside the Hub node, all
+with arrowheads (P -> B -> S cycle), In and Out badges beside the Hub node, all
 grouped. build() writes the before-tweak deck; tweak() moves the Hub node by
 a delta and restyles one edge dashed red through set_shape, proving the
 glue survives semantic post-editing.
@@ -26,13 +26,13 @@ from kitchensink4ppt.ops import slides as sl  # noqa: E402
 from kitchensink4ppt.ops.read import get_presentation_info  # noqa: E402
 
 NODE_W, NODE_H = 1.9, 0.85
-M_W, M_H = 1.7, 0.95
+HUB_W, HUB_H = 1.7, 0.95
 BADGE = 0.5
 
 NODE_FILL = "2E5E8C"
 NODE_LINE = {"width": 1.5, "color": "1B3A57"}
-M_FILL = "C05A2E"
-M_LINE = {"width": 1.75, "color": "7A3517"}
+HUB_FILL = "C05A2E"
+HUB_LINE = {"width": 1.75, "color": "7A3517"}
 BADGE_FILL = "F2C14E"
 BADGE_LINE = {"width": 1.0, "color": "8C6A1D"}
 SPOKE = {"width": 1.75, "color": "404040"}
@@ -64,23 +64,23 @@ def build(path: Path) -> dict:
             text=text, text_style=style, name=name,
         )["shape_id"]
 
-    goals = node("Plan node", cx, 1.35, NODE_W, NODE_H, "Plan", NODE_FILL, NODE_LINE, TEXT, adj={"adj": 0.28})
-    tasks = node("Build node", cx + 2.9, sh - 1.95, NODE_W, NODE_H, "Build", NODE_FILL, NODE_LINE, TEXT, adj={"adj": 0.28})
-    bonds = node("Ship node", cx - 2.9, sh - 1.95, NODE_W, NODE_H, "Ship", NODE_FILL, NODE_LINE, TEXT, adj={"adj": 0.28})
-    mplus = node("Hub node", cx, 3.85, M_W, M_H, "Hub", M_FILL, M_LINE, TEXT, adj={"adj": 0.22})
-    badge_l = node("L badge", cx - M_W / 2 - 0.45, 3.85, BADGE, BADGE, "L", BADGE_FILL, BADGE_LINE, BADGE_TEXT, shape="ellipse")
-    badge_a = node("A badge", cx + M_W / 2 + 0.45, 3.85, BADGE, BADGE, "A", BADGE_FILL, BADGE_LINE, BADGE_TEXT, shape="ellipse")
+    n_plan = node("Plan node", cx, 1.35, NODE_W, NODE_H, "Plan", NODE_FILL, NODE_LINE, TEXT, adj={"adj": 0.28})
+    n_build = node("Build node", cx + 2.9, sh - 1.95, NODE_W, NODE_H, "Build", NODE_FILL, NODE_LINE, TEXT, adj={"adj": 0.28})
+    n_ship = node("Ship node", cx - 2.9, sh - 1.95, NODE_W, NODE_H, "Ship", NODE_FILL, NODE_LINE, TEXT, adj={"adj": 0.28})
+    n_hub = node("Hub node", cx, 3.85, HUB_W, HUB_H, "Hub", HUB_FILL, HUB_LINE, TEXT, adj={"adj": 0.22})
+    badge_in = node("In badge", cx - HUB_W / 2 - 0.45, 3.85, BADGE, BADGE, "In", BADGE_FILL, BADGE_LINE, BADGE_TEXT, shape="ellipse")
+    badge_out = node("Out badge", cx + HUB_W / 2 + 0.45, 3.85, BADGE, BADGE, "Out", BADGE_FILL, BADGE_LINE, BADGE_TEXT, shape="ellipse")
 
     def spoke(name, end_shape):
         return shp.insert_connector(
             pkg, slide, "straight",
-            start_shape=mplus, end_shape=end_shape,
+            start_shape=n_hub, end_shape=end_shape,
             line=SPOKE, name=name,
         )["shape_id"]
 
-    spoke_g = spoke("Hub to Plan", goals)
-    spoke_t = spoke("Hub to Build", tasks)
-    spoke_b = spoke("Hub to Ship", bonds)
+    spoke_plan = spoke("Hub to Plan", n_plan)
+    spoke_build = spoke("Hub to Build", n_build)
+    spoke_ship = spoke("Hub to Ship", n_ship)
 
     def cycle(name, start_shape, start_site, end_shape, end_site):
         return shp.insert_connector(
@@ -91,15 +91,15 @@ def build(path: Path) -> dict:
         )["shape_id"]
 
     # Perimeter cycle P -> B -> S -> P, bowing outward.
-    edge_gt = cycle("Plan to Build", goals, 3, tasks, 0)
-    edge_tb = cycle("Build to Ship", tasks, 2, bonds, 2)
-    edge_bg = cycle("Ship to Plan", bonds, 1, goals, 1)
+    edge_pb = cycle("Plan to Build", n_plan, 3, n_build, 0)
+    edge_bs = cycle("Build to Ship", n_build, 2, n_ship, 2)
+    edge_sp = cycle("Ship to Plan", n_ship, 1, n_plan, 1)
 
     ids = {
-        "goals": goals, "tasks": tasks, "bonds": bonds, "mplus": mplus,
-        "badge_l": badge_l, "badge_a": badge_a,
-        "spoke_g": spoke_g, "spoke_t": spoke_t, "spoke_b": spoke_b,
-        "edge_gt": edge_gt, "edge_tb": edge_tb, "edge_bg": edge_bg,
+        "plan": n_plan, "build": n_build, "ship": n_ship, "hub": n_hub,
+        "badge_in": badge_in, "badge_out": badge_out,
+        "spoke_plan": spoke_plan, "spoke_build": spoke_build, "spoke_ship": spoke_ship,
+        "edge_pb": edge_pb, "edge_bs": edge_bs, "edge_sp": edge_sp,
     }
     group_id = shp.group_shapes(
         pkg, slide, list(ids.values()), name="Process Overview"
@@ -115,9 +115,9 @@ def tweak(path: Path, info: dict) -> dict:
     pkg = PptxPackage(path)
     slide = info["slide"]
     ids = info["ids"]
-    moved = shp.set_shape(pkg, slide, ids["mplus"], dx=0.4, dy=-0.3)
+    moved = shp.set_shape(pkg, slide, ids["hub"], dx=0.4, dy=-0.3)
     restyled = shp.set_shape(
-        pkg, slide, ids["edge_bg"],
+        pkg, slide, ids["edge_sp"],
         line={"width": 2.25, "color": "C00000", "dash": "dash",
               "tail": {"type": "triangle", "w": "med", "len": "med"}},
     )

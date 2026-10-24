@@ -26,14 +26,14 @@ The contract, in both directions:
    the tool returned before this module existed. Paying attention to the
    budget costs nothing on a deck that does not need it.
 
-The ceiling is `KS4P_MAX_OUTPUT_CHARS`, default 60,000 characters (about
-15,000 tokens). It is a character count rather than a token count on
+The ceiling is `KS4P_MAX_OUTPUT_CHARS`, default 52,000 characters (about
+13,000 tokens). It is a character count rather than a token count on
 purpose: characters are exact and free to measure, tokens are neither, and
 a ratio of four is close enough for a ceiling whose job is to prevent a
 catastrophe rather than to fill a window precisely. An unparseable value
-refuses at startup rather than silently reverting to the default, on the
-same reasoning as packs.parse_toggle: a typo that quietly restores an
-unbounded read is the failure this module was written to prevent.
+refuses at startup rather than silently reverting to the default: a typo
+that quietly restores an unbounded read is the failure this module was
+written to prevent.
 
 Compaction is separate and opt-in (`compact=True` on the list tools). It
 changes the shape of the answer, from a list of objects to a `fields` header
@@ -44,14 +44,17 @@ every field of every item is still there, in a named column.
 
 from __future__ import annotations
 
+import copy
 import json
 import os
+from typing import Any
 
-from .errors import PptMcpError
+from .errors import OpError, PptMcpError
+from .messages import LIMIT_EXCEEDED_HINT, LIMIT_EXCEEDED_MESSAGE
 
 #: Default per-call output ceiling in characters (~15,000 tokens at the
 #: 4-chars-per-token approximation the server uses elsewhere).
-DEFAULT_MAX_CHARS = 60_000
+DEFAULT_MAX_CHARS = 52_000
 
 #: Floor for the env override. Below this a budget cannot hold even one
 #: substantial item plus its continuation note, so it would page forever.
@@ -345,3 +348,337 @@ def columnar(items: list[dict]) -> dict:
                 fields.append(key)
     rows = [[item.get(f) for f in fields] for item in items]
     return {"fields": fields, "rows": rows}
+
+
+# ------------------------------------------------------ dispatcher backstop
+
+
+def _wire_size(obj: Any) -> int:
+    """Characters in the compact JSON form emitted by the surface."""
+    return len(json.dumps(obj, ensure_ascii=False, separators=(",", ":"), default=str))
+
+
+def _largest_cuttable(
+    obj: dict,
+    prefix: tuple = (),
+    exclude: frozenset = frozenset(),
+) -> tuple[tuple, int] | None:
+    best: tuple[tuple, int] | None = None
+    for key, value in obj.items():
+        if not prefix and key in {"page", "ok"}:
+            continue
+        path = prefix + (key,)
+        if path in exclude:
+            continue
+        if isinstance(value, (list, str)):
+            size = _wire_size(value)
+            if best is None or size > best[1]:
+                best = (path, size)
+        elif isinstance(value, dict):
+            found = _largest_cuttable(value, path, exclude)
+            if found is not None and (best is None or found[1] > best[1]):
+                best = found
+    return best
+
+
+def _get_at(obj: dict, path: tuple):
+    for key in path:
+        obj = obj[key]
+    return obj
+
+
+def _set_at(obj: dict, path: tuple, value) -> None:
+    for key in path[:-1]:
+        obj = obj[key]
+    obj[path[-1]] = value
+
+
+#: A value smaller than this is never cut: its cut record and truncation mark
+#: would cost more than the characters removed, so cutting it grows the
+#: answer. When the largest remaining value is this small, nothing left can
+#: bring the answer under the cap.
+MIN_CUT_CHARS = 256
+
+
+def _page_with(original_page: dict | None, cuts: list[dict[str, Any]]) -> dict:
+    """The page block as it reads with the cuts made so far, for measuring."""
+    page = dict(original_page) if original_page else {}
+    if cuts:
+        page["cuts"] = list(cuts)
+    page["truncated"] = True
+    return page
+
+
+def enforce(
+    result: dict[str, Any],
+    cap: int,
+    *,
+    wrap,
+    supports_offset: bool = False,
+    requested_offset: int = 0,
+) -> dict[str, Any]:
+    """Make ``wrap(result)`` fit the final wire cap, with honest cut facts."""
+    if _wire_size(wrap(result)) <= cap:
+        return result
+    out = copy.deepcopy(result)
+    original_page = out.get("page") if isinstance(out.get("page"), dict) else None
+    cuts: list[dict[str, Any]] = []
+    tried: set[tuple] = set()
+    while _wire_size(wrap(out)) > cap:
+        found = _largest_cuttable(out, exclude=frozenset(tried))
+        if found is None or found[1] < MIN_CUT_CHARS:
+            raise OpError(
+                "LIMIT_EXCEEDED",
+                LIMIT_EXCEEDED_MESSAGE,
+                hint=LIMIT_EXCEEDED_HINT.format(
+                    paging=(
+                        "This operation supports limit and offset."
+                        if supports_offset
+                        else "This operation does not support offset paging."
+                    )
+                ),
+                details={"limit_chars": cap},
+            )
+        path, _ = found
+        tried.add(path)
+        value = _get_at(out, path)
+        _set_at(out, path, [] if isinstance(value, list) else "")
+        # Measure with the page block as it already reads, earlier cuts
+        # included: a fixed allowance for it let several cut records push
+        # an answer back over the cap after its last cut, and the loop then
+        # gave up on an answer it could have shortened.
+        out["page"] = _page_with(original_page, cuts)
+        overhead = _wire_size(wrap(out)) + PAGE_BLOCK_RESERVE
+        field = ".".join(str(part) for part in path)
+        cuts_engine_page = False
+        cut_supports_offset = False
+        if isinstance(value, list):
+            original_unit = str(original_page.get("unit") or "") if original_page else ""
+            cuts_engine_page = bool(
+                original_page
+                and original_unit
+                and (field == original_unit or field.endswith("." + original_unit))
+            )
+            cut_supports_offset = supports_offset and (
+                original_page is None or cuts_engine_page
+            )
+            kept, _ = page_items(
+                value,
+                budget=cap,
+                overhead=overhead,
+                unit=field,
+                shrink=shrink_record,
+            )
+            if cuts_engine_page and not cuts:
+                raw_start = original_page.get("offset")
+                start = (
+                    raw_start
+                    if isinstance(raw_start, int) and not isinstance(raw_start, bool)
+                    else requested_offset if cut_supports_offset else 0
+                )
+                raw_total = original_page.get("total")
+                total = (
+                    raw_total
+                    if isinstance(raw_total, int) and not isinstance(raw_total, bool)
+                    else start + len(value) if cut_supports_offset else len(value)
+                )
+            else:
+                start = requested_offset if cut_supports_offset else 0
+                total = start + len(value) if cut_supports_offset else len(value)
+            omitted = max(0, total - start - len(kept))
+            cut = {
+                "field": field,
+                "total": total,
+                "offset": start,
+                "returned": len(kept),
+                "omitted": omitted,
+                "reason": "output_limit",
+                "next_offset": start + len(kept) if omitted and cut_supports_offset else None,
+                "how_to_continue": "offset" if cut_supports_offset else "narrow_request",
+            }
+            _set_at(out, path, kept)
+        else:
+            text, dropped = truncate_text(value, max(0, cap - overhead))
+            cut = {
+                "field": field,
+                "chars_total": len(value),
+                "chars_returned": len(value) - dropped,
+                "chars_omitted": dropped,
+                "continue_at_char": len(value) - dropped,
+                "reason": "output_limit",
+                "how_to_continue": "narrow_request",
+            }
+            _set_at(out, path, text)
+        cuts.append(cut)
+        page: dict[str, Any] = dict(original_page) if original_page else {}
+        if len(cuts) == 1 and (not original_page or cuts_engine_page):
+            page.update(cuts[0])
+            # When a read operation already paged its result, the final wire
+            # cap may need to shorten that page once more.  Keep the engine's
+            # true total, but recompute every continuation fact from what the
+            # caller will actually receive.  Never retain the engine's stale
+            # hint, which could otherwise skip the removed records.
+            if cuts_engine_page and isinstance(value, list):
+                if cut["omitted"] and cut_supports_offset:
+                    unit = str(original_page.get("unit") or field)
+                    page["hint"] = _continue_hint(
+                        cut["next_offset"], cut["omitted"], unit, ""
+                    )
+                else:
+                    page.pop("hint", None)
+        else:
+            page["cuts"] = cuts
+        page["truncated"] = True
+        out["page"] = page
+    return out
+
+
+#: Longest string, and longest list, a committed write's shortened answer
+#: keeps in its first pass. Echoed inputs (a typeface, a name, a colour,
+#: notes text) are what grow a write's answer, and their first characters
+#: are enough to recognise them.
+COMMITTED_TEXT_CHARS = 200
+COMMITTED_LIST_ITEMS = 20
+_LEFT_OUT = {"left_out": "larger than the output limit"}
+
+
+def _clip(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit] + TRUNCATION_MARK.format(n=len(text) - limit)
+
+
+def _elide(value: Any, *, text: int, items: int, depth: int) -> Any:
+    """A copy of ``value`` with long strings and lists shortened."""
+    if isinstance(value, str):
+        return _clip(value, text)
+    if isinstance(value, list):
+        kept = [_elide(v, text=text, items=items, depth=depth - 1) for v in value[:items]]
+        if len(value) > items:
+            kept.append(f"[... {len(value) - items} more items not returned]")
+        return kept
+    if isinstance(value, dict):
+        if depth <= 0:
+            return dict(_LEFT_OUT)
+        return {
+            key: _elide(v, text=text, items=items, depth=depth - 1)
+            for key, v in value.items()
+        }
+    return value
+
+
+#: Top-level fields a finished write's answer keeps whole, in the order they
+#: are given up when even they cannot all fit: where the change landed, then
+#: which slide it reached. A path cut to fit can name a different file (a cut
+#: "d2000.pptx" reads "d2000.ppt"), and a cut title names no slide, so these
+#: are dropped whole if they must go, never shortened.
+COMMITTED_WHOLE = (
+    "file", "saved", "slide_number", "slide_count", "slide_title",
+    "deleted_slide_number", "deleted_slide_title", "source_slide_number",
+    "source_slide_title", "source_slide_count", "slide_note", "backup",
+    "snapshot",
+)
+
+
+def committed(result: dict[str, Any], cap: int, *, wrap, note: str) -> dict[str, Any]:
+    """Shorten a finished write's answer until it fits. Never refuses.
+
+    The write already happened, so refusing here would tell the client a
+    saved change failed. ``ok`` and every small field stay as they were;
+    long strings keep their first characters and long lists their first
+    items; if that is still too large the nested parts give way to a short
+    statement that they were left out. ``page.note`` says the change stands.
+    The fields in COMMITTED_WHOLE (file, saved, backup, the slide echo) are
+    never shortened.
+    """
+    page = {"truncated": True, "reason": "output_limit", "note": note}
+    whole = set(COMMITTED_WHOLE) | {"ok"}
+
+    def shorten(cut) -> dict[str, Any]:
+        out = {
+            key: value if key in whole else cut(value)
+            for key, value in result.items()
+            if key != "page"
+        }
+        out["page"] = page
+        return out
+
+    # The body itself counted as one level in the first two tiers' depth.
+    for text, items, depth in ((COMMITTED_TEXT_CHARS, COMMITTED_LIST_ITEMS, 5),
+                               (60, 3, 1)):
+        out = shorten(
+            lambda value, t=text, n=items, d=depth: _elide(value, text=t, items=n, depth=d)
+        )
+        if _wire_size(wrap(out)) <= cap:
+            return out
+    slim = shorten(
+        lambda value: (_clip(value, 60) if isinstance(value, str)
+                       else dict(_LEFT_OUT) if isinstance(value, (dict, list))
+                       else value)
+    )
+    if _wire_size(wrap(slim)) <= cap:
+        return slim
+    # Only the whole fields are left to give up, and a field that must go
+    # goes entirely: ok and the note first, then each one while it fits.
+    out = {"ok": result.get("ok", True), "page": page}
+    for key in COMMITTED_WHOLE:
+        if key in result:
+            trial = {**out, key: result[key]}
+            if _wire_size(wrap(trial)) <= cap:
+                out = trial
+    return out
+
+
+
+#: The start of a long answer that a client may show on its own: Claude Code
+#: keeps a long tool answer in a file and shows the model its first 2,000
+#: characters.
+PREVIEW_CHARS = 2_000
+
+#: A value at most this long on the wire counts as short: a count, a total,
+#: a note or a small summary. It moves ahead of the long lists and texts.
+LEAD_VALUE_CHARS = 600
+
+#: The slide echo an answer about one slide starts with (core/slide_echo);
+#: a long answer keeps it first.
+_ECHO_KEYS = frozenset({
+    "slide_note", "slide_number", "slide_count", "slide_title",
+    "deleted_slide_number", "deleted_slide_title", "source_slide_number",
+    "source_slide_title", "source_slide_count", "slides_in_scope",
+})
+
+
+def lead_with_totals(payload: dict[str, Any]) -> dict[str, Any]:
+    """A long success answer (over PREVIEW_CHARS on the wire) in an order
+    that says its size first: the slide echo it starts with, if any, then ok
+    and file, then the page block (the true total, what came back, whether
+    the answer was cut and where to go on), then the short values in their
+    own order, then the long lists, texts and records. A client that shows
+    only the start still reads the totals and the notes. Nothing is added or
+    dropped, and a short answer is returned as it is."""
+    if not isinstance(payload, dict) or _wire_size(payload) <= PREVIEW_CHARS:
+        return payload
+    out: dict[str, Any] = {}
+    for key, value in payload.items():
+        if key not in _ECHO_KEYS:
+            break
+        out[key] = value
+    out.update((key, payload[key]) for key in ("ok", "file", "page")
+               if key in payload and key not in out)
+    rest = [(key, value) for key, value in payload.items() if key not in out]
+    out.update((key, value) for key, value in rest if _wire_size(value) <= LEAD_VALUE_CHARS)
+    out.update((key, value) for key, value in rest if key not in out)
+    return out
+
+def cap_refusal(payload: dict[str, Any], cap: int) -> dict[str, Any]:
+    """Keep even a refusal within the frozen output cap."""
+    if _wire_size(payload) <= cap:
+        return payload
+    out = copy.deepcopy(payload)
+    error = out.get("error", {})
+    if "details" in error:
+        error["details"] = {"omitted": "details exceeded the output limit"}
+    if _wire_size(out) > cap:
+        error["message"] = str(error.get("message", ""))[: max(100, cap // 4)]
+        error["hint"] = "narrow the request"
+    return out

@@ -3,8 +3,8 @@
   "name": "io.github.KitchenSink4AI/kitchensink4ppt",
   "title": "KitchenSink4PPT",
   "description": "PowerPoint (.pptx) MCP server: editable vector diagrams, tables, budgeted reads, render-to-verify",
-  "version": "1.3.2",
-  "websiteUrl": "https://kitchensink4.ai/KitchenSink4PPT/",
+  "version": "2.0.0",
+  "websiteUrl": "https://community.kitchensink4.ai/ppt/",
   "repository": {
     "url": "https://github.com/KitchenSink4AI/KitchenSink4PPT",
     "source": "github"
@@ -13,7 +13,7 @@
     {
       "registryType": "pypi",
       "identifier": "kitchensink4ppt",
-      "version": "1.3.2",
+      "version": "2.0.0",
       "transport": {
         "type": "stdio"
       }

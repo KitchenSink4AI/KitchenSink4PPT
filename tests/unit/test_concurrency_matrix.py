@@ -1,28 +1,29 @@
-"""Regression tests for concurrent live COM use.
+"""Concurrency regressions for the live layer.
 
-Each scenario below was checked against this live layer:
+This live layer is the same design as the Word editor's and shares its
+architecture, so the concurrency hazards found there are checked here:
 
-- Two server processes are not serialized against each
-  other: PRESENT. com/serial.py covers threads in one process and says
-  so. PowerPoint being a singleton makes it sharper, not milder: two
-  server processes cannot land anywhere except the same application.
-  Fixed by com/xproc.py.
-- DisplayAlerts leaks across processes: NOT PRESENT. This live layer
-  never writes application-level alert state; bridge.py does, but only on
-  instances it created itself. The StateGuard hardening is in place anyway
-  so the wrong pattern is not the convenient one the day it is needed.
-- A blocked application's late-bound AttributeError escapes the
-  com_error guard: PRESENT, in _resolve_presentation and probe_ready.
-  Fixed.
-- Index TOCTOU on a destructive path: PRESENT in principle on
-  delete_slide's index selector, but this server already ships the
-  structural answer, {"slide_id": N}, which is stable across
-  insert and delete.
-- Status probe says ready during a dialog storm: PRESENT, and here it
-  produced a self-contradicting result, blocked=true beside
-  interactive_state="ready". Fixed.
-- backup=True a silent no-op on the live route: NOT PRESENT.
-  _live_envelope already reports saved/backup as None and says why.
+- Two server processes are serialized against each other. com/serial.py
+  covers threads in one process and says so. PowerPoint being a singleton
+  makes this sharper, not milder: two server processes cannot land
+  anywhere except the same application. com/xproc.py provides the
+  cross-process lock.
+- DisplayAlerts does not leak across processes. This live layer never
+  writes application-level alert state; bridge.py does, but only on
+  instances it created itself. The StateGuard hardening is here anyway so
+  the wrong pattern is not the convenient one the day it is needed.
+- A blocked application's late-bound AttributeError does not escape the
+  com_error guard, in _resolve_presentation and probe_ready.
+- An index selector on a destructive path can go stale between the read
+  and the write (a time-of-check/time-of-use race). That applies in
+  principle to delete_slide's index selector, but this server already
+  ships the structural answer the Word editor lacks, {"slide_id": N},
+  which is stable across insert and delete.
+- The status probe does not say ready during a dialog storm, which once
+  produced a self-contradicting result: blocked=true beside
+  interactive_state="ready".
+- backup=True is not a silent no-op on the live route: _live_envelope
+  already reports saved/backup as None and says why.
 
 The lock tests run everywhere. The live test obeys this suite's singleton
 contract: it skips honestly if any POWERPNT is already running, launches
@@ -92,9 +93,8 @@ def lock_dir(tmp_path, monkeypatch):
 
 def test_lock_is_published_complete_and_released_when_ours(lock_dir):
     """Atomic publish: a lockfile is never observable half-written, and
-    release removes it. (xlsx-mcp H-5: a two-syscall create let a
-    concurrent acquirer read an EMPTY file, call it stale, and delete a
-    LIVE lock.)"""
+    release removes it. (A two-syscall create would let a concurrent
+    acquirer read an EMPTY file, call it stale, and delete a LIVE lock.)"""
     path = lock_dir / f"{xproc.APP_SCOPE}.lock"
     with xproc.cross_process_lock("unit", wait=1.0) as owns:
         assert owns is True
@@ -221,11 +221,11 @@ def test_lock_degrades_to_the_in_process_mutex_when_it_cannot_be_hosted(
     assert xproc.lock_state()["cross_process"] is False
 
 
-# ============================================================ guard
+# ==================================== late-bound errors, status probe, guard
 
 
 def test_late_bound_attribute_error_classifies_as_busy():
-    """Pywin32's dynamic dispatch turns a refused property call into a
+    """pywin32's dynamic dispatch turns a refused property call into a
     plain AttributeError with the HRESULT discarded."""
     typed = live._classify(AttributeError("<unknown>.FullName"))
     assert isinstance(typed, PowerPointBusy)
@@ -246,8 +246,8 @@ class _PW:
 
 
 def test_resolve_falls_back_to_the_rot_when_the_primary_wedges(monkeypatch):
-    """The ROT fallback exists precisely for a blocked
-    instance, and catching only com_error meant it was never reached."""
+    """The ROT fallback exists precisely for a blocked instance, and
+    catching only com_error meant it was never reached."""
     healthy_app, healthy_pres = object(), object()
     monkeypatch.setattr(
         live, "_find_pres_via_rot", lambda *a, **k: (healthy_app, healthy_pres)
@@ -270,7 +270,7 @@ def test_resolve_raises_typed_busy_when_the_rot_has_nothing(monkeypatch):
 
 def _fake_com_modules():
     """A PowerPoint that answers a property read perfectly well, which is
-    exactly the state in question."""
+    exactly the state where a dialog can be up without the probe noticing."""
     class _W32:
         @staticmethod
         def GetActiveObject(_name):
@@ -289,8 +289,8 @@ def _fake_com_modules():
 
 
 def test_probe_does_not_report_ready_while_a_dialog_is_up(monkeypatch):
-    """Live_status already read the window layer and reported
-    blocked=true; interactive_state said "ready" beside it."""
+    """live_status already read the window layer and reported
+    blocked=true; the probe must not say "ready" beside it."""
     monkeypatch.setattr(live, "_com_modules", _fake_com_modules)
     monkeypatch.setattr(
         live._dialogs, "pending_dialogs",
@@ -306,8 +306,8 @@ def test_probe_reports_ready_when_no_dialog_is_up(monkeypatch):
 
 
 def test_state_guard_restores_to_an_override_not_the_snapshot():
-    """Ported before it is needed: restoring a value that
-    was never the user's re-leaks another process's setting."""
+    """Restoring a value that was never the user's re-leaks another
+    process's setting, so the guard restores to an explicit override."""
     class App:
         Flag = 0
 
@@ -343,7 +343,7 @@ def test_state_guard_reports_a_restore_that_did_not_take():
 # ==================================================== live: two processes
 
 _HOST = r'''
-import json, os, subprocess, sys, time
+import gc, json, os, subprocess, sys, time
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 import pythoncom, win32com.client
@@ -407,13 +407,31 @@ except Exception as exc:
     out["scenario_error"] = repr(exc)[:800]
 finally:
     try:
+        pres.Close()
+    except Exception:
+        pass
+    # Collection and shape proxies keep the singleton alive even after
+    # Presentation.Close and Application.Quit.  Release every proxy this
+    # host created before asking PowerPoint to exit.
+    pres = None
+    shapes = None
+    shp = None
+    gc.collect()
+    try:
         if app is not None:
             app.Quit()
     except Exception:
         pass
     app = None
+    gc.collect()
     pythoncom.CoUninitialize()
-    time.sleep(2.0)
+    t0 = time.monotonic()
+    deadline = t0 + 45.0
+    while time.monotonic() < deadline:
+        if bridge.powerpnt_count() == 0:
+            break
+        time.sleep(0.5)
+    out["powerpnt_wait_s"] = round(time.monotonic() - t0, 1)
     out["powerpnt_left"] = bridge.powerpnt_count()
 print("RESULT " + json.dumps(out), flush=True)
 '''
@@ -443,11 +461,10 @@ print("W " + json.dumps(res), flush=True)
 def test_two_server_processes_serialize_against_one_powerpoint(
     make_deck, tmp_path
 ):
-    """The matrix's shape, on the singleton: two independent server
-    processes driving live edits into one PowerPoint from a shared epoch.
-    Both must complete, neither may see the other's error, and the shape's
-    text must end as ONE worker's value rather than two writes welded
-    together."""
+    """Two independent server processes driving live edits into one
+    PowerPoint (a singleton) from a shared epoch. Both must complete,
+    neither may see the other's error, and the shape's text must end as ONE
+    worker's value rather than two writes welded together."""
     _com_gate()
     deck = make_deck("xproc_live.pptx")
     host = tmp_path / "host.py"

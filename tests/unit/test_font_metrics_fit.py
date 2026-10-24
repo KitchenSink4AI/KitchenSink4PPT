@@ -1,6 +1,6 @@
 """Real advance-width measurement in the text-fit model.
 
-The fit model was one estimator, 0.5 x point
+Regression: the fit model was one estimator, 0.5 x point
 size per character with a character-count wrap, and it predicted a two-line
 wrap for a Calibri 12 pt label that PowerPoint laid out as three. The
 estimator also wraps by character count, which no renderer does, so a frame
@@ -92,10 +92,10 @@ def test_the_same_shape_passes_under_the_old_estimate(deck, monkeypatch):
 
 @needs_calibri
 def test_non_wrapping_label_overflows_sideways(deck):
-    """The Carter label: wrap="none", so PowerPoint runs the text out of
+    """The Fowler label: wrap="none", so PowerPoint runs the text out of
     the frame instead of wrapping it. The old model always wrapped, so it
     could not see this class of defect at all."""
-    sid = _add(deck, 1, 1, 0.744, 0.50, "Carter (1997)", 12, wrap="none")
+    sid = _add(deck, 1, 1, 0.744, 0.50, "Fowler (1997)", 12, wrap="none")
     measured = _overflow(deck, sid)
     assert measured["method"] == "font-metrics"
     assert measured["wrap"] == "none"
@@ -105,7 +105,7 @@ def test_non_wrapping_label_overflows_sideways(deck):
 
 @needs_calibri
 def test_non_wrapping_label_passes_under_the_old_estimate(deck, monkeypatch):
-    sid = _add(deck, 1, 1, 0.744, 0.50, "Carter (1997)", 12, wrap="none")
+    sid = _add(deck, 1, 1, 0.744, 0.50, "Fowler (1997)", 12, wrap="none")
     monkeypatch.setattr(fm, "available", lambda: False)
     est = _overflow(deck, sid)
     assert est["likely_overflow"] is False
@@ -315,12 +315,12 @@ def test_bold_and_italic_pick_their_own_face():
 @needs_calibri
 def test_word_wrap_uses_word_boundaries():
     # Two words that each fit but do not fit together.
-    one = fm.text_width_pt("abandonment", "Calibri", 12)
+    one = fm.text_width_pt("onboarding", "Calibri", 12)
     assert fm.wrapped_line_count(
-        "abandonment entrapment", "Calibri", 12, one * 1.5
+        "onboarding retention", "Calibri", 12, one * 1.5
     ) == 2
     assert fm.wrapped_line_count(
-        "abandonment entrapment", "Calibri", 12, one * 3
+        "onboarding retention", "Calibri", 12, one * 3
     ) == 1
 
 

@@ -5,6 +5,8 @@ and notes-pages exports produce non-empty PDFs whose PAGE COUNTS match the
 layout math (ceil(slides / slides_per_page); notes = one page per slide).
 Page counts come from pypdf when it happens to be installed, else from the
 uncompressed /Type /Pages /Count node PowerPoint's PDF writer always emits
+(verified empirically on PowerPoint 365; the per-page objects live in
+compressed object streams, so counting /Type /Page objects does NOT work).
 
 Usage (from the repo root, PowerPoint closed):
 

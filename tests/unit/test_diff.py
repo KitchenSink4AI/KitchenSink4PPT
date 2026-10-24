@@ -11,19 +11,21 @@ surviving slides and classify everything else correctly.
 
 from __future__ import annotations
 
+import io
 import shutil
 from pathlib import Path
 
 import pytest
 
 from kitchensink4ppt.core.package import PptxPackage
+from kitchensink4ppt.ops import charts
 from kitchensink4ppt.ops import diff as df
 from kitchensink4ppt.ops import notes as nt
 from kitchensink4ppt.ops import shapes as sh
 from kitchensink4ppt.ops import slides as sl
 from kitchensink4ppt.ops import tables as tb
 from kitchensink4ppt.ops import text as tx
-from kitchensink4ppt.ops.read import slide_table
+from kitchensink4ppt.ops.read import list_elements, slide_table
 
 CORPUS = Path(__file__).resolve().parents[1] / "corpus"
 
@@ -178,7 +180,7 @@ def test_unrelated_decks_fall_back_to_title_then_position(make_deck, tmp_path):
 
 
 def test_corpus_deck_against_itself(tmp_path):
-    """A corpus deck (or its structural stand-in) self-diffs clean —
+    """A real corpus deck (or its structural stand-in) self-diffs clean —
     the alignment and snapshot walk cope with real layouts, tables, and
     notes, not just synthetic decks."""
     src = CORPUS / "proposal_deck.pptx"
@@ -187,3 +189,67 @@ def test_corpus_deck_against_itself(tmp_path):
     assert result["summary"]["identical"] is True
     n = len(slide_table(PptxPackage(src)))
     assert result["slide_count_a"] == n
+
+
+def test_chart_data_change_is_detected_without_shape_or_text_change(
+    make_deck, tmp_path
+):
+    a = make_deck("diff_chart_a.pptx")
+    pkga = PptxPackage(a)
+    made = charts.create_chart(
+        pkga,
+        0,
+        "column",
+        ["Q1", "Q2"],
+        [{"name": "Revenue", "values": [10, 20]}],
+        1,
+        1,
+        6,
+        4,
+        title="Quarterly",
+    )
+    pkga.save(do_backup=False)
+    b = tmp_path / "diff_chart_b.pptx"
+    shutil.copy(a, b)
+    pkgb = PptxPackage(b)
+    charts.update_chart_data(
+        pkgb,
+        0,
+        made["shape_id"],
+        categories=["Q1", "Q2"],
+        series=[{"name": "Revenue", "values": [10, 99]}],
+    )
+    pkgb.save(do_backup=False)
+
+    result = df.compare_decks(str(a), str(b))
+    pair = _pair_for(result, 0)
+    assert pair["changed"] is True
+    assert pair["changes"]["charts_changed"] == [
+        {
+            "shape_id": made["shape_id"],
+            "name": f"Chart {made['shape_id']}",
+        }
+    ]
+    assert pair["changes"]["shapes"]["geometry_changed"] == []
+
+
+def test_image_byte_change_is_detected_without_geometry_change(make_deck, tmp_path):
+    from PIL import Image
+
+    a = make_deck("diff_image_a.pptx")
+    b = tmp_path / "diff_image_b.pptx"
+    shutil.copy(a, b)
+    pkgb = PptxPackage(b)
+    image = list_elements(pkgb, "images")["items"][0]
+    replacement = io.BytesIO()
+    Image.new("RGB", (3, 3), (17, 29, 43)).save(replacement, format="PNG")
+    pkgb.set_raw_part(image["media_part"], replacement.getvalue())
+    pkgb.save(do_backup=False)
+
+    result = df.compare_decks(str(a), str(b))
+    pair = _pair_for(result, image["slide_index"])
+    assert pair["changed"] is True
+    assert pair["changes"]["media_changed"] == [
+        {"shape_id": image["id"], "name": image["name"]}
+    ]
+    assert pair["changes"]["shapes"]["geometry_changed"] == []

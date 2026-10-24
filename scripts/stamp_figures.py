@@ -1,11 +1,11 @@
 """Derive every figure this repo publishes, and stamp the one that cannot
 be derived at runtime.
 
-Three figures reach a stranger: the registered tool total, the lite core's
-token bill, and the collected test count. The first two come off the live
-pack registry, which is what `measure_surface.py` and `check_site.py`
-already read, so a running server can never disagree with them. The test
-count cannot: the suite is not in the wheel. This script counts it for real
+Three figures reach a stranger: the fixed tool total, operation total, and
+the collected test count. The first two come from the same immutable startup
+plan passed to ``create_server``, which is what `measure_surface.py` and
+`check_site.py` also read. The test count cannot: the suite is not in the
+wheel. This script counts it for real
 (`pytest tests/ --collect-only -q`, run headless with no console window)
 and writes it into `src/kitchensink4ppt/shipped.py`, which is what
 `get_server_info` reports and what the ship gate holds the published
@@ -18,6 +18,7 @@ Run:
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 import sys
@@ -25,6 +26,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+# The core does not choose an edition. A script that starts it is doing a
+# launcher's job and has to pick one on purpose.
+import _bootstrap  # noqa: E402
 
 SHIPPED = ROOT / "src" / "kitchensink4ppt" / "shipped.py"
 
@@ -33,23 +39,31 @@ _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
 def tool_figures() -> dict[str, object]:
-    from kitchensink4ppt import packs, server  # noqa: F401
+    _bootstrap.use_community()
+    from kitchensink4ppt import registry, server
+    from kitchensink4ppt.settings import Settings
+    from kitchensink4ppt.surface import plan
 
-    names = packs.tool_names()
-    lite_cost = sum(
-        packs.approx_tokens(packs._REGISTRY["lite"][n]) for n in names["lite"]
-    )
-    full_cost = sum(
-        packs.approx_tokens(packs._REGISTRY[pack][n])
-        for pack, tools in names.items()
-        for n in tools
-    )
+    settings = Settings()
+    surface = plan.build(settings, registry.public_ops())
+    mcp = server.create_server(settings)
+    approximate_tokens = 0
+    for item in surface.tools.values():
+        wire = {
+            "name": item.name,
+            "title": item.title,
+            "description": item.description,
+            "inputSchema": item.input_schema,
+            "annotations": item.annotations,
+        }
+        approximate_tokens += round(
+            len(json.dumps(wire, ensure_ascii=False, separators=(",", ":"))) / 4
+        )
     return {
-        "tools": sum(len(v) for v in names.values()),
-        "lite": len(names["lite"]),
-        "disabled": sum(len(v) for k, v in names.items() if k != "lite"),
-        "lite_tokens": f"{lite_cost / 1000:.1f}k",
-        "full_tokens": f"{full_cost / 1000:.1f}k",
+        "tools": len(surface.tools),
+        "operations": len(surface.op_tool),
+        "approx_tokens": approximate_tokens,
+        "instructions_chars": len(mcp.instructions or ""),
     }
 
 
@@ -79,8 +93,8 @@ def test_count() -> int:
 def main() -> int:
     figures = tool_figures()
     tests = test_count()
-    print("derived from the live pack registry:")
-    for key in ("tools", "lite", "disabled", "lite_tokens", "full_tokens"):
+    print("derived from the fixed startup plan:")
+    for key in ("tools", "operations", "approx_tokens", "instructions_chars"):
         print(f"  {key:<12} {figures[key]}")
     print("derived from pytest --collect-only:")
     print(f"  {'tests':<12} {tests:,}")
@@ -93,14 +107,16 @@ def main() -> int:
     if "--write" not in sys.argv:
         print(f"\nshipped.TESTS says {stamped:,}, the suite collects "
               f"{tests:,}. Re-run with --write to stamp it, then restamp "
-              f"README.md, docs/llms.txt and docs/index.html to match.")
+              f"README.md and docs/llms.txt to match.")
         return 1
+    # LF on every platform, as the repository keeps the file.
     SHIPPED.write_text(
         re.sub(r"^TESTS = \d+$", f"TESTS = {tests}", current, flags=re.M),
         encoding="utf-8",
+        newline="\n",
     )
     print(f"\nstamped shipped.TESTS: {stamped:,} -> {tests:,}. Now restamp "
-          f"README.md, docs/llms.txt and docs/index.html.")
+          f"README.md and docs/llms.txt.")
     return 0
 
 

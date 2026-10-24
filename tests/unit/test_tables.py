@@ -1,8 +1,8 @@
-"""Tables: deck reads (merge map), synthetic create/fill/merge/
+"""Tables: real-deck reads (merge map), synthetic create/fill/merge/
 border/style, merge-aware row/col surgery, widths, CSV/JSON round-trips.
 
 Every mutated deck is saved, which runs pkg._validate_payload (dangling rels
-and structure). heavy_deck tables (9 native tables, 25+ merge
+and structure). Real heavy_deck tables (9 native tables, 25+ merge
 continuations on the big ones) drive the read and surgery paths; synthetic
 tables drive the build paths so CI passes on corpus stand-ins.
 """
@@ -33,7 +33,7 @@ CORPUS = Path(__file__).parent.parent / "corpus"
 @pytest.fixture()
 def mb(tmp_path):
     """Temp copy of heavy_deck (the 9-native-table deck) as a package."""
-    p = tmp_path / "mb.pptx"
+    p = tmp_path / "heavy.pptx"
     shutil.copy(CORPUS / "heavy_deck.pptx", p)
     return PptxPackage(p)
 
@@ -70,7 +70,7 @@ def _merged_corpus_table(pkg):
     return best
 
 
-# ------------------------------------------------------------- deck read
+# ------------------------------------------------------------- real-deck read
 
 
 class TestGetTableReal:
@@ -144,12 +144,28 @@ class TestResolve:
             tb.get_table(pkg, slide, None)
         msg = str(exc.value)
         assert str(a["shape_id"]) in msg and str(b["shape_id"]) in msg
-        # Index and shape id both resolve.
-        assert tb.get_table(pkg, slide, 1)["shape_id"] == b["shape_id"]
+        # Explicit index and shape id both resolve.
+        assert tb.get_table(pkg, slide, {"index": 1})["shape_id"] == b["shape_id"]
         assert (
             tb.get_table(pkg, slide, {"shape_id": a["shape_id"]})["table_index"]
             == 0
         )
+
+    def test_bare_integer_refuses_when_index_and_shape_id_disagree(self, deck):
+        pkg, slide = deck
+        made = [
+            tb.create_table(pkg, slide, 2, 2, 0.5, 0.5 + i, 3, 0.8)
+            for i in range(6)
+        ]
+        selector = made[0]["shape_id"]
+        assert 0 <= selector < len(made)
+        assert made[selector]["shape_id"] != selector
+
+        with pytest.raises(AmbiguousTarget) as exc:
+            tb.get_table(pkg, slide, selector)
+        msg = str(exc.value)
+        assert f"{{'index': {selector}}}" in msg
+        assert f"{{'shape_id': {selector}}}" in msg
 
     def test_bad_selectors(self, deck):
         pkg, slide = deck
@@ -231,7 +247,7 @@ class TestMerge:
         origin = next(c for c in info["cells"] if (c["row"], c["col"]) == (0, 0))
         assert origin["merge"] == {"role": "origin", "rows": 2, "cols": 2}
         assert "b" in origin["text"] and "f" in origin["text"]
-        # XML-level continuation flags per the internals doc.
+        # XML-level continuation flags.
         tbl = tb.resolve_table(pkg, slide, sel)["tbl"]
         tr0 = tbl.findall(qn("a:tr"))[0]
         tr1 = tbl.findall(qn("a:tr"))[1]
@@ -483,6 +499,122 @@ class TestFormat:
         assert rpr.get("b") == "1" and rpr.get("sz") == "1400"
         pkg.save()
 
+    def test_cell_retext_preserves_unnamed_text_formatting_and_reports_it(self, deck):
+        pkg, slide = deck
+        made = tb.create_table(
+            pkg, slide, 1, 1, 1, 1, 4, 1, data=[["before"]]
+        )
+        sel = {"shape_id": made["shape_id"]}
+        tb.set_table_cells(
+            pkg,
+            slide,
+            sel,
+            [{
+                "row": 0,
+                "col": 0,
+                "size_pt": 13,
+                "font": "Aptos",
+                "color": "1F3864",
+                "align": "right",
+            }],
+        )
+
+        out = tb.set_table_cells(
+            pkg, slide, sel, [{"row": 0, "col": 0, "text": "after"}]
+        )
+
+        assert set(out["preserved"]) >= {
+            "alignment", "font", "run_color", "size",
+        }
+        assert out["preserved_by_cell"] == [{
+            "row": 0,
+            "col": 0,
+            "preserved": ["alignment", "font", "run_color", "size"],
+        }]
+        tbl = tb.resolve_table(pkg, slide, sel)["tbl"]
+        para = tbl.find(
+            f"{qn('a:tr')}/{qn('a:tc')}/{qn('a:txBody')}/{qn('a:p')}"
+        )
+        assert para.find(qn("a:pPr")).get("algn") == "r"
+        rpr = para.find(f"{qn('a:r')}/{qn('a:rPr')}")
+        assert rpr.get("sz") == "1300"
+        assert rpr.find(qn("a:latin")).get("typeface") == "Aptos"
+        assert rpr.find(qn("a:ea")).get("typeface") == "Aptos"
+        assert rpr.find(qn("a:cs")).get("typeface") == "Aptos"
+        assert rpr.find(
+            f"{qn('a:solidFill')}/{qn('a:srgbClr')}"
+        ).get("val") == "1F3864"
+        pkg.save()
+
+    def test_cell_retext_applies_named_override_and_preserves_the_rest(self, deck):
+        pkg, slide = deck
+        made = tb.create_table(
+            pkg, slide, 1, 1, 1, 1, 4, 1, data=[["before"]]
+        )
+        sel = {"shape_id": made["shape_id"]}
+        tb.set_table_cells(
+            pkg,
+            slide,
+            sel,
+            [{
+                "row": 0,
+                "col": 0,
+                "size_pt": 13,
+                "font": "Aptos",
+                "color": "1F3864",
+                "align": "right",
+            }],
+        )
+
+        out = tb.set_table_cells(
+            pkg,
+            slide,
+            sel,
+            [{"row": 0, "col": 0, "text": "after", "size_pt": 18}],
+        )
+
+        assert set(out["preserved"]) >= {"alignment", "font", "run_color"}
+        assert "size" not in out["preserved"]
+        tbl = tb.resolve_table(pkg, slide, sel)["tbl"]
+        para = tbl.find(
+            f"{qn('a:tr')}/{qn('a:tc')}/{qn('a:txBody')}/{qn('a:p')}"
+        )
+        assert para.find(qn("a:pPr")).get("algn") == "r"
+        rpr = para.find(f"{qn('a:r')}/{qn('a:rPr')}")
+        assert rpr.get("sz") == "1800"
+        assert rpr.find(qn("a:latin")).get("typeface") == "Aptos"
+        assert rpr.find(
+            f"{qn('a:solidFill')}/{qn('a:srgbClr')}"
+        ).get("val") == "1F3864"
+
+    def test_set_table_cells_size_pt_alias_and_unknown_key_refusal(self, deck):
+        pkg, slide = deck
+        r = tb.create_table(pkg, slide, 1, 1, 1, 1, 4, 1, data=[["keep"]])
+        sel = {"shape_id": r["shape_id"]}
+
+        tb.set_table_cells(
+            pkg, slide, sel,
+            [{"row": 0, "col": 0, "size_pt": 15}],
+        )
+        tbl = tb.resolve_table(pkg, slide, sel)["tbl"]
+        rpr = tbl.find(
+            f"{qn('a:tr')}/{qn('a:tc')}/{qn('a:txBody')}/"
+            f"{qn('a:p')}/{qn('a:r')}/{qn('a:rPr')}"
+        )
+        assert rpr.get("sz") == "1500"
+
+        with pytest.raises(PptMcpError, match="unknown key"):
+            tb.set_table_cells(
+                pkg, slide, sel,
+                [{"row": 0, "col": 0, "text": "ignored?", "siz_pt": 18}],
+            )
+        assert tb.get_table(pkg, slide, sel)["cells"][0]["text"] == "keep"
+        with pytest.raises(PptMcpError, match="size_pt"):
+            tb.set_table_cells(
+                pkg, slide, sel,
+                [{"row": 0, "col": 0, "size": 12, "size_pt": 13}],
+            )
+
 
 # ------------------------------------------------------- widths, heights, style
 
@@ -511,7 +643,7 @@ class TestSizesAndStyle:
         assert out["style"] == "dark2_accent3"
         info = tb.get_table(pkg, slide, sel)
         assert info["style_guid"] == tb.TABLE_STYLES["dark2_accent3"]
-        # Un-braced GUID passthrough is normalized (issue #645: braces are
+        # Un-braced GUID passthrough is normalized (braces are
         # part of the value).
         raw = "5940675a-b579-460e-94d1-54222c63f5da"
         out = tb.apply_table_style(pkg, slide, sel, raw)
@@ -551,7 +683,8 @@ class TestExportImport:
         csv_path = tmp_path / "table.csv"
         out = tb.export_table(mb, slide_index, {"shape_id": shape_id}, str(csv_path))
         assert out["path"] == str(csv_path)
-        with open(csv_path, encoding="utf-8", newline="") as fh:
+        assert csv_path.read_bytes().startswith(b"\xef\xbb\xbf")
+        with open(csv_path, encoding="utf-8-sig", newline="") as fh:
             exported = [list(row) for row in csv.reader(fh)]
         assert len(exported) == rows and len(exported[0]) == cols
 

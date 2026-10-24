@@ -12,14 +12,15 @@ from pathlib import Path
 
 import pytest
 
-from kitchensink4ppt import packs
+from kitchensink4ppt import server
 from kitchensink4ppt.core.errors import (
     PptMcpError,
     TargetNotFound,
     UnsupportedStructure,
 )
 from kitchensink4ppt.core.package import PptxPackage, qn
-from kitchensink4ppt.ops import media, read, shapes
+from kitchensink4ppt.ops import masters, media, read, shapes
+from kitchensink4ppt.surface import envelope
 
 
 # ------------------------------------------------------------ image factories
@@ -111,6 +112,63 @@ def test_insert_by_path_explicit_size(make_deck, tmp_path):
     target = next(s for s in pics if s["id"] == res["shape_id"])
     assert target["geometry"]["cx_in"] == 2.0
     assert target["geometry"]["cy_in"] == 1.0
+
+
+def test_insert_image_on_master_and_layout(make_deck, tmp_path):
+    deck = make_deck("master-images.pptx")
+    pkg = PptxPackage(deck)
+    before_media = _media_count(pkg)
+    inv = masters.list_master_elements(pkg)["masters"][0]
+    layout = inv["layouts"][0]
+    encoded = _b64(png_bytes(rgb=(20, 120, 60)))
+
+    on_master = media.insert_image(
+        pkg, None, encoded, 0.25, 0.25, 1.0, 0.5, master=0,
+        name="Brand mark",
+    )
+    assert on_master["scope"] == "master"
+    assert on_master["part"] == inv["part"]
+    assert on_master["affected_slides"]["count"] >= 1
+    assert pkg.root(inv["part"]).find(f".//{qn('p:pic')}") is not None
+    assert pkg.relationship_target(
+        inv["part"],
+        pkg.root(inv["part"]).find(f".//{qn('a:blip')}").get(qn("r:embed")),
+    ) == on_master["media_part"]
+
+    on_layout = media.insert_image(
+        pkg, None, encoded, 1.5, 0.25, 1.0, 0.5,
+        layout=layout["index"], name="Layout mark",
+    )
+    assert on_layout["scope"] == "layout"
+    assert on_layout["part"] == layout["part"]
+    assert on_layout["media_reused"] is True
+    assert on_layout["media_part"] == on_master["media_part"]
+    assert _media_count(pkg) == before_media + 1
+    pkg.save()
+
+    reopened = PptxPackage(deck)
+    assert reopened.root(inv["part"]).find(f".//{qn('p:pic')}") is not None
+    assert reopened.root(layout["part"]).find(f".//{qn('p:pic')}") is not None
+    final = masters.list_master_elements(reopened)["masters"][0]
+    master_pic = next(s for s in final["shapes"] if s["shape_id"] == on_master["shape_id"])
+    assert master_pic["kind"] == "picture"
+    assert master_pic["box_in"] == {"x": 0.25, "y": 0.25, "w": 1.0, "h": 0.5}
+    final_layout = next(l for l in final["layouts"] if l["part"] == layout["part"])
+    layout_pic = next(s for s in final_layout["shapes"] if s["shape_id"] == on_layout["shape_id"])
+    assert layout_pic["name"] == "Layout mark"
+    assert layout_pic["kind"] == "picture"
+    assert layout_pic["box_in"] == {"x": 1.5, "y": 0.25, "w": 1.0, "h": 0.5}
+    assert final_layout["decoration_shapes"] == len(final_layout["shapes"])
+
+
+def test_insert_image_requires_exactly_one_target(make_deck):
+    deck = make_deck("image-targets.pptx")
+    pkg = PptxPackage(deck)
+    encoded = _b64(png_bytes())
+    with pytest.raises(PptMcpError, match="exactly one target"):
+        media.insert_image(pkg, None, encoded, 0, 0, 1, 1)
+    with pytest.raises(PptMcpError, match="exactly one target"):
+        media.insert_image(pkg, 0, encoded, 0, 0, 1, 1, master=0)
 
 
 def test_insert_base64_dedup_one_media_part(make_deck, tmp_path):
@@ -351,11 +409,14 @@ def test_server_insert_image_envelope(make_deck, tmp_path):
     deck = make_deck("img17.pptx")
     png = tmp_path / "s.png"
     png.write_bytes(png_bytes())
-    fn = packs.tool_objects()["insert_image"].fn
+    fn = server.insert_image
     out = fn(file_path=str(deck), slide=0, image=str(png), x=1.0, y=1.0, w=2.0)
     assert out["ok"] is True
     assert out["changed"]["shape_id"] > 0
-    bad = fn(file_path=str(deck), slide=99, image=str(png), x=0, y=0, w=1)
+    try:
+        bad = fn(file_path=str(deck), slide=99, image=str(png), x=0, y=0, w=1)
+    except BaseException as exc:
+        bad = envelope.refusal(exc)
     assert bad["ok"] is False
     assert bad["error"]["code"] == "NOT_FOUND"
 

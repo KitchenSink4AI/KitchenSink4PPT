@@ -1,7 +1,7 @@
 """Comments (ops/comments.py): modern threaded comment creation from scratch
 (authors part + comment part + rels + content types + the {6950BFC3-...}
-slide extLst wiring), threaded replies (the ecosystem first), dual-system
-reads (modern + legacy classic, corpus deck + synthesized XML), resolve,
+slide extLst wiring), threaded replies, dual-system
+reads (modern + legacy classic, real corpus deck + synthesized XML), resolve,
 cascade delete with full part teardown, author GUID dedup, payload validation
 on every save, and the critical COM gate: PowerPoint itself must RENDER the
 comments (read back through Slide.Comments in the object model; a file that
@@ -66,17 +66,26 @@ def _wired_rids(pkg: PptxPackage, index=0) -> list[str]:
 # --------------------------------------- from-scratch infrastructure creation
 
 
-def test_add_comment_builds_all_infrastructure(make_deck):
+def test_add_comment_builds_all_infrastructure(make_deck, monkeypatch):
     """A deck with ZERO comment machinery gains, in one call: the p188
     authors part + presentation rel + content type, the modern comment part
-    + slide rel + content type, and the slide extLst commentRel wiring."""
+    + slide rel + content type, and the slide extLst commentRel wiring.
+    With no author, the comment is signed with the user's own Office name
+    (the registry is not read here)."""
+    from kitchensink4ppt.core import authorship
+
+    for var in ("KS4P_AUTHOR", "KS4P_COMMENT_AUTHOR"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(authorship, "_office_value",
+                        {"UserName": "Deck Owner", "UserInitials": "DO"}.get)
     deck = make_deck("cmt_scratch.pptx")
     pkg = PptxPackage(deck)
     assert not pkg.has_part("ppt/authors.xml")
 
     res = cm.add_comment(pkg, 0, "First note", anchor={"x": 914400, "y": 457200})
     assert res["comment_id"].startswith("{") and res["comment_id"].endswith("}")
-    assert res["author"] == cm.default_author() == "KitchenSink4PPT"
+    assert res["author"] == cm.default_author() == "Deck Owner"
+    assert res["author_source"] == "office_username"
     assert res["anchor"] == {"type": "slide", "x_emu": 914400, "y_emu": 457200}
 
     # Authors part, rel, and content type.
@@ -115,7 +124,8 @@ def test_add_comment_builds_all_infrastructure(make_deck):
     rec = listing["slides"][0]["comments"][0]
     assert rec["system"] == "modern"
     assert rec["text"] == "First note"
-    assert rec["author"] == "KitchenSink4PPT"
+    assert rec["author"] == "Deck Owner"
+    assert rec["author_initials"] == "DO"
     assert rec["resolved"] is False
     assert rec["anchor"]["type"] == "slide"
     assert rec["anchor"]["x_pt"] == 72
@@ -295,7 +305,8 @@ LEGACY_AUTHORS_XML = (
     b'clrIdx="0"/></p:cmAuthorLst>'
 )
 
-# Structure per ECMA-376 and PowerPoint's own output: p:cm keyed by (authorId, idx), p:pos, plain
+# Structure per ECMA-376 (and the real
+# heavy_deck.pptx part): p:cm keyed by (authorId, idx), p:pos, plain
 # p:text.
 LEGACY_COMMENTS_XML = (
     b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
@@ -358,7 +369,7 @@ def test_add_modern_refused_on_legacy_deck(make_deck):
 
 
 def test_legacy_read_real_corpus_deck():
-    """heavy_deck.pptx carries classic comments on one
+    """heavy_deck.pptx (real corpus) carries classic comments on one
     slide; the reader must surface them with author mapping. Skips honestly
     against the synthetic stand-in, which has none."""
     deck = CORPUS / "heavy_deck.pptx"
@@ -414,7 +425,7 @@ def test_comment_report_groups_and_markdown(make_deck, tmp_path):
 
 
 def test_full_lifecycle_on_corpus_copy(tmp_path):
-    """The whole lifecycle on a copy of the key deck: add on shape +
+    """The whole lifecycle on a copy of the key real deck: add on shape +
     on position, reply, resolve, list, delete cascade, every step separated
     by a validated save + cold reload."""
     src = CORPUS / "proposal_deck.pptx"
@@ -487,7 +498,7 @@ out["validate"] = bridge.com_validate_opens_clean(str(path))
 def read_comments(session, path):
     # Every COM reference stays function-local so it dies on return, BEFORE
     # the bridge's cleanup gc pass; a module-level proxy keeps POWERPNT
-    # alive past Quit() (learned the hard way in this test's first round).
+    # alive past Quit() (learned the hard way).
     pres = bridge.open_presentation(session, path)
     slides = []
     for i in range(1, int(pres.Slides.Count) + 1):
@@ -616,7 +627,7 @@ def test_com_powerpoint_renders_comments_and_replies(tmp_path, make_deck):
     assert out["our_leaked_pids"] == [], out
 
 
-# ---------------------- slide delete/duplicate vs modern comment parts (W6)
+# ---------------------- slide delete/duplicate vs modern comment parts
 
 
 def test_delete_slide_gcs_modern_comment_part(make_deck):

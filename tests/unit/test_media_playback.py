@@ -1,12 +1,13 @@
 """Media playback settings (ops/av.py): loop, rewind, mute, volume, the
 speaker icon, play-across-slides, full screen, and the start trigger.
 
-Inserting media without playback control was half a feature: every deck
+Inserting media without playback control was half a feature: every real deck
 that carries video also carries a <p:cMediaNode> and a mediacall trigger, and
 KS4P's output never did.
 
-The structures written here are GROUND-TRUTHED against PowerPoint 365 on this
-machine:
+The structures written here are GROUND-TRUTHED against PowerPoint 365 (a deck
+of embedded audio opened by COM, playback set through PlaySettings, saved, and
+unzipped):
 
     <p:audio><p:cMediaNode vol="80000" showWhenStopped="0">
       <p:cTn id="7" repeatCount="indefinite" fill="remove" display="0">

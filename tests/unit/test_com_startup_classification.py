@@ -1,6 +1,6 @@
 """The COM start-up family: apartment, registration, launch.
 
-export_slide_image once failed with "CoInitialize
+Regression: export_slide_image failed with "CoInitialize
 has not been called" and the refusal carried code BAD_PARAMS, which sends a
 caller to look at arguments that were never the problem. CO_E_NOTINITIALIZED
 was in neither BUSY_HRESULTS nor GONE_HRESULTS, so _classify returned None,
@@ -65,7 +65,8 @@ def test_startup_hresults_are_classified(bridge, name):
 
 def test_notinitialized_never_reaches_the_wire_as_bad_params(bridge):
     """The end-to-end shape of the field defect: the refusal code."""
-    from kitchensink4ppt import server
+    from kitchensink4ppt.core.errors import CODES
+    from kitchensink4ppt.surface import envelope
 
     try:
         bridge._raise_classified(
@@ -73,11 +74,11 @@ def test_notinitialized_never_reaches_the_wire_as_bad_params(bridge):
             "PowerPoint could not be started",
         )
     except PptMcpError as exc:
-        code = server._classify(exc)
+        code = envelope._classify(exc)
     else:  # pragma: no cover - the call above always raises
         pytest.fail("_raise_classified did not raise")
     assert code != "BAD_PARAMS"
-    assert code in server.CLOSED_CODES
+    assert code in CODES
     assert code == "APP_NOT_RUNNING"
 
 
@@ -259,8 +260,8 @@ def test_run_bounded_carries_a_caller_apartment_failure(bridge, monkeypatch):
 
 
 def test_every_com_entry_point_uses_the_shared_apartment_helper():
-    """Not only export: a bare pythoncom.CoInitialize()
-    left anywhere in the COM tier means one entry point can still drift."""
+    """Not only export: a bare pythoncom.CoInitialize() left anywhere in
+    the COM tier means one entry point can still drift."""
     from pathlib import Path
 
     import ast

@@ -1,5 +1,4 @@
-"""Regressions for gradient stops, export paths, equations, split_deck,
-document properties, replace_fonts and layout names.
+"""Targeted regressions for hostile and malformed inputs.
 
 - A gradient stop without "color" (or malformed stops) refuses BAD_PARAMS in
   the envelope across every gradient-accepting tool, never a raw KeyError.
@@ -11,7 +10,7 @@ document properties, replace_fonts and layout names.
   unexpected mid-run failure reports the pieces already written.
 - set_document_properties refuses impossible calendar datetimes and
   non-numeric revision strings.
-- Gradient stop pos accepts both conventions: percent 0..100, or every
+- A gradient stop pos accepts both conventions: percent 0..100, or every
   stop in 0..1 read as fractions and scaled.
 - replace_fonts identity mappings (old == new) are reported no-ops, not
   a 30-part file churn.
@@ -34,29 +33,29 @@ from pathlib import Path
 
 import pytest
 
-from kitchensink4ppt import packs, server
+from kitchensink4ppt import server
 from kitchensink4ppt.core.errors import PptMcpError
 from kitchensink4ppt.ops import assembly as asm
 from kitchensink4ppt.ops import equations as eqn
 from kitchensink4ppt.ops import export as ex
 from kitchensink4ppt.ops import geometry as g
+from kitchensink4ppt.surface import envelope
 
 
 def _fn(name: str):
-    return packs.tool_objects()[name].fn
+    fn = getattr(server, name)
+
+    def call(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except BaseException as exc:
+            return envelope.refusal(exc)
+
+    return call
 
 
 def _md5(path) -> str:
     return hashlib.md5(Path(path).read_bytes()).hexdigest()
-
-
-@pytest.fixture(autouse=True)
-def _restore_surface():
-    before = dict(packs._ENABLED)
-    yield
-    packs._ENABLED.clear()
-    packs._ENABLED.update(before)
-    server._PENDING_VISIBILITY.clear()
 
 
 def _assert_refused(out, deck=None, before=None, code="BAD_PARAMS"):
@@ -217,7 +216,7 @@ def test_l1_pos_units_documented():
     assert "0..100" in (g.gradient_fill.__doc__ or "")
     for tool in ("set_slide_background", "set_master_background",
                  "insert_shape"):
-        doc = _fn(tool).__doc__ or ""
+        doc = getattr(server, tool).__doc__ or ""
         assert "0..100" in doc or "fractions" in doc, f"{tool} doc silent"
 
 
@@ -540,9 +539,9 @@ def test_l7_rename_onto_other_show_case_twin_refused(make_deck):
 
 
 def test_l8_merge_decks_docstring_mentions_potx():
-    assert ".potx" in (_fn("merge_decks").__doc__ or "")
+    assert ".potx" in (server.merge_decks.__doc__ or "")
     assert ".potx" in (asm.merge_decks.__doc__ or "")
 
 
 def test_l7_docstring_documents_case_policy():
-    assert "case-insensitive" in (_fn("manage_custom_show").__doc__ or "")
+    assert "case-insensitive" in (server.manage_custom_show.__doc__ or "")

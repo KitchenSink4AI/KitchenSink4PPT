@@ -1,6 +1,6 @@
 """Modal-dialog detection via the OS window layer, NOT via COM.
 
-A COM status tool can report "ready"
+Live testing of the Word editor showed a COM status tool reporting "ready"
 while the user stared at a three-dialog cascade: COM cannot see the host
 application's modal dialogs because those dialogs are exactly what blocks
 COM. The Win32 window layer can. A modal PowerPoint alert is a visible
@@ -26,7 +26,8 @@ import sys
 
 # Window classes PowerPoint uses for alerts and dialogs.
 #
-# Verified against PowerPoint 365: provoking a modal by
+# Verified empirically against PowerPoint 365 on this machine
+# (tests/com_gates/dialog_class_discovery.py): provoking a real modal by
 # opening a corrupt deck with DisplayAlerts left at ppAlertsAll produced
 # exactly one new visible top-level window, class "NUIDialog", title
 # "Microsoft PowerPoint", while the ordinary frame stayed "PPTFrameClass".
@@ -36,14 +37,14 @@ import sys
 #   the class of a real blocking modal on this build.
 # - "#32770": the standard Windows dialog class, used by the common file
 #   dialogs and permission/save-as errors that Office defers to Windows for.
-# - "bosa_sdm_Mso96": Office's classic internal dialog class (the sibling class
-#   used by other Office applications). Not observed on this build; kept because it is
+# - "bosa_sdm_Mso96": Office's classic internal dialog class (the sibling of
+#   Word's bosa_sdm_msword). Not observed on this build; kept because it is
 #   a dialog class by construction, so it cannot produce a frame false
 #   positive on older builds that still use it.
 #
 # Deliberately NOT included: "MsoSplash" (a splash window is not a modal
 # alert, and flagging blocked=True during a normal launch would make the
-# flag untrustworthy) and "_WwB" (wrong application).
+# flag untrustworthy) and Word's "_WwB" (wrong application).
 DIALOG_CLASSES = {
     "#32770",
     "NUIDialog",

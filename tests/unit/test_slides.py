@@ -1,9 +1,10 @@
-"""Ops: slide CRUD + create-from-template, exercised on the real
+"""Slide ops: slide CRUD + create-from-template, exercised on the real
 corpus (via tmp copies; corpus files are never opened for saving) and on
-synthetic decks for structures the corpus lacks.
+synthetic decks for structures the corpus lacks (charts, sections, custom
+shows, jump hyperlinks; the corpus decks carry none of these).
 
 Every mutated output is saved, which runs pkg._validate_payload (dangling
-rels, unresolvable sldIds); most tests also reopen the file and cross-check
+rels, unresolvable sldIds); most tests also reopen the file and compare
 against the python-pptx oracle.
 """
 
@@ -23,6 +24,7 @@ from kitchensink4ppt.core.errors import (
     PptMcpError,
     TargetNotFound,
     UnsupportedStructure,
+    ValidationFailed,
 )
 from kitchensink4ppt.core.package import (
     NSMAP,
@@ -34,9 +36,15 @@ from kitchensink4ppt.core.package import (
 )
 from kitchensink4ppt.ops.slides import (
     CT_PRESENTATION_MAIN,
+    CT_TEMPLATE_MAIN,
     RT_CHART,
     RT_CHART_COLORS,
     RT_CHART_STYLE,
+    RT_DIAGRAM_COLORS,
+    RT_DIAGRAM_DATA,
+    RT_DIAGRAM_DRAWING,
+    RT_DIAGRAM_LAYOUT,
+    RT_DIAGRAM_QUICK_STYLE,
     RT_NOTES_SLIDE,
     RT_PACKAGE,
     RT_SLIDE,
@@ -48,6 +56,9 @@ from kitchensink4ppt.ops.slides import (
     reorder_slides,
     set_slide_hidden,
 )
+from kitchensink4ppt.ops.diagrams import set_diagram_text
+from kitchensink4ppt.ops.read import diagram_text
+from kitchensink4ppt.ops import slides as slide_ops
 
 CORPUS = Path(__file__).parents[1] / "corpus"
 
@@ -80,11 +91,128 @@ def _heaviest_slide_index(pkg: PptxPackage) -> int:
 
 
 def _creation_ids(pkg: PptxPackage, part: str) -> set[str]:
+    """Each kind by its own attribute: a16 (shapes) in id, p14 (the slide) in
+    val. Reading id on both compared None with a GUID and always passed."""
     root = pkg.root(part)
-    return {
-        el.get("id")
-        for el in root.iter(qn("a16:creationId"), qn("p14:creationId"))
+    return {el.get("id") for el in root.iter(qn("a16:creationId"))} | {
+        el.get("val") for el in root.iter(qn("p14:creationId"))
     }
+
+
+_DGM = "http://schemas.openxmlformats.org/drawingml/2006/diagram"
+_DSP = "http://schemas.microsoft.com/office/drawing/2008/diagram"
+_A = NSMAP["a"]
+_R = NSMAP["r"]
+
+
+def _attach_smartart(
+    pkg: PptxPackage, slide_part: str, *, drawing_from_data: bool = False
+) -> int:
+    """Attach one complete five-part SmartArt family to a synthetic slide."""
+    ids = {
+        "doc": "{11111111-1111-1111-1111-111111111111}",
+        "node": "{22222222-2222-2222-2222-222222222222}",
+        "pres": "{33333333-3333-3333-3333-333333333333}",
+        "cxn": "{44444444-4444-4444-4444-444444444444}",
+    }
+    data = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<dgm:dataModel xmlns:dgm="{_DGM}" xmlns:a="{_A}">'
+        '<dgm:ptLst>'
+        f'<dgm:pt modelId="{ids["doc"]}" type="doc"><dgm:prSet/>'
+        '<dgm:spPr/><dgm:t><a:bodyPr/><a:lstStyle/><a:p/></dgm:t></dgm:pt>'
+        f'<dgm:pt modelId="{ids["node"]}"><dgm:prSet/><dgm:spPr/>'
+        '<dgm:t><a:bodyPr/><a:lstStyle/><a:p><a:r><a:rPr lang="en-US"/>'
+        '<a:t>Original node</a:t></a:r></a:p></dgm:t></dgm:pt>'
+        f'<dgm:pt modelId="{ids["pres"]}" type="pres">'
+        f'<dgm:prSet presAssocID="{ids["node"]}"/><dgm:spPr/>'
+        '<dgm:t><a:bodyPr/><a:lstStyle/><a:p/></dgm:t></dgm:pt>'
+        '</dgm:ptLst><dgm:cxnLst>'
+        f'<dgm:cxn modelId="{ids["cxn"]}" srcId="{ids["doc"]}" '
+        f'destId="{ids["node"]}" parTransId="{ids["cxn"]}"/>'
+        '</dgm:cxnLst></dgm:dataModel>'
+    ).encode()
+    drawing = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<dsp:drawing xmlns:dsp="{_DSP}" xmlns:a="{_A}"><dsp:spTree>'
+        f'<dsp:sp modelId="{ids["pres"]}"><dsp:txBody><a:bodyPr/>'
+        '<a:lstStyle/><a:p><a:r><a:rPr lang="en-US"/>'
+        '<a:t>Original node</a:t></a:r></a:p></dsp:txBody></dsp:sp>'
+        '</dsp:spTree></dsp:drawing>'
+    ).encode()
+    stubs = {
+        "ppt/diagrams/layout1.xml": (
+            f'<dgm:layoutDef xmlns:dgm="{_DGM}" uniqueId="urn:test/layout">'
+            '<dgm:layoutNode name="root"/></dgm:layoutDef>'
+        ).encode(),
+        "ppt/diagrams/quickStyle1.xml": (
+            f'<dgm:styleDef xmlns:dgm="{_DGM}" uniqueId="urn:test/style"/>'
+        ).encode(),
+        "ppt/diagrams/colors1.xml": (
+            f'<dgm:colorsDef xmlns:dgm="{_DGM}" uniqueId="urn:test/colors"/>'
+        ).encode(),
+    }
+    ct = "application/vnd.openxmlformats-officedocument.drawingml.{}+xml"
+    pkg.add_part_with_content_type(
+        "ppt/diagrams/data1.xml", data, ct.format("diagramData")
+    )
+    pkg.add_part_with_content_type(
+        "ppt/diagrams/drawing1.xml", drawing,
+        "application/vnd.ms-office.drawingml.diagramDrawing+xml",
+    )
+    for part, raw in stubs.items():
+        kind = {
+            "layout1.xml": "diagramLayout",
+            "quickStyle1.xml": "diagramStyle",
+            "colors1.xml": "diagramColors",
+        }[part.rsplit("/", 1)[-1]]
+        pkg.add_part_with_content_type(part, raw, ct.format(kind))
+
+    targets = {
+        "dm": (RT_DIAGRAM_DATA, "ppt/diagrams/data1.xml"),
+        "lo": (RT_DIAGRAM_LAYOUT, "ppt/diagrams/layout1.xml"),
+        "qs": (RT_DIAGRAM_QUICK_STYLE, "ppt/diagrams/quickStyle1.xml"),
+        "cs": (RT_DIAGRAM_COLORS, "ppt/diagrams/colors1.xml"),
+    }
+    rids = {}
+    for key, (rel_type, target) in targets.items():
+        rids[key] = pkg.add_relationship(
+            slide_part, rel_type,
+            posixpath.relpath(target, posixpath.dirname(slide_part)),
+        )
+    drawing_source = (
+        "ppt/diagrams/data1.xml" if drawing_from_data else slide_part
+    )
+    pkg.add_relationship(
+        drawing_source, RT_DIAGRAM_DRAWING,
+        posixpath.relpath(
+            "ppt/diagrams/drawing1.xml", posixpath.dirname(drawing_source)
+        ),
+    )
+
+    sp_tree = pkg.root(slide_part).find(
+        f"{qn('p:cSld')}/{qn('p:spTree')}"
+    )
+    shape_id = pkg.next_shape_id(slide_part)
+    frame = etree.SubElement(sp_tree, qn("p:graphicFrame"))
+    nv = etree.SubElement(frame, qn("p:nvGraphicFramePr"))
+    cnvpr = etree.SubElement(nv, qn("p:cNvPr"))
+    cnvpr.set("id", str(shape_id))
+    cnvpr.set("name", "SmartArt fixture")
+    etree.SubElement(nv, qn("p:cNvGraphicFramePr"))
+    etree.SubElement(nv, qn("p:nvPr"))
+    xfrm = etree.SubElement(frame, qn("p:xfrm"))
+    etree.SubElement(xfrm, qn("a:off"), x="914400", y="914400")
+    etree.SubElement(xfrm, qn("a:ext"), cx="5486400", cy="3657600")
+    graphic = etree.SubElement(frame, qn("a:graphic"))
+    gdata = etree.SubElement(graphic, qn("a:graphicData"), uri=_DGM)
+    rel_ids = etree.SubElement(
+        gdata, f"{{{_DGM}}}relIds", nsmap={"dgm": _DGM, "r": _R}
+    )
+    for key in ("dm", "lo", "qs", "cs"):
+        rel_ids.set(f"{{{_R}}}{key}", rids[key])
+    pkg.mark_dirty(slide_part)
+    return shape_id
 
 
 def _rel_targets(pkg: PptxPackage, part: str, rel_type: str) -> list[str]:
@@ -445,6 +573,82 @@ def test_duplicate_chart_slide_deep_copies_chart_family(make_deck):
     PptxPackage(doc)
 
 
+@pytest.mark.parametrize("drawing_from_data", [False, True])
+def test_duplicate_smartart_is_independent_after_save_reopen(
+    make_deck, drawing_from_data,
+):
+    """All five SmartArt parts and model ids belong to the clone."""
+    doc = make_deck(extra_slides=0)
+    pkg = PptxPackage(doc)
+    source_part = pkg.slide_parts()[0]
+    shape_id = _attach_smartart(
+        pkg, source_part, drawing_from_data=drawing_from_data
+    )
+    pkg.save(do_backup=False)
+
+    pkg = PptxPackage(doc)
+    result = duplicate_slide(pkg, 0)
+    clone_part = result["part"]
+    source_parts = slide_ops._diagram_graph(pkg, source_part)[0]
+    clone_parts = slide_ops._diagram_graph(pkg, clone_part)[0]
+    assert len(source_parts) == len(clone_parts) == 5
+    assert source_parts.isdisjoint(clone_parts)
+    assert clone_parts <= set(result["copied_parts"])
+    assert result["diagram_model_ids_regenerated"] == 4
+    assert result["diagram_integrity"] == {"parts": 5, "model_ids": 4}
+
+    def model_ids(parts):
+        return {
+            node.get("modelId")
+            for part in parts
+            if part.endswith(("data1.xml", "data2.xml", "drawing1.xml", "drawing2.xml"))
+            for node in pkg.root(part).iter()
+            if node.get("modelId")
+        }
+
+    assert model_ids(source_parts).isdisjoint(model_ids(clone_parts))
+    pkg.save(do_backup=False)
+
+    reopened = PptxPackage(doc)
+    items = diagram_text(reopened)["items"]
+    assert [(item["slide_index"], item["text"]) for item in items] == [
+        (0, "Original node"),
+        (1, "Original node"),
+    ]
+    original_data = reopened.raw_part("ppt/diagrams/data1.xml")
+    changed = set_diagram_text(
+        reopened, 1, shape_id, [{"index": 0, "text": "Copy only"}]
+    )
+    assert changed["nodes_changed"] == 1
+    assert changed["drawing_synced"] == 1
+    reopened.save(do_backup=False)
+
+    final = PptxPackage(doc)
+    assert final.raw_part("ppt/diagrams/data1.xml") == original_data
+    assert [(item["slide_index"], item["text"]) for item in diagram_text(final)["items"]] == [
+        (0, "Original node"),
+        (1, "Copy only"),
+    ]
+
+
+def test_duplicate_smartart_integrity_guard_rejects_shared_parts(
+    make_deck, monkeypatch,
+):
+    doc = make_deck(extra_slides=0)
+    pkg = PptxPackage(doc)
+    _attach_smartart(pkg, pkg.slide_parts()[0])
+
+    # Simulate the old copier: it leaves every diagram relationship aimed at
+    # the source family. The post-copy guard must stop the apparent success.
+    monkeypatch.setattr(
+        slide_ops,
+        "_clone_diagram_bundle",
+        lambda pkg, src, new, rels: ({}, 0),
+    )
+    with pytest.raises(ValidationFailed, match="shares mutable SmartArt"):
+        slide_ops.duplicate_slide(pkg, 0)
+
+
 def test_duplicate_by_slide_id_and_position(make_deck):
     doc = make_deck()
     pkg = PptxPackage(doc)
@@ -756,11 +960,27 @@ def test_create_presentation_refusals(tmp_path, make_deck):
     dest.write_bytes(b"occupied")
     with pytest.raises(PptMcpError, match="already exists"):
         create_presentation(dest, doc)
-    with pytest.raises(PptMcpError, match="must be a .pptx"):
-        create_presentation(tmp_path / "out.potx", doc)
+    with pytest.raises(PptMcpError, match=".pptx presentation or .potx"):
+        create_presentation(tmp_path / "out.ppsx", doc)
     with pytest.raises(Exception, match="no template file"):
         create_presentation(tmp_path / "out.pptx", tmp_path / "missing.potx")
     assert not (tmp_path / "out.pptx").exists()
+
+
+def test_create_presentation_writes_real_potx_content_type(tmp_path, make_deck):
+    src = make_deck("source.pptx")
+    dest = tmp_path / "brand-template.potx"
+    result = create_presentation(dest, src)
+    assert result["converted_content_type"] is True
+    assert result["slides_kept"] == 0
+    pkg = PptxPackage(dest)
+    ct = pkg.root("[Content_Types].xml")
+    (override,) = [
+        node for node in ct.findall(qn("ct:Override"))
+        if node.get("PartName") == "/" + PRESENTATION_PART
+    ]
+    assert override.get("ContentType") == CT_TEMPLATE_MAIN
+    assert _design_parts(dest) == _design_parts(src)
 
 
 def test_create_presentation_blank(tmp_path):
@@ -771,3 +991,54 @@ def test_create_presentation_blank(tmp_path):
     insert_slide(pkg, 0)
     pkg.save(do_backup=False)
     assert _oracle_slide_count(dest) == 1
+
+
+def test_create_presentation_reports_inherited_label_and_core(tmp_path):
+    from kitchensink4ppt.ops.labels import (
+        CT_LABELS, LABEL_PART, RT_LABELS, read_label,
+    )
+
+    template = tmp_path / "labelled.pptx"
+    create_presentation(template)
+    pkg = PptxPackage(template)
+    pkg.add_part_with_content_type(
+        LABEL_PART,
+        b'<?xml version="1.0" encoding="UTF-8"?>'
+        b'<clbl:labelList xmlns:clbl="http://schemas.microsoft.com/office/'
+        b'2020/mipLabelMetadata"><clbl:label id="{LABEL-GUID-1}" enabled="1" '
+        b'method="Standard" siteId="{SITE}"/></clbl:labelList>',
+        CT_LABELS,
+    )
+    pkg.add_relationship("", RT_LABELS, LABEL_PART)
+    core = pkg.root("docProps/core.xml")
+    ns = {
+        "cp": "http://schemas.openxmlformats.org/package/2006/metadata/core-properties",
+        "dc": "http://purl.org/dc/elements/1.1/",
+    }
+    for xpath, text in (
+        ("dc:title", "Board Q3"), ("cp:lastModifiedBy", "Alice"),
+        ("cp:revision", "7"),
+    ):
+        node = core.find(xpath, ns)
+        if node is None:
+            pre, local = xpath.split(":")
+            node = etree.SubElement(core, "{%s}%s" % (ns[pre], local))
+        node.text = text
+    pkg.mark_dirty("docProps/core.xml")
+    pkg.save()
+    assert read_label(PptxPackage(template))["id"] == "{LABEL-GUID-1}"
+
+    dest = tmp_path / "child.pptx"
+    res = create_presentation(dest, template)
+    assert res["sensitivity_label"] == {
+        "decision": "inherited_from_template", "id": "{LABEL-GUID-1}",
+    }
+    assert res["core_properties"] == {
+        "title": "Board Q3", "last_modified_by": "Alice", "revision": "7",
+    }
+    # behaviour unchanged: the copy still carries the label
+    assert read_label(PptxPackage(dest))["id"] == "{LABEL-GUID-1}"
+
+    plain = create_presentation(tmp_path / "plain.pptx")
+    assert plain["sensitivity_label"] == {"decision": "none", "id": None}
+    assert isinstance(plain["core_properties"], dict)

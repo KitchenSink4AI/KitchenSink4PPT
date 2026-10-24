@@ -48,6 +48,7 @@ title carries product or marketing language.
 | `copy_format` | Copy Format | mechanical |
 | `copy_position` | Copy Position | mechanical |
 | `copy_presentation` | Copy Presentation | mechanical |
+| `copy_shape_between` | Copy Shape Between Decks | first clause of its description |
 | `copy_slide_between` | Copy Slide Between Decks | first clause of its description |
 | `create_chart` | Create Chart | mechanical |
 | `create_layout` | Create Layout | mechanical |
@@ -69,6 +70,7 @@ title carries product or marketing language.
 | `enable_tools` | Enable Tools | mechanical |
 | `export_handout` | Export Handout | mechanical |
 | `export_pdf` | Export PDF | mechanical |
+| `export_shape_image` | Export Shape Image | mechanical |
 | `export_slide_image` | Export Slide Image | mechanical |
 | `export_table` | Export Table | mechanical |
 | `extract_brand` | Extract Brand | mechanical |
@@ -155,6 +157,7 @@ title carries product or marketing language.
 | `set_reading_order` | Set Reading Order | mechanical |
 | `set_row_heights` | Set Row Heights | mechanical |
 | `set_shape` | Set Shape | mechanical |
+| `set_shape_adjustments` | Set Shape Adjustments | mechanical |
 | `set_show_properties` | Set Show Properties | mechanical |
 | `set_slide_background` | Set Slide Background | mechanical |
 | `set_slide_hidden` | Set Slide Hidden | mechanical |
@@ -169,5 +172,7 @@ title carries product or marketing language.
 | `ungroup_shapes` | Ungroup Shapes | mechanical |
 | `unmerge_cells` | Unmerge Cells | mechanical |
 | `update_chart_data` | Update Chart Data | mechanical |
+| `update_notices` | Update Notices | mechanical |
+| `update_now` | Update Now | mechanical |
 | `validate` | Validate Presentation | first clause of its description |
 | `zombie_check` | Zombie Process Check | first clause of its description |

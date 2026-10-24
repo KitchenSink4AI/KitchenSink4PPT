@@ -4,8 +4,8 @@ Contract (all ops modules): every function takes the open PptxPackage first,
 mutates only the in-memory package, calls pkg.mark_dirty() on every part it
 touches, and returns a summary dict. Nothing here writes to disk.
 
-The emitted structure is GROUND-TRUTHED against PowerPoint 365 output on
-this machine:
+The emitted structure is GROUND-TRUTHED against PowerPoint 365 output (COM
+AddMediaObject2 of an mp4 + wav, package unzipped and copied exactly):
 - media bytes live at ppt/media/mediaN.<ext> (mediaN numbering is its own
   sequence, separate from imageN), registered by extension Default in
   [Content_Types].xml (mp4 -> video/mp4, wav -> audio/x-wav, observed;
@@ -46,8 +46,9 @@ from pathlib import Path
 from lxml import etree
 
 from ..core.errors import PptMcpError, UnsupportedStructure
-from ..core.package import NSMAP, PptxPackage, qn, rels_name
+from ..core.package import NSMAP, PptxPackage, qn, rels_name, seat_ahead_of_extlst
 from ..core.sandbox import check_path
+from ..core.xmlbool import attr_bool
 from . import geometry as g
 from . import media as _media
 from .read import resolve_slide
@@ -290,7 +291,7 @@ def _insert_av(
     display = name or (
         f"Video {shape_id}" if kind == "video" else f"Audio {shape_id}"
     )
-    pic = etree.SubElement(sp_tree, qn("p:pic"))
+    pic = seat_ahead_of_extlst(sp_tree, etree.SubElement(sp_tree, qn("p:pic")))
     nv = etree.SubElement(pic, qn("p:nvPicPr"))
     cnvpr = etree.SubElement(nv, qn("p:cNvPr"))
     cnvpr.set("id", str(shape_id))
@@ -446,7 +447,9 @@ def insert_audio(
 
 # ======================================================= playback settings
 #
-# GROUND TRUTH:
+# GROUND TRUTH (PowerPoint 365: an audio deck written by this server, opened
+# by COM, playback set through Shape.AnimationSettings.PlaySettings, saved,
+# unzipped):
 #
 #   <p:audio><p:cMediaNode vol="80000" showWhenStopped="0">
 #     <p:cTn id="7" repeatCount="indefinite" fill="remove" display="0">
@@ -638,14 +641,14 @@ def get_media_playback(pkg: PptxPackage, slide, shape: int) -> dict:
     ctn = node.find(qn("p:cTn"))
     state["loop"] = ctn is not None and ctn.get("repeatCount") == "indefinite"
     state["rewind"] = ctn is not None and ctn.get("fill") == "remove"
-    state["mute"] = node.get("mute") in ("1", "true")
+    state["mute"] = attr_bool(node, "mute")
     if node.get("vol") is not None:
         state["volume"] = round(int(node.get("vol")) / 100000, 3)
-    state["show_when_stopped"] = node.get("showWhenStopped") not in ("0", "false")
+    state["show_when_stopped"] = attr_bool(node, "showWhenStopped", True)
     if node.get("numSld") is not None:
         state["play_across_slides"] = int(node.get("numSld"))
     if wrapper is not None and wrapper.tag == qn("p:video"):
-        state["full_screen"] = wrapper.get("fullScrn") in ("1", "true")
+        state["full_screen"] = attr_bool(wrapper, "fullScrn")
     return state
 
 

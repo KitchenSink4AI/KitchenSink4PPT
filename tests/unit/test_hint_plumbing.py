@@ -1,22 +1,23 @@
 """Regressions for the hint-plumbing fixes:
-1. apply_edits first-pass aggregation propagates per-edit hint_tools.
+1. apply_edits resolve-phase aggregation propagates per-edit hint_tools.
 2. The "op not batchable" refusal declares hint_tools when the op names a
-   real registered tool (and stays silent for made-up names, per M8).
+   real registered tool (and stays silent for made-up names).
 3. tables.py delete-everything refusals use the wire name delete_shape,
    declare hint_tools, and mention the lite apply_edits alternative.
 4. tables.py merge-seam refusals declare unmerge_cells.
 5. text.py empty-body refusal declares insert_textbox (reachable through a
-   batched format_text; the second-pass re-wrap must keep it alive).
+   batched format_text; the apply-phase re-wrap must keep it alive).
 6. get_presentation_view states BOTH cell-address conventions.
 """
 
 from __future__ import annotations
 
 import re
+import inspect
 
 import pytest
 
-from kitchensink4ppt import packs, server
+from kitchensink4ppt import server
 from kitchensink4ppt.core.errors import (
     PptMcpError,
     TargetNotFound,
@@ -26,15 +27,7 @@ from kitchensink4ppt.core.package import PptxPackage, qn
 from kitchensink4ppt.ops import batch, read, tables
 from kitchensink4ppt.ops import text as text_ops
 from kitchensink4ppt.ops import view as view_ops
-
-
-@pytest.fixture(autouse=True)
-def _restore_surface():
-    before = dict(packs._ENABLED)
-    yield
-    packs._ENABLED.clear()
-    packs._ENABLED.update(before)
-    server._PENDING_VISIBILITY.clear()
+from kitchensink4ppt.surface import envelope
 
 
 def _table_loc(pkg: PptxPackage) -> tuple[int, int]:
@@ -45,24 +38,24 @@ def _table_loc(pkg: PptxPackage) -> tuple[int, int]:
 # ------------------------------------------------- fix 2: not-batchable hint
 
 
-def test_unknown_op_that_is_a_real_tool_declares_hint(make_deck):
+def test_unknown_batch_op_names_the_available_operation(make_deck):
     pkg = PptxPackage(make_deck("hint1.pptx"))
     with pytest.raises(PptMcpError) as ei:
         batch.apply_edits(
             pkg, [{"op": "insert_shape", "slide": 0, "shape": 2}]
         )
-    assert getattr(ei.value, "hint_tools", None) == ["insert_shape"]
-    # On the wire: the refusal envelope names the pack and enable_tools.
-    hint = server._refusal(ei.value)["error"]["hint"]
-    assert "enable_tools" in hint and "graphics" in hint
+    assert "insert_shape" in str(ei.value)
+    hint = envelope.refusal(ei.value)["error"]["hint"]
+    assert hint
+    assert "enable_tools" not in hint
 
 
 def test_unknown_op_made_up_name_gets_no_hint(make_deck):
     pkg = PptxPackage(make_deck("hint2.pptx"))
     with pytest.raises(PptMcpError) as ei:
         batch.apply_edits(pkg, [{"op": "make_sandwich"}])
-    assert getattr(ei.value, "hint_tools", None) in (None, [])
-    assert "enable_tools" not in server._refusal(ei.value)["error"]["hint"]
+    assert "make_sandwich" in str(ei.value)
+    assert "enable_tools" not in envelope.refusal(ei.value)["error"]["hint"]
 
 
 def test_unknown_op_naming_a_lite_tool_gets_no_wire_hint(make_deck):
@@ -71,7 +64,7 @@ def test_unknown_op_naming_a_lite_tool_gets_no_wire_hint(make_deck):
     pkg = PptxPackage(make_deck("hint3.pptx"))
     with pytest.raises(PptMcpError) as ei:
         batch.apply_edits(pkg, [{"op": "insert_slide", "slide": 0}])
-    assert "enable_tools" not in server._refusal(ei.value)["error"]["hint"]
+    assert "enable_tools" not in envelope.refusal(ei.value)["error"]["hint"]
 
 
 # ---------------------------------------- fix 1: aggregation keeps hint_tools
@@ -88,13 +81,13 @@ def test_cell_anchor_hint_survives_batch_aggregation(make_deck):
     with pytest.raises(PptMcpError) as ei:
         batch.apply_edits(pkg, [{"op": "set_shape", "anchor": anchor, "w": 2}])
     assert "set_table_cells" in (getattr(ei.value, "hint_tools", None) or [])
-    hint = server._refusal(ei.value)["error"]["hint"]
-    assert "enable_tools" in hint and "tables-charts" in hint
+    hint = envelope.refusal(ei.value)["error"]["hint"]
+    assert hint and "enable_tools" not in hint
 
 
 def test_apply_time_hint_survives_rewrap(make_deck):
     """format_text on a table resolves fine but refuses at APPLY time; the
-    phase-2 re-wrap must carry the raise site's hint_tools."""
+    apply-phase re-wrap must carry the raise site's hint_tools."""
     deck = make_deck("hint5.pptx")
     pkg = PptxPackage(deck)
     slide_index, tid = _table_loc(pkg)
@@ -105,8 +98,8 @@ def test_apply_time_hint_survives_rewrap(make_deck):
               "bold": True}],
         )
     assert "set_table_cells" in (getattr(ei.value, "hint_tools", None) or [])
-    hint = server._refusal(ei.value)["error"]["hint"]
-    assert "enable_tools" in hint and "tables-charts" in hint
+    hint = envelope.refusal(ei.value)["error"]["hint"]
+    assert hint and "enable_tools" not in hint
 
 
 # --------------------------------------- fix 3: delete-everything wire names
@@ -124,9 +117,9 @@ def test_delete_all_rows_names_wire_tool(make_deck):
     assert "shapes.delete_shape" not in msg  # the old internal name
     assert "delete_shape" in msg
     assert "apply_edits" in msg  # the lite alternative
-    assert getattr(ei.value, "hint_tools", None) == ["delete_shape"]
-    hint = server._refusal(ei.value)["error"]["hint"]
-    assert "enable_tools" in hint and "graphics" in hint
+    assert getattr(ei.value, "hint_tools", None) in (None, [])
+    hint = envelope.refusal(ei.value)["error"]["hint"]
+    assert hint and "enable_tools" not in hint
 
 
 def test_delete_all_cols_names_wire_tool(make_deck):
@@ -138,7 +131,7 @@ def test_delete_all_cols_names_wire_tool(make_deck):
             pkg, slide_index, {"shape_id": tid}, 0, grid["cols"]
         )
     assert "shapes.delete_shape" not in str(ei.value)
-    assert getattr(ei.value, "hint_tools", None) == ["delete_shape"]
+    assert "delete_shape" in str(ei.value)
 
 
 # ------------------------------------------- fix 4: merge-seam origin hints
@@ -179,9 +172,9 @@ def test_empty_body_refusal_declares_insert_textbox(make_deck):
         body.remove(p)  # a genuinely empty text body
     with pytest.raises(TargetNotFound) as ei:
         text_ops.format_text(pkg, 0, res["shape_id"], bold=True)
-    assert getattr(ei.value, "hint_tools", None) == ["insert_textbox"]
-    hint = server._refusal(ei.value)["error"]["hint"]
-    assert "enable_tools" in hint and "graphics" in hint
+    assert "insert_textbox" in str(ei.value)
+    hint = envelope.refusal(ei.value)["error"]["hint"]
+    assert hint and "enable_tools" not in hint
 
 
 # ------------------------------------------- fix 6: both basing conventions
@@ -198,5 +191,5 @@ def test_view_states_both_cell_conventions(make_deck):
 
 
 def test_view_docstring_states_both_conventions():
-    desc = packs.tool_objects()["get_presentation_view"].description
+    desc = inspect.getdoc(server.get_presentation_view) or ""
     assert "1-based" in desc and "0-based" in desc

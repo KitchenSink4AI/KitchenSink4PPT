@@ -1,7 +1,7 @@
 """COM harness: open presentations in invisible PowerPoint; fail on anything
 that does not load clean.
 
-Run before a release (slow; launches real PowerPoint):
+Run at phase gates (slow; launches real PowerPoint):
     .venv/Scripts/python.exe -X utf8 tests/ppt_validator.py <file-or-dir> [...]
 
 A file passes only if PowerPoint opens it with no repair/recovery dialog and

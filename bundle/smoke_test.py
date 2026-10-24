@@ -4,7 +4,7 @@ Checks, in order:
   1. The .mcpb unzips and contains exactly manifest.json + icon.png.
   2. manifest.json parses, carries the required fields, declares the
      binary/uvx launcher shape, pins the PyPI version to the manifest
-     version, and has NO tools array (Smithery cli bug #787).
+     version, and has NO tools array (a Smithery registry constraint).
   3. If the mcpb CLI is on PATH, `mcpb validate` passes on the extracted
      manifest.
   4. If uvx is available (PATH or next to this interpreter), launches
@@ -88,7 +88,9 @@ def main() -> int:
             cfg.get("args") == [expected_arg],
             str(cfg.get("args")),
         )
-        check("no tools array (Smithery bug #787)", "tools" not in m)
+        check("env carries only the bundle install route",
+              cfg.get("env") == {"KS4P_INSTALL_ROUTE": "mcpb"}, str(cfg.get("env")))
+        check("no tools array (Smithery registry constraint)", "tools" not in m)
         check("license is AGPL-3.0-only",
               m.get("license") == "AGPL-3.0-only", str(m.get("license")))
 

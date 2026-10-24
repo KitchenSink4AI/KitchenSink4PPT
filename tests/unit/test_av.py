@@ -3,7 +3,7 @@ structure (three rels, p14:media extension, click-to-play affordance),
 format sniffing with refusals by name, media dedup, poster handling, and a
 COM round that both opens the deck clean AND reads Shape.MediaType back to
 prove the media registered (ppMediaTypeMovie=3 / ppMediaTypeSound=2, the
-constants observed in a ground-truth run)."""
+constants observed in a ground-truth COM run)."""
 
 from __future__ import annotations
 

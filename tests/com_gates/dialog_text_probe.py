@@ -2,7 +2,7 @@
 
 Discovery (dialog_class_discovery.py) proved PowerPoint's modal alert is
 class NUIDialog, but the detector reported it with a title of "Microsoft
-PowerPoint" and NO body text, because the static-text
+PowerPoint" and NO body text, because the Word-derived static-text
 extraction only looks at Static/RichEdit20W children. This dumps every
 descendant class + text of a real PowerPoint modal so the extraction can
 be widened to whatever PowerPoint actually uses.

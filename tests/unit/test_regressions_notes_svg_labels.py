@@ -1,5 +1,5 @@
-"""Regression tests for four defects, each with the repro that failed before
-the fix:
+"""Four defects reproduced against shipped code, each with the repro that
+failed before the fix:
 
 1. Notes round-trip destroyed formatting. get_notes returned a flat string and
    set_notes wrote plain single-style paragraphs, so writing back the string

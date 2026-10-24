@@ -60,24 +60,20 @@ def _slide_xml_chars(path: Path, *, worst_slide: bool = False) -> int:
 #:
 #: Slide XML is markup wrapped around the text a read returns, so the JSON
 #: payload comes out several times smaller than the XML that produced it.
-#: Measured on this corpus: `proposal_deck.pptx` carries 203,445
-#: characters of slide XML and every read of it lands under the
-#: 60,000-character default, which is what the small-read pins below
-#: assert, and the other decks sit at the same order of ratio. Four is
-#: picked to clear both edges by a wide margin at every ceiling these tests
-#: use: the synthetic stand-ins top out at 35,490 characters of slide XML
-#: and skip at all of them, while the decks (6,912,608 for
-#: heavy_deck, 364,343 in its heaviest single slide) run at all of them.
+#: A read of a deck comes out several times smaller than the deck's slide
+#: XML, which is what the small-read pins below assert. Four is picked to
+#: clear both edges by a wide margin at every ceiling these tests use: the
+#: generated decks top out at about 35,000 characters of slide XML and
+#: skip at all of them, while a deck with a few hundred thousand
+#: characters of slide XML (or one slide that heavy) runs at all of them.
 XML_TO_PAYLOAD_MARGIN = 4
 
 
 def _deck_that_can_overflow(name: str, *, worst_slide: bool = False) -> Path:
     """A deck heavy enough that a read of it CAN exceed the ceiling in force.
 
-    WHY THIS GUARD EXISTS. The suite runs against a corpus of decks
-    when one is present and against synthetic structural stand-ins when it
-    is not (see tests/conftest.py). The stand-ins are a few slides of
-    generated filler. Every test below pins the behaviour of a read that
+    WHY THIS GUARD EXISTS. The suite runs against generated decks (see
+    tests/make_corpus.py), a few slides of filler each. Every test below pins the behaviour of a read that
     had to be CUT SHORT, and a deck that fits under the ceiling is never
     cut short, so on a stand-in these tests were not failing on a contract:
     they were reaching for a `page` block that correctly did not exist.
@@ -109,9 +105,9 @@ def _deck_that_can_overflow(name: str, *, worst_slide: bool = False) -> Path:
             f"{name} is too small to truncate: {what} runs to {weight:,} "
             f"characters, under the {threshold:,} needed to overflow the "
             f"{ceiling:,}-character output ceiling in force, so no read of "
-            f"it can be cut short. This is the synthetic stand-in rather "
-            f"than the corpus deck; drop a full-size file into "
-            f"tests/corpus/ to run this pin."
+            f"it can be cut short. The generated deck is too light for "
+            f"this pin, which waits for a heavier generated deck "
+            f"(tests/make_corpus.py)."
         )
     return path
 
@@ -135,9 +131,9 @@ def _deck_with_stored_media(name: str) -> Path:
     if not stored:
         pytest.skip(
             f"{name} carries no ZIP_STORED entries, so there is nothing for "
-            f"the save path to preserve uncompressed. This is the synthetic "
-            f"stand-in rather than the corpus deck; drop a full-size file "
-            f"into tests/corpus/ to run this pin."
+            f"the save path to preserve uncompressed. The generated deck "
+            f"deflates every entry, so this pin waits for a generated deck "
+            f"with stored media (tests/make_corpus.py)."
         )
     return path
 
@@ -299,6 +295,11 @@ def test_small_deck_payloads_are_byte_identical_to_the_unbudgeted_shape():
     assert text["slide_count"] == len(text["slides"])
 
     found = rd.find_text(pkg, "the")
+    # This deck also says "The", which an exact-case search leaves out and
+    # names in case_note; with match_case=False there is nothing to name.
+    assert list(found) == ["query", "regex", "count", "case_note", "matches"]
+    assert found["count"] == len(found["matches"])
+    found = rd.find_text(pkg, "the", match_case=False)
     assert list(found) == ["query", "regex", "count", "matches"]
     assert found["count"] == len(found["matches"])
 

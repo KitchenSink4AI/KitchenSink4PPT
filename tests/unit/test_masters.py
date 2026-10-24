@@ -1,10 +1,9 @@
-"""Master and layout editing : the corpus inventory round on
-the proposal deck, the title-size inheritance proof (master default
-changes, the slide XML does not), layout placeholder add/remove with usage
-warnings, decoration shapes on master and layout, create_layout then
-insert_slide end-to-end, background set/clear, refusals, and a COM
-opens-clean round (tasklist-gated, skips honestly when the user's
-PowerPoint is open).
+"""Master and layout editing: the corpus inventory of the proposal
+deck, the title-size inheritance proof (master default changes, the slide
+XML does not), layout placeholder add/remove with usage warnings,
+decoration shapes on master and layout, create_layout then insert_slide
+end-to-end, background set/clear, refusals, and a COM opens-clean round
+(tasklist-gated, skips honestly when the user's PowerPoint is open).
 
 Every mutating test saves through pkg.save(), which runs the payload
 validation gate (dangling rels, sldIdLst integrity, coordinate ceiling), so
@@ -197,6 +196,7 @@ def test_set_layout_placeholder_override(tmp_path):
     lay = _layout_with(inv["masters"][0], "title", "body")
     res = masters.set_layout_placeholder(
         pkg, "title", layout=lay["index"], size=20, color="1F4E79",
+        align="right", caps="none",
         x=1.0, y=0.5, w=8.0, h=1.0,
     )
     assert res["text_defaults_set"]["target"] == "layout placeholder lstStyle"
@@ -213,6 +213,8 @@ def test_set_layout_placeholder_override(tmp_path):
                 f"{qn('a:defRPr')}"
             )
             assert rpr is not None and rpr.get("sz") == "2000"
+            assert rpr.getparent().get("algn") == "r"
+            assert rpr.get("cap") == "none"
             srgb = rpr.find(f"{qn('a:solidFill')}/{qn('a:srgbClr')}")
             assert srgb is not None and srgb.get("val") == "1F4E79"
             break
@@ -234,7 +236,10 @@ def test_add_remove_layout_placeholder_with_usage_warning(tmp_path):
     new_idx = res["idx"]
     sig = masters.list_master_elements(pkg)["masters"][0]
     lay_after = next(l for l in sig["layouts"] if l["part"] == lay["part"])
-    assert {"type": "pic", "idx": new_idx} in lay_after["placeholders"]
+    assert any(
+        p["type"] == "pic" and p["idx"] == new_idx
+        for p in lay_after["placeholders"]
+    )
 
     # Refusals: duplicate idx, second title, junk type.
     with pytest.raises(PptMcpError, match="already used"):
@@ -264,7 +269,10 @@ def test_add_remove_layout_placeholder_with_usage_warning(tmp_path):
     reopened = PptxPackage(path)
     sig2 = masters.list_master_elements(reopened)["masters"][0]
     lay_final = next(l for l in sig2["layouts"] if l["part"] == lay["part"])
-    assert {"type": "pic", "idx": new_idx} not in lay_final["placeholders"]
+    assert not any(
+        p["type"] == "pic" and p["idx"] == new_idx
+        for p in lay_final["placeholders"]
+    )
     # The slide keeps its shape (only layout inheritance is gone).
     assert any(
         p["type"] == "pic"
@@ -456,9 +464,14 @@ def test_placeholder_selector_forms_and_ambiguity(tmp_path):
     path, pkg = _blank_deck(tmp_path, "sel.pptx")
     master_part = masters._master_parts(pkg)[0]
     recs = masters._ph_records(pkg, master_part)
-    # Shape-id addressing hits the same placeholder as the type token.
+    # Bare integers are placeholder idx values, matching set_placeholder_text;
+    # shape-id addressing must be explicit.
     body = next(r for r in recs if r["type"] == "body")
-    by_id = masters._resolve_ph(pkg, master_part, body["shape_id"])
+    by_int = masters._resolve_ph(pkg, master_part, body["idx"])
+    assert by_int["shape_id"] == body["shape_id"]
+    by_id = masters._resolve_ph(
+        pkg, master_part, {"shape_id": body["shape_id"]}
+    )
     assert by_id["type"] == "body"
     by_dict = masters._resolve_ph(pkg, master_part, {"idx": body["idx"]})
     assert by_dict["shape_id"] == body["shape_id"]
@@ -475,12 +488,76 @@ def test_placeholder_selector_forms_and_ambiguity(tmp_path):
             break
 
 
+def test_two_content_integer_selector_means_placeholder_idx(tmp_path):
+    """ph=2 must target idx 2, never shape id 2."""
+    _path, pkg = _blank_deck(tmp_path, "selector.pptx")
+    inv = masters.list_master_elements(pkg)["masters"][0]
+    layout = next(l for l in inv["layouts"] if l["name"] == "Two Content")
+    records = masters._ph_records(pkg, layout["part"])
+    title = next(r for r in records if r["shape_id"] == 2)
+    second = next(r for r in records if r["idx"] == 2)
+    assert title["type"] in {"title", "ctrTitle"}
+    assert second["shape_id"] != title["shape_id"]
+
+    res = masters.set_layout_placeholder(
+        pkg, 2, layout=layout["index"], size=19
+    )
+    assert f"idx {second['idx']}" in res["placeholder"]
+    assert f"shape {second['shape_id']}" in res["placeholder"]
+    explicit_title = masters._resolve_ph(
+        pkg, layout["part"], {"shape_id": title["shape_id"]}
+    )
+    assert explicit_title["idx"] == title["idx"]
+
+
+def test_master_text_defaults_report_and_clear_layout_shadowing(tmp_path):
+    _path, pkg = _blank_deck(tmp_path, "shadow-text.pptx")
+    res = masters.set_master_placeholder(
+        pkg, "title", size=31, align="left", caps="small"
+    )
+    assert res["text_defaults_set"]["written"]["align"] == "left"
+    assert res["text_defaults_set"]["written"]["caps"] == "small"
+    assert res["layout_overrides_preserved"]
+    assert res["warnings"]
+
+    cleared = masters.set_master_placeholder(
+        pkg, "title", size=32, align="center", caps="none",
+        clear_layout_overrides=True,
+    )
+    assert cleared["layout_overrides_cleared"]
+    section = next(
+        l for l in masters.list_master_elements(pkg)["masters"][0]["layouts"]
+        if l["name"] == "Section Header"
+    )
+    title = next(
+        p for p in section["placeholders"]
+        if p["type"] in {"title", "ctrTitle"}
+    )
+    overrides = title["text_overrides_lvl1"]
+    assert "size_pt" not in overrides
+    assert "align" not in overrides
+    assert "caps" not in overrides
+    assert overrides.get("bold") is True  # unrelated style survives
+
+
+def test_invalid_alignment_and_caps_refuse_before_mutation(tmp_path):
+    _path, pkg = _blank_deck(tmp_path, "invalid-text.pptx")
+    master_part = masters._master_parts(pkg)[0]
+    before = pkg.raw_part(master_part)
+    with pytest.raises(PptMcpError, match="align"):
+        masters.set_master_placeholder(pkg, "title", align="diagonal")
+    with pytest.raises(PptMcpError, match="caps"):
+        masters.set_master_placeholder(pkg, "title", caps="loud")
+    assert pkg.raw_part(master_part) == before
+    assert not pkg._dirty
+
+
 # ---------------------------------------------------------------- COM gate
 
 
 @pytest.mark.live
 def test_master_edited_deck_opens_clean_in_powerpoint(tmp_path):
-    """COM ground truth on a deck that took the whole master and layout surface:
+    """COM ground truth on a deck that took the whole master/layout surface:
     master title default, decoration shape, new layout, background, and a
     slide on the new layout. Subprocess-isolated and tasklist-gated."""
     com_validate.com_gate()

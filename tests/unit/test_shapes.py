@@ -3,7 +3,7 @@ connectors, groups, align/distribute, z-order, and THE acceptance test (a
 three-node process diagram with a central hub).
 
 Every mutated deck is saved, which runs pkg._validate_payload. XML structure
-asserts follow the skeletons PowerPoint writes, including the two
+asserts follow the ground-truth skeletons, including the two
 mandatory emission rules: path w/h == EMU extents, and no a:arcTo anywhere.
 """
 
@@ -504,12 +504,12 @@ ARTIFACTS = Path(__file__).parents[1] / "artifacts"
 
 
 class TestProcessDiagramAcceptance:
-    """The process diagram built natively, then tweaked by shape id. This is the
-    graphics acceptance gate: labeled vertex nodes, central Hub node, glued spokes,
-    curved perimeter cycle with arrowheads, L/A badges, one group; then the
-    Hub node moves and one edge goes dashed red WITHOUT rebuilding, and every
-    stCxn survives. Artifacts land in tests/artifacts/ for the COM render
-    gate."""
+    """The process diagram built natively, then tweaked by shape id.
+    This is the acceptance gate: labeled vertex nodes, central Hub node,
+    glued spokes, curved perimeter cycle with arrowheads, In/Out badges, one
+    group; then the Hub node moves and one edge goes dashed red WITHOUT
+    rebuilding, and every stCxn survives. Artifacts land in tests/artifacts/
+    for the COM render gate."""
 
     def test_build_tweak_and_glue_survival(self):
         import process_diagram_builder
@@ -526,7 +526,7 @@ class TestProcessDiagramAcceptance:
         slide_info = get_slide_info(pkg, slide)
         by_id = {s["id"]: s for s in slide_info["shapes"]}
         assert by_id[info["group_id"]]["type"] == "group"
-        for key in ("goals", "tasks", "bonds", "mplus", "badge_l", "badge_a"):
+        for key in ("plan", "build", "ship", "hub", "badge_in", "badge_out"):
             assert by_id[ids[key]]["group_id"] == info["group_id"]
         connectors = [k for k in ids if k.startswith(("spoke", "edge"))]
         assert len(connectors) == 6
@@ -536,18 +536,18 @@ class TestProcessDiagramAcceptance:
             cnv = elem.find(f"{qn('p:nvCxnSpPr')}/{qn('p:cNvCxnSpPr')}")
             assert cnv.find(qn("a:stCxn")) is not None, key
             assert cnv.find(qn("a:endCxn")) is not None, key
-        for key in ("edge_gt", "edge_tb", "edge_bg"):
+        for key in ("edge_pb", "edge_bs", "edge_sp"):
             elem, _chain = shp._find_shape(pkg, part, ids[key])
             prst = elem.find(f"{qn('p:spPr')}/{qn('a:prstGeom')}")
             assert prst.get("prst") == "curvedConnector3"
             tail = elem.find(f"{qn('p:spPr')}/{qn('a:ln')}/{qn('a:tailEnd')}")
             assert tail is not None and tail.get("type") == "triangle"
-        mplus_before = shp._xfrm_box(
-            shp._xfrm_of(shp._find_shape(pkg, part, ids["mplus"])[0])
+        hub_before = shp._xfrm_box(
+            shp._xfrm_of(shp._find_shape(pkg, part, ids["hub"])[0])
         )
         spoke_before = {
             k: shp._xfrm_box(shp._xfrm_of(shp._find_shape(pkg, part, ids[k])[0]))
-            for k in ("spoke_g", "spoke_t", "spoke_b")
+            for k in ("spoke_plan", "spoke_build", "spoke_ship")
         }
         del pkg
 
@@ -558,20 +558,20 @@ class TestProcessDiagramAcceptance:
         results = process_diagram_builder.tweak(after, info)
         assert "geometry" in results["moved"]["changed"]
         assert set(results["moved"]["rerouted_connectors"]) == {
-            ids["spoke_g"], ids["spoke_t"], ids["spoke_b"]
+            ids["spoke_plan"], ids["spoke_build"], ids["spoke_ship"]
         }
         assert "line" in results["restyled"]["changed"]
 
         # Post-tweak: glue intact, spokes rerouted, hub actually moved.
         pkg = PptxPackage(after)
         part = get_slide_info(pkg, slide)["part"]
-        mplus_after = shp._xfrm_box(
-            shp._xfrm_of(shp._find_shape(pkg, part, ids["mplus"])[0])
+        hub_after = shp._xfrm_box(
+            shp._xfrm_of(shp._find_shape(pkg, part, ids["hub"])[0])
         )
-        assert mplus_after[0] - mplus_before[0] == pytest.approx(
+        assert hub_after[0] - hub_before[0] == pytest.approx(
             g.in_to_emu(0.4), abs=2
         )
-        assert mplus_after[1] - mplus_before[1] == pytest.approx(
+        assert hub_after[1] - hub_before[1] == pytest.approx(
             g.in_to_emu(-0.3), abs=2
         )
         for key in connectors:
@@ -584,7 +584,7 @@ class TestProcessDiagramAcceptance:
                 shp._xfrm_of(shp._find_shape(pkg, part, ids[k])[0])
             )
             assert after_box != box, f"{k} was not rerouted"
-        edge = shp._find_shape(pkg, part, ids["edge_bg"])[0]
+        edge = shp._find_shape(pkg, part, ids["edge_sp"])[0]
         ln = edge.find(f"{qn('p:spPr')}/{qn('a:ln')}")
         assert ln.find(qn("a:prstDash")).get("val") == "dash"
         assert (

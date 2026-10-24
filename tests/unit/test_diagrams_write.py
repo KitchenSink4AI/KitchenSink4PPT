@@ -50,8 +50,12 @@ def _sp_tree(pkg, part):
     return pkg.root(part).find(f"{qn('p:cSld')}/{qn('p:spTree')}")
 
 
-def _model_id(i: int) -> str:
-    return f"{{22222222-0000-0000-0000-{i:012d}}}"
+def _model_id(i: int, diagram: int = 1) -> str:
+    return f"{{22222222-0000-0000-0000-{diagram * 1000 + i:012d}}}"
+
+
+def _presentation_id(i: int, diagram: int = 1) -> str:
+    return f"{{33333333-0000-0000-0000-{diagram * 1000 + i:012d}}}"
 
 
 def add_smartart(
@@ -60,6 +64,7 @@ def add_smartart(
     texts: list[str],
     *,
     with_drawing: bool = True,
+    drawing_from_slide: bool = False,
     font: str = "Calibri",
 ) -> int:
     """A minimal legacy SmartArt frame: graphicFrame with dgm:relIds, the
@@ -78,12 +83,19 @@ def add_smartart(
     ]
     for i, t in enumerate(texts):
         pts.append(
-            f'<dgm:pt modelId="{_model_id(i)}">'
+            f'<dgm:pt modelId="{_model_id(i, n)}">'
             "<dgm:prSet/><dgm:spPr/><dgm:t><a:bodyPr/><a:lstStyle/><a:p>"
             f'<a:r><a:rPr lang="en-US" b="1"><a:latin typeface="{font}"/>'
             f"</a:rPr><a:t>{t}</a:t></a:r></a:p>"
             "</dgm:t></dgm:pt>"
         )
+        if drawing_from_slide:
+            pts.append(
+                f'<dgm:pt modelId="{_presentation_id(i, n)}" type="pres">'
+                f'<dgm:prSet presAssocID="{_model_id(i, n)}"/>'
+                '<dgm:spPr/><dgm:t><a:bodyPr/><a:lstStyle/>'
+                '<a:p><a:endParaRPr lang="en-US"/></a:p></dgm:t></dgm:pt>'
+            )
     data_xml = (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         f'<dgm:dataModel xmlns:dgm="{_DGM_NS}" xmlns:a="{_A_NS}">'
@@ -116,7 +128,8 @@ def add_smartart(
 
     if with_drawing:
         sps = "".join(
-            f'<dsp:sp modelId="{_model_id(i)}"><dsp:txBody><a:bodyPr/>'
+            f'<dsp:sp modelId="{_presentation_id(i, n) if drawing_from_slide else _model_id(i, n)}">'
+            '<dsp:txBody><a:bodyPr/>'
             f'<a:lstStyle/><a:p><a:r><a:rPr lang="en-US" b="1">'
             f'<a:latin typeface="{font}"/></a:rPr><a:t>{t}</a:t></a:r>'
             "</a:p></dsp:txBody></dsp:sp>"
@@ -134,9 +147,12 @@ def add_smartart(
             "application/vnd.ms-office.drawingml.diagramDrawing+xml",
         )
         pkg.add_relationship(
-            data_part,
+            part if drawing_from_slide else data_part,
             _RT_DRAWING,
-            posixpath.relpath(drawing_part, "ppt/diagrams"),
+            posixpath.relpath(
+                drawing_part,
+                posixpath.dirname(part if drawing_from_slide else data_part),
+            ),
         )
 
     rel_types = {
@@ -203,6 +219,52 @@ class TestSetDiagramText:
         assert [n["text"] for n in read.diagram_text(blank_deck)["items"][0]
                 ["nodes"]] == ["Plan", "Deliver", "Check", "Act"]
         assert _drawing_texts(blank_deck)[1] == "Deliver"
+
+    def test_powerpoint_slide_relationship_resolves_cached_drawing(
+        self, blank_deck
+    ):
+        """Current PowerPoint relates drawingN.xml from the slide rather
+        than dataN.xml; readers and writers must still find the cache."""
+        part = blank_deck.slide_parts()[0]
+        sid = add_smartart(
+            blank_deck,
+            part,
+            ["Before"],
+            drawing_from_slide=True,
+        )
+
+        listed = read.list_elements(blank_deck, "diagrams")
+        assert listed["items"][0]["drawing_part"] == (
+            "ppt/diagrams/drawing1.xml"
+        )
+
+        out = dg.set_diagram_text(
+            blank_deck, 0, sid, nodes=[{"index": 0, "text": "After"}]
+        )
+
+        assert out["drawing_part"] == "ppt/diagrams/drawing1.xml"
+        assert out["drawing_synced"] == 1
+        assert _drawing_texts(blank_deck) == ["After"]
+
+    def test_two_slide_related_drawings_resolve_by_model_ids(self, blank_deck):
+        part = blank_deck.slide_parts()[0]
+        add_smartart(blank_deck, part, ["First"], drawing_from_slide=True)
+        second = add_smartart(
+            blank_deck, part, ["Second"], drawing_from_slide=True
+        )
+
+        listed = read.list_elements(blank_deck, "diagrams")["items"]
+        assert [item["drawing_part"] for item in listed] == [
+            "ppt/diagrams/drawing1.xml",
+            "ppt/diagrams/drawing2.xml",
+        ]
+
+        out = dg.set_diagram_text(
+            blank_deck, 0, second, nodes=[{"index": 0, "text": "Changed"}]
+        )
+        assert out["drawing_part"] == "ppt/diagrams/drawing2.xml"
+        assert _drawing_texts(blank_deck, 1) == ["First"]
+        assert _drawing_texts(blank_deck, 2) == ["Changed"]
 
     def test_addressing_by_model_id(self, blank_deck):
         part = blank_deck.slide_parts()[0]
@@ -338,6 +400,32 @@ class TestSweepsReachSmartArt:
             "Income\nMargin"
         )
         assert _drawing_texts(blank_deck)[0] == "Income"
+
+    def test_search_and_replace_reaches_slide_linked_drawing_cache(
+        self, blank_deck, tmp_path
+    ):
+        """Current PowerPoint relates drawing caches from the slide.
+
+        With several SmartArt frames on one slide, search-and-replace must
+        update the cache whose model ids match the edited data model without
+        changing a sibling diagram.
+        """
+        part = blank_deck.slide_parts()[0]
+        add_smartart(
+            blank_deck, part, ["Leave Alone"], drawing_from_slide=True
+        )
+        add_smartart(
+            blank_deck, part, ["Lives Lost"], drawing_from_slide=True
+        )
+
+        res = text.search_and_replace(blank_deck, "Lives Lost", "Lives Taken")
+
+        assert res["total"] == 2  # the model and its cached drawing
+        assert res["slides"][0]["diagram_count"] == 2
+        saved = blank_deck.save(tmp_path / "modern-smartart.pptx")
+        reopened = PptxPackage(saved)
+        assert _drawing_texts(reopened, 1) == ["Leave Alone"]
+        assert _drawing_texts(reopened, 2) == ["Lives Taken"]
 
     def test_replace_fonts_reaches_diagram_text(self, blank_deck):
         part = blank_deck.slide_parts()[0]

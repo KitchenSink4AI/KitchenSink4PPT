@@ -32,7 +32,7 @@ The interdeck-into-fresh-shell route was rejected: link mode restyles and
 import mode multiplies masters per layout family for no benefit when the
 source design is wanted verbatim.
 
-generate_agenda_slide is ecosystem-first: a slide listing the deck's
+generate_agenda_slide writes a slide listing the deck's
 sections (or slide titles when unsectioned), each entry jump-linked to its
 target through ops/links.py's writer, so the links stay consistent with
 slide-delete GC. The agenda's shapes are tagged by name (KS4P Agenda ...)
@@ -50,8 +50,8 @@ from pathlib import Path
 
 from lxml import etree
 
+from ..core import authorship as _authorship
 from ..core.errors import (
-    DocumentNotFound,
     PptMcpError,
     TargetNotFound,
     UnsupportedStructure,
@@ -67,6 +67,8 @@ from ..core.package import (
     resolve_target,
 )
 from ..core.sandbox import check_path
+from ..core.swapwait import require_deck
+from ..core.xmlbool import attr_bool
 from ._runmap import HLINK_QNAMES
 from .comments import RT_LEGACY_AUTHORS, RT_MODERN_AUTHORS
 from .interdeck import (
@@ -76,9 +78,12 @@ from .interdeck import (
     _import_chart,
     _import_leaf,
     _import_notes_slide,
+    _merge_comment_authors,
+    _merge_legacy_comment_authors,
     _match_dest_layout,
     _rel_target_of_type,
     _sld_sz,
+    same_slide_size,
     _source_layout_of,
     _theme_bake_context,
     _import_design_family,
@@ -94,8 +99,11 @@ from .read import (
     shape_text,
     slide_table,
 )
+from .read import cnvpr_id
 from .slides import (
     RT_CHART,
+    RT_LEGACY_COMMENTS,
+    RT_MODERN_COMMENTS,
     RT_NOTES_SLIDE,
     _assign_section_membership,
     _create_section,
@@ -105,6 +113,7 @@ from .slides import (
     _serialize,
     _slide_entries,
     create_presentation,
+    creation_vals,
     delete_slide,
     insert_slide,
 )
@@ -184,6 +193,8 @@ _APP_FIELDS = {
     "company": f"{{{NS_EP}}}Company",
     "manager": f"{{{NS_EP}}}Manager",
 }
+#: The fields that name a person, which never take an email address.
+_AUTHOR_FIELDS = ("author", "last_modified_by")
 
 _W3CDTF = re.compile(
     r"\A\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2})?(Z|[+-]\d{2}:\d{2})?)?\Z"
@@ -216,7 +227,9 @@ def _copy_one_slide(
     importer context and design cache shared across the whole source deck."""
     new_part = dst.next_partname("ppt/slides/slide{}.xml")
     new_root = copy.deepcopy(src.root(src_slide_part))
-    guids = _regenerate_creation_ids(new_root)
+    if "creation_vals" not in ctx:
+        ctx["creation_vals"] = creation_vals(dst)
+    guids = _regenerate_creation_ids(new_root, ctx["creation_vals"])
     src_layout_part = _source_layout_of(src, src_slide_part)
 
     layout_match = None
@@ -262,6 +275,9 @@ def _copy_one_slide(
     src_rels = rels_name(src_slide_part)
     if src.has_part(src_rels):
         rels_root = copy.deepcopy(src.root(src_rels))
+        from .interdeck import _drop_missing_targets
+
+        _drop_missing_targets(src, src_slide_part, rels_root, new_root, warnings)
         for rel in list(rels_root):
             if rel.get("TargetMode") == "External":
                 continue
@@ -288,7 +304,14 @@ def _copy_one_slide(
                 )
             elif rel_type == RT_CHART:
                 new_target = _import_chart(src, dst, target, ctx)
-            else:  # media, embeddings, tags, comments, customXml, ...
+            elif rel_type == RT_MODERN_COMMENTS:
+                # As copy_slide_between does: the authors live in the source.
+                new_target = _import_leaf(src, dst, target, ctx)
+                _merge_comment_authors(src, dst, new_target, warnings)
+            elif rel_type == RT_LEGACY_COMMENTS:
+                new_target = _import_leaf(src, dst, target, ctx)
+                _merge_legacy_comment_authors(src, dst, new_target, warnings)
+            else:  # media, embeddings, tags, customXml, ...
                 new_target = _import_leaf(src, dst, target, ctx)
             rel.set("Target", _rel_target(new_part, new_target))
 
@@ -539,8 +562,7 @@ def merge_decks(
     for i, spath in enumerate(sources):
         src_file = Path(spath)
         check_path(src_file, "read source presentation")
-        if not src_file.exists():
-            raise DocumentNotFound(f"no source presentation at {src_file}")
+        require_deck(src_file, f"no source presentation at {src_file}")
         try:
             same = src_file.resolve() == pkg.path.resolve()
         except OSError:  # pragma: no cover
@@ -558,7 +580,7 @@ def merge_decks(
         _label_decision(pkg, src, src_file.name, label_state, labels, warnings)
 
         src_sz = _sld_sz(src)
-        if src_sz and dst_sz and src_sz != dst_sz:
+        if src_sz and dst_sz and not same_slide_size(src_sz, dst_sz):
             warnings.append(
                 f"slide size mismatch: {src_file.name} is "
                 f"{src_sz[0]}x{src_sz[1]} EMU, destination is "
@@ -728,8 +750,7 @@ def split_deck(
     error reports which pieces were already written."""
     src_file = Path(pkg_path)
     check_path(src_file, "read presentation")
-    if not src_file.exists():
-        raise DocumentNotFound(f"no presentation at {src_file}")
+    require_deck(src_file, f"no presentation at {src_file}")
     out_dir = Path(output_dir)
     check_path(out_dir / "probe.pptx", "create split output")
     if by not in ("section", "ranges"):
@@ -793,8 +814,9 @@ def split_deck(
             "nothing to split: every piece resolved empty"
         )
 
-    # Pre-flight EVERY output path before writing ANY piece: all names are computable up front, so a collision mid-run must
-    # refuse here, never after earlier pieces were already written.
+    # Pre-flight EVERY output path before writing ANY piece: all names are
+    # computable up front, so a collision mid-run must refuse here, never
+    # after earlier pieces were already written.
     if out_dir.exists() and not out_dir.is_dir():
         raise SplitOutputConflict(
             f"output_dir {out_dir} exists and is a file, not a directory; "
@@ -847,8 +869,8 @@ def split_deck(
             )
     except Exception as exc:
         # An unexpected mid-run failure must say what already landed on
-        # disk: the directory otherwise silently mixes
-        # this run's partial output with whatever was there before.
+        # disk: the directory otherwise silently mixes this run's partial
+        # output with whatever was there before.
         if not written:
             raise
         note = (
@@ -1003,12 +1025,12 @@ def _fill_agenda_body(
     for entry in entries:
         body.append(_build_paragraph({"text": entry["label"], "level": 0}))
     if not entries:
-        # A text body with zero a:p makes PowerPoint refuse the whole deck
-        # . Both callers refuse an empty entry
-        # list, so this is the floor under them, not a behaviour change.
+        # A text body with zero a:p makes PowerPoint refuse the whole deck.
+        # Both callers refuse an empty entry list, so this is the floor
+        # under them, not a behaviour change.
         etree.SubElement(body, qn("a:p"))
     cnvpr = body_elem.find(f"{qn('p:nvSpPr')}/{qn('p:cNvPr')}")
-    shape_id = int(cnvpr.get("id")) if cnvpr is not None else None
+    shape_id = cnvpr_id(cnvpr)
     rec = resolve_slide(pkg, slide_sel)
     pkg.mark_dirty(rec["part"])
 
@@ -1202,11 +1224,11 @@ def deck_statistics(pkg: PptxPackage, wpm: int = 130) -> dict:
     for rec in table:
         part = rec["part"]
         root = pkg.root(part)
-        if root.get("show") == "0":
+        if not attr_bool(root, "show", True):
             hidden += 1
         sp_tree = root.find(f"{qn('p:cSld')}/{qn('p:spTree')}")
         if sp_tree is not None:
-            for _elem, kind, _z, _p in iter_shapes(sp_tree):
+            for _elem, kind, _z, _p in iter_shapes(sp_tree, wrapped=True):
                 shapes_by_type[kind] = shapes_by_type.get(kind, 0) + 1
         body_words = sum(
             _word_count(t) for _e, _k, t in _slide_texts(pkg, part)
@@ -1221,6 +1243,7 @@ def deck_statistics(pkg: PptxPackage, wpm: int = 130) -> dict:
         per_slide.append(
             {
                 "index": rec["index"],
+                "slide_number": rec["index"] + 1,
                 "slide_id": rec["slide_id"],
                 "words_body": body_words,
                 "words_notes": notes_words,
@@ -1335,7 +1358,12 @@ def set_document_properties(pkg: PptxPackage, **props) -> dict:
     xsi type; they are NEVER touched unless explicitly passed, and
     PowerPoint will overwrite 'modified' on its own next save. Missing
     docProps parts are created with their package rels. Pass a field to set
-    it; an empty string clears it; omitted fields are untouched."""
+    it; an empty string clears it; omitted fields are untouched.
+
+    author and last_modified_by never take an email address (the family
+    rule, core/authorship.py): an address sent for either is set aside, the
+    name a comment would be signed with stands in, the change row carries
+    author_source, and the warnings say so in one sentence."""
     unknown = set(props) - set(_CORE_FIELDS) - set(_APP_FIELDS)
     if unknown:
         raise PptMcpError(
@@ -1350,9 +1378,14 @@ def set_document_properties(pkg: PptxPackage, **props) -> dict:
             "get_document_properties to read)"
         )
     changed: list[dict] = []
+    warnings: list[str] = []
     for key, value in given.items():
         if not isinstance(value, str):
             raise PptMcpError(f"{key} must be a string, got {value!r}")
+        source = None
+        if key in _AUTHOR_FIELDS and _authorship.is_email(value):
+            value, source, note = _authorship.property_name_with_note(key)
+            warnings.append(note)
         if key in _CORE_FIELDS:
             tag, is_dt = _CORE_FIELDS[key]
             if is_dt and value:
@@ -1382,8 +1415,14 @@ def set_document_properties(pkg: PptxPackage, **props) -> dict:
         else:
             part = _ensure_app_part(pkg)
             old = _set_prop(pkg, part, _APP_FIELDS[key], value, _APP_ORDER)
-        changed.append({"property": key, "old": old, "new": value})
-    return {"changed": changed}
+        row = {"property": key, "old": old, "new": value}
+        if source is not None:
+            row["author_source"] = source
+        changed.append(row)
+    result: dict = {"changed": changed}
+    if warnings:
+        result["warnings"] = warnings
+    return result
 
 
 def get_document_properties(pkg: PptxPackage) -> dict:
@@ -1434,7 +1473,27 @@ def get_document_properties(pkg: PptxPackage) -> dict:
 # ======================================================================
 
 
-def anonymize_deck(pkg: PptxPackage, replacement: str = "Reviewer") -> dict:
+#: anonymize_deck's replacement when the call sends none, and the name that
+#: stands in for an email address sent as one.
+ANONYMIZE_DEFAULT = "Reviewer"
+
+
+_P15_NS = "http://schemas.microsoft.com/office/powerpoint/2012/main"
+
+
+def _identity_residue_kept(pkg: PptxPackage) -> list[str]:
+    """Parts this deck holds whose identity data anonymize_deck leaves as
+    they are, named for the answer (co-authoring history, embedded files)."""
+    names = list(pkg.part_names())
+    kept = []
+    if any(n.startswith("ppt/changesInfos/") for n in names):
+        kept.append("the co-authoring history (ppt/changesInfos)")
+    if any(n.startswith("ppt/embeddings/") for n in names):
+        kept.append("embedded files, which carry their own properties (ppt/embeddings)")
+    return kept
+
+
+def anonymize_deck(pkg: PptxPackage, replacement: str = ANONYMIZE_DEFAULT) -> dict:
     """Strip author identity from the deck, IRREVERSIBLY (take a snapshot
     with create_snapshot first). Changes: core props dc:creator and
     cp:lastModifiedBy become `replacement`; app.xml Company, Manager, and
@@ -1444,17 +1503,40 @@ def anonymize_deck(pkg: PptxPackage, replacement: str = "Reviewer") -> dict:
     same original name gets the same alias in both systems), with initials
     replaced and modern userId/providerId cleared. Comment TEXT is NOT
     scrubbed: bodies mentioning names by hand stay as written. Everything
-    changed is reported with its old value so the operator can audit."""
+    changed is reported with its old value so the operator can audit.
+
+    An email address is never written as a name (core/authorship.py): sent
+    as `replacement`, it is set aside, ANONYMIZE_DEFAULT stands in, and the
+    warnings say so in one sentence that does not repeat the address."""
     if not isinstance(replacement, str) or not replacement.strip():
         raise PptMcpError("replacement must be a non-empty string")
     replacement = replacement.strip()
+    email_note = None
+    if _authorship.is_email(replacement):
+        replacement = ANONYMIZE_DEFAULT
+        email_note = (
+            "You sent an email address as the replacement, which is never "
+            f'written into a deck, so the authors are replaced with "{replacement}", '
+            "the default, instead."
+        )
     changed: list[dict] = []
     alias_map: dict[str, str] = {}
+    alias_of: dict[tuple[str, str], str] = {}
+    people_named: dict[str, set[str]] = {}
 
-    def _alias(original: str) -> str:
-        if original not in alias_map:
-            alias_map[original] = f"{replacement}-{len(alias_map) + 1}"
-        return alias_map[original]
+    def _alias(original: str, user_id: str = "") -> str:
+        """The alias for one author. The same name gets the same alias in both
+        comment systems, except where two authors share a name and carry
+        different user ids: they are two people, and PowerPoint repairs a deck
+        whose comment authors are told apart by nothing, so each gets its own."""
+        key = (original, user_id if len(people_named.get(original, ())) > 1 else "")
+        if key not in alias_of:
+            alias_of[key] = f"{replacement}-{len(alias_of) + 1}"
+            label = original
+            if label in alias_map:
+                label = f"{original} (another author with this name, {len(alias_of)})"
+            alias_map[label] = alias_of[key]
+        return alias_of[key]
 
     # Core properties.
     if pkg.has_part(CORE_PART):
@@ -1498,6 +1580,30 @@ def anonymize_deck(pkg: PptxPackage, replacement: str = "Reviewer") -> dict:
             and rel.get("TargetMode") != "External"
         ]
 
+    def _classic_user_id(author) -> str:
+        for presence in author.iter(f"{{{_P15_NS}}}presenceInfo"):
+            if presence.get("userId"):
+                return presence.get("userId")
+        return ""
+
+    # Who shares a name with whom, before any name changes.
+    for part in _rels_of_type(PRESENTATION_PART, RT_MODERN_AUTHORS):
+        if pkg.has_part(part):
+            for author in pkg.root(part).findall(f"{{{ns_p188}}}author"):
+                people_named.setdefault(author.get("name", "") or "(unnamed)", set()).add(
+                    author.get("userId", ""))
+    for part in _rels_of_type(PRESENTATION_PART, RT_LEGACY_AUTHORS):
+        if pkg.has_part(part):
+            for author in pkg.root(part).findall(qn("p:cmAuthor")):
+                people_named.setdefault(author.get("name", "") or "(unnamed)", set()).add(
+                    _classic_user_id(author))
+    for name_, ids_ in people_named.items():
+        ids_.discard("")
+        if len(ids_) > 1:
+            people_named[name_] = ids_
+        else:
+            people_named[name_] = set()
+
     # Modern comment authors (p188:authorLst).
     for part in _rels_of_type(PRESENTATION_PART, RT_MODERN_AUTHORS):
         if not pkg.has_part(part):
@@ -1505,7 +1611,7 @@ def anonymize_deck(pkg: PptxPackage, replacement: str = "Reviewer") -> dict:
         dirty = False
         for author in pkg.root(part).findall(f"{{{ns_p188}}}author"):
             old_name = author.get("name", "")
-            alias = _alias(old_name or "(unnamed)")
+            alias = _alias(old_name or "(unnamed)", author.get("userId", ""))
             record = {
                 "where": f"modern author ({part})",
                 "old": old_name,
@@ -1529,27 +1635,41 @@ def anonymize_deck(pkg: PptxPackage, replacement: str = "Reviewer") -> dict:
         dirty = False
         for author in pkg.root(part).findall(qn("p:cmAuthor")):
             old_name = author.get("name", "")
-            alias = _alias(old_name or "(unnamed)")
-            changed.append(
-                {
-                    "where": f"classic author ({part})",
-                    "old": old_name,
-                    "new": alias,
-                }
-            )
+            alias = _alias(old_name or "(unnamed)", _classic_user_id(author))
+            record = {
+                "where": f"classic author ({part})",
+                "old": old_name,
+                "new": alias,
+            }
             author.set("name", alias)
             author.set("initials", "R" + alias.rsplit("-", 1)[-1])
+            # PowerPoint 2013+ adds p15:presenceInfo (userId, often a sign-in
+            # address, and providerId) to a classic author; clear them as the
+            # modern author's are cleared.
+            for presence in author.iter(f"{{{_P15_NS}}}presenceInfo"):
+                for attr in ("userId", "providerId"):
+                    if presence.get(attr):
+                        record[f"{attr}_cleared"] = True
+                        presence.set(attr, "")
+            changed.append(record)
             dirty = True
         if dirty:
             pkg.mark_dirty(part)
 
     warnings = [
-        "anonymization is IRREVERSIBLE in this file; if you need the "
-        "original identities back, restore from a snapshot "
-        "(create_snapshot before anonymizing)",
+        "anonymization cannot be undone in this file; a snapshot of the original "
+        "was saved first (path in snapshot), and ppt_deck manage_backups with "
+        "action='restore' and source=<that path> brings the original back",
         "comment TEXT was not scrubbed; bodies that mention people by name "
         "still do",
     ]
+    if email_note:
+        warnings.insert(0, email_note)
+    untouched = _identity_residue_kept(pkg)
+    if untouched:
+        warnings.append(
+            "not changed here, and may still name people: " + "; ".join(untouched)
+        )
     if not changed:
         warnings.append(
             "nothing to anonymize: no author metadata found in core props, "

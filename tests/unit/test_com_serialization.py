@@ -1,12 +1,13 @@
-"""Live-safety stack.
+"""v1.1 live-safety stack (the same design as the Word editor).
 
-Non-live regression coverage for four defenses:
+Non-live regression coverage for the four ported defenses:
 1. COM serialization: lock mechanics, no interleaving under threads, and
    an entry-point audit proving every COM path takes the lock.
-2. Bounded timeouts with a PID kill-switch, including the PowerPoint-only
-   safety invariant: the kill-switch is armed ONLY for a POWERPNT this
-   server launched itself, never for the user's instance. PowerPoint is a
-   singleton, so getting this wrong would kill the user's PowerPoint.
+2. Bounded timeouts with identity-checked cancellation, including the
+   PowerPoint-only safety invariant: cancellation is attempted ONLY for a
+   POWERPNT this server launched itself, never for the user's instance.
+   PowerPoint is a singleton, so getting this wrong would kill the user's
+   PowerPoint.
 3. DisplayAlerts suppression that RESTORES the previous value (on the
    singleton, an unrestored DisplayAlerts=ppAlertsNone leaks into the
    user's own PowerPoint session).
@@ -54,6 +55,7 @@ def test_com_operation_records_state_and_reenters():
     assert snap2["held"] is False
     assert snap2["last_op"]["name"] == "outer-op"
     assert snap2["last_op"]["duration_ms"] >= 0
+    assert snap2["last_op"]["outcome"] == "succeeded"
 
 
 def test_threads_serialize_no_interleaving():
@@ -120,6 +122,7 @@ BRIDGE_EXEMPT = {
         "exists inside an already-locked _powerpoint()"
     ),
     "powerpoint_status": "bounded try-acquire form, asserted separately",
+    "opens_clean_time_limit": "arithmetic on the deck's counts, no COM",
 }
 
 
@@ -263,16 +266,22 @@ def test_live_status_reports_serving_when_lock_held():
 
 def test_run_bounded_fast_path_and_error_propagation():
     assert bridge._run_bounded("fast", 10, lambda: {"ok": 1}) == {"ok": 1}
+    assert com_serial.lock_snapshot()["last_op"]["outcome"] == "succeeded"
     with pytest.raises(TargetNotFound):
         bridge._run_bounded(
             "err", 10, lambda: (_ for _ in ()).throw(TargetNotFound("x"))
         )
+    assert com_serial.lock_snapshot()["last_op"]["outcome"] == "failed"
 
 
 def test_run_bounded_stuck_op_raises_powerpoint_blocked(monkeypatch):
+    release = threading.Event()
+    finished = threading.Event()
+
     def stuck():
-        time.sleep(3)
-        return {}
+        release.wait(10)
+        finished.set()
+        return {"late": True}
 
     t0 = time.monotonic()
     # The deadline is followed by a grace period, and a worker that
@@ -280,11 +289,116 @@ def test_run_bounded_stuck_op_raises_powerpoint_blocked(monkeypatch):
     # still running when the refusal is built, so the grace is shortened
     # rather than letting the 3 second sleep finish inside the default 10.
     monkeypatch.setattr(bridge, "TIMEOUT_GRACE_SECONDS", 0.1)
-    # The refusal no longer says the operation was aborted, because
-    # nothing cancels it; it says PowerPoint did not answer in time.
-    with pytest.raises(PowerPointBlocked, match="did not answer within"):
-        bridge._run_bounded("stuck-op", 0.3, stuck)
+    # No ownership journal exists in this simulation, so the timeout cannot
+    # reach the identity-checked process reaper.
+    try:
+        with pytest.raises(PowerPointBlocked, match="did not answer within"):
+            bridge._run_bounded("stuck-op", 0.3, stuck)
+    finally:
+        release.set()
+        assert finished.wait(5)
     assert time.monotonic() - t0 < 12
+
+
+def test_timeout_attempts_cancellation_only_for_the_hung_workers_journal(
+    monkeypatch,
+):
+    tid = 5150
+    bridge._OWNED_JOURNAL[tid] = {4242: 987654321}
+    bridge._OWNED_PRESENTATION_JOURNAL[tid] = {"c:/owned/deck.pptx"}
+    seen = {}
+
+    def fake_end(journal, presentations):
+        seen["journal"] = journal
+        seen["presentations"] = presentations
+        return {"ended": [4242], "left": []}
+
+    monkeypatch.setattr(bridge, "_end_owned_powerpoint_at_exit", fake_end)
+    try:
+        outcome = bridge._cancel_hung_call(tid)
+    finally:
+        bridge._OWNED_JOURNAL.pop(tid, None)
+        bridge._OWNED_PRESENTATION_JOURNAL.pop(tid, None)
+
+    assert seen == {
+        "journal": {4242: 987654321},
+        "presentations": {4242: {"c:/owned/deck.pptx"}},
+    }
+    assert outcome == {"attempted": True, "ended": [4242], "left": []}
+
+
+def test_timeout_without_positive_ownership_never_calls_the_reaper(monkeypatch):
+    monkeypatch.setattr(
+        bridge,
+        "_end_owned_powerpoint_at_exit",
+        lambda *_args: pytest.fail("unowned timeout reached process reaper"),
+    )
+
+    assert bridge._cancel_hung_call(999999) == {
+        "attempted": False,
+        "ended": [],
+        "left": [],
+    }
+
+
+def test_simulated_owned_hang_is_cancelled_and_status_records_timeout(
+    monkeypatch,
+):
+    entered = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    cancelled = {}
+
+    def hung():
+        entered.set()
+        release.wait(10)
+        finished.set()
+        return {"late": True}
+
+    def fake_cancel(tid):
+        cancelled["tid"] = tid
+        release.set()
+        return {"attempted": True, "ended": [4242], "left": []}
+
+    monkeypatch.setattr(bridge, "TIMEOUT_GRACE_SECONDS", 0.01)
+    monkeypatch.setattr(bridge, "_cancel_hung_call", fake_cancel)
+    monkeypatch.setattr(dialogs, "pending_dialogs", lambda *a, **k: [])
+
+    with pytest.raises(
+        PowerPointBlocked,
+        match="This server ended the hidden PowerPoint it had started",
+    ) as caught:
+        bridge._run_bounded("owned-hang", 0.05, hung)
+
+    assert "pid 4242" in str(caught.value)
+    assert entered.is_set()
+    assert cancelled["tid"] is not None
+    assert finished.wait(5)
+    last = com_serial.lock_snapshot()["last_op"]
+    assert last["name"] == "owned-hang"
+    assert last["outcome"] == "timed_out"
+    assert last["cancellation"] == {
+        "attempted": True,
+        "ended": [4242],
+        "left": [],
+    }
+
+
+def test_hidden_bridge_deadlines_are_sixty_seconds_with_reporting_headroom():
+    from kitchensink4ppt import registry
+
+    functions = (
+        bridge.com_export_pdf,
+        bridge.com_export_handout,
+        bridge.com_export_slide_images,
+        bridge.com_validate_opens_clean,
+    )
+    assert {fn._com_bounded for fn in functions} == {60.0}
+    # validate passes a longer limit for a bigger deck, up to the cap, and
+    # its budget keeps the same 60 s of reporting room past that cap.
+    budgets = dict(registry._COM_DEFAULT_TIMEOUT_S)
+    assert budgets.pop("validate") == bridge.OPENS_CLEAN_CAP_S + 60.0
+    assert set(budgets.values()) == {120.0}
 
 
 def test_run_bounded_queued_behind_lock_raises_powerpoint_busy():
@@ -320,7 +434,7 @@ def test_bounded_op_timeout_validation():
         sample(timeout="soon")
 
 
-# ------------------------- 2b. the singleton kill-switch safety invariant
+# -------------------- 2b. the singleton cancellation safety invariant
 
 
 def test_kill_switch_never_fires_without_a_recorded_self_launched_pid():
@@ -335,17 +449,17 @@ def test_kill_switch_never_fires_without_a_recorded_self_launched_pid():
 def test_session_records_pid_only_when_it_launched_powerpoint(monkeypatch):
     """THE singleton invariant. When POWERPNT was already running, the
     session attaches to the USER's instance, and no PID may ever be
-    recorded for the kill-switch. When it was not running, the PID this
-    call created is recorded and armed."""
+    recorded for cancellation. When it was not running, the PID this call
+    created is recorded for later identity checks."""
     calls = {"n": 0}
 
     class _FakeCollection:
         Count = 0
 
     class _FakeApp:
-        """A just-created automation instance, which is what
-        the acquisition token actually checks: not visible, no
-        presentations, no windows."""
+        """A just-created automation instance, which is what the
+        acquisition token actually checks: not visible, no presentations,
+        no windows."""
 
         DisplayAlerts = 2
         Visible = 0
@@ -446,7 +560,7 @@ def _no_powerpoint_allowed(monkeypatch):
 def test_slide_images_refuses_string_slides_before_launching(
     monkeypatch, tmp_path
 ):
-    """A string passed as `slides` is iterable, so
+    """Seen in use: a string passed as `slides` is iterable, so
     list("C:/deck.pptx") became a per-character slide list and the caller
     got 'slide index C out of range' AFTER a full launch-and-open cycle.
     Refuse immediately, and name the real mistake."""
@@ -558,7 +672,7 @@ def test_frame_classes_are_not_dialog_classes():
 
 def test_dialog_class_set_matches_empirical_discovery():
     """Locked to what dialog_class_discovery.py actually observed on
-    PowerPoint 365, not to another application's set.
+    PowerPoint 365, not to Word's set.
 
     NUIDialog is the confirmed class of a real blocking PowerPoint modal.
     MsoSplash is excluded on purpose: a splash window appears during a

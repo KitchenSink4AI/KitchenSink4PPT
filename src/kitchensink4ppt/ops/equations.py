@@ -1,7 +1,7 @@
 """LaTeX equations as native PowerPoint math (OMML in DrawingML paragraphs).
 
-Conversion pipeline ported verbatim from word-mcp ops/equations.py (both deps
-MIT, pure Python, empirically Word-verified there): latex2mathml (LaTeX ->
+Conversion pipeline taken verbatim from the Word editor (both deps
+MIT, pure Python, empirically verified in Word): latex2mathml (LaTeX ->
 MathML) then mathml2omml (MathML -> OMML). The produced OMML is parsed and
 namespace-checked BEFORE anything in the package is touched, so a conversion
 failure never modifies the deck. mathml2omml emits pure m:-namespace content
@@ -29,7 +29,7 @@ in markup compatibility:
       </mc:AlternateContent>
     </a:p>
 
-Ground truth: PowerPoint opens
+Ground truth (COM round-trip, PowerPoint 365): PowerPoint opens
 decks carrying this wrapper clean, ingests the math into its text model
 (TextRange.Text returns the linearized equation in Mathematical Alphanumeric
 codepoints, proof the math engine parsed it), and re-serializes the same
@@ -41,11 +41,12 @@ two are PowerPoint canonicalizations applied on ITS save; the minimal form
 below is what it accepts. The mc:Fallback run is what pre-2010 consumers and
 plain-text paths see.
 
-READ-SIDE REALITY (by design, mirroring word-mcp): the read layer's
-paragraph_text() walks a:r/a:fld/a:br/a:tab children only, so equations are
-INVISIBLE to get_text / find_text / search_and_replace — which also means
-search and replace can never corrupt an equation. The linearized approximation
-is returned by this module's results (and by PowerPoint itself at render time).
+READ SIDE: the read layer's paragraph_text() reads a paragraph-level
+mc:AlternateContent as the branch PowerPoint shows (ops/_wrapped.py), so
+get_text and find_text show an equation as the characters of its math runs.
+The run map treats the wrapper as one unit that edits go around, so
+search_and_replace leaves an equation as it is (counting such matches in
+wrapped_matches_skipped) and can never corrupt one.
 """
 
 from __future__ import annotations
@@ -54,9 +55,11 @@ import re
 
 from lxml import etree
 
+from ..core import xmlsafe
 from ..core.errors import PptMcpError, TargetNotFound, UnsupportedStructure
-from ..core.package import PptxPackage, qn
+from ..core.package import PptxPackage, qn, seat_ahead_of_extlst
 from .read import resolve_slide
+from .read import cnvpr_id
 
 M_NS = "http://schemas.openxmlformats.org/officeDocument/2006/math"
 MC_NS = "http://schemas.openxmlformats.org/markup-compatibility/2006"
@@ -75,12 +78,17 @@ EMU_PER_INCH = 914400
 #: (the largest textbook display equations are hundreds of bytes).
 MAX_LATEX_LEN = 20_000
 
-#: Refusal messages echo at most this much of the input.
+#: Refusal messages echo at most this much of the input (a 12KB bomb
+#: must not come back as a 12KB error message).
 _ECHO_LIMIT = 200
 
 
 class EquationConversionError(PptMcpError):
     """LaTeX did not convert to valid OMML; the presentation was not modified."""
+
+
+class _MathmlDeclaresDtd(Exception):
+    """The converted math carries a document type declaration."""
 
 
 def _echo(latex: str) -> str:
@@ -94,7 +102,8 @@ def _echo(latex: str) -> str:
 
 def _check_braces_balanced(latex: str) -> None:
     """Refuse unbalanced {} groups up front: the converters are lenient and
-    would swallow the imbalance into a nonsense equation. Escaped \\{ \\} and control words are skipped."""
+    would swallow the imbalance into a nonsense equation.
+    Escaped \\{ \\} and control words are skipped."""
     depth = 0
     i = 0
     while i < len(latex):
@@ -122,8 +131,8 @@ def _check_braces_balanced(latex: str) -> None:
 
 
 def _rewrite_aligned(latex: str) -> str:
-    # Upstream latex2mathml bug (carried from word-mcp): the `aligned`
-    # environment emits malformed XML (unescaped entity). `align*` is
+    # Upstream latex2mathml bug (the Word editor has the same workaround): the
+    # `aligned` environment emits malformed XML (unescaped entity). `align*` is
     # semantically equivalent for our purposes and converts cleanly.
     return latex.replace(r"\begin{aligned}", r"\begin{align*}").replace(
         r"\end{aligned}", r"\end{align*}"
@@ -147,7 +156,7 @@ def _latex_to_omath(latex: str) -> etree._Element:
         )
     _check_braces_balanced(latex)
     # File/system macros are meaningless inside an equation and would pass
-    # through as literal text; refuse by name.
+    # through as literal text; they are refused by name.
     _banned = re.search(
         r"\\(input|include|write\d*|openout|openin|read|immediate|usepackage)\b",
         latex,
@@ -163,10 +172,21 @@ def _latex_to_omath(latex: str) -> etree._Element:
         import mathml2omml as _m2o
 
         mathml = _l2m.convert(fixed, display="block")
+        # mathml2omml parses with the standard library's SAX reader, which
+        # expands what a DTD declares: it is never handed one.
+        if xmlsafe.declares_dtd(mathml):
+            raise _MathmlDeclaresDtd
         omml = _m2o.convert(mathml)
-        wrapper = etree.fromstring(
+        wrapper = xmlsafe.fromstring(
             f'<wrap xmlns:m="{M_NS}">{omml}</wrap>'.encode("utf-8")
         )
+    except _MathmlDeclaresDtd:
+        raise EquationConversionError(
+            "the LaTeX converted to math that carries a document type declaration "
+            "(<!DOCTYPE ...>), which this server does not read: such a declaration can make "
+            "an XML reader expand text without limit or read other files. Nothing was "
+            f"changed. Write the equation another way (input was: {_echo(latex)})."
+        ) from None
     except Exception as exc:  # converters raise assorted types; all mean "bad input"
         raise EquationConversionError(
             f"could not convert LaTeX to PowerPoint math: {exc} "
@@ -254,9 +274,8 @@ def insert_equation(
     failure raises with the LaTeX and the converter's message, and the
     presentation is not modified.
 
-    NOTE: equations do not appear in get_text/find_text output (math lives
-    outside the a:r text index by design); the returned "text" field carries
-    the linearized approximation.
+    The returned "text" field carries the linearized approximation, which
+    get_text and find_text show for the equation too.
     """
     # Convert FIRST: any failure raises before the tree is touched.
     omath = _latex_to_omath(latex)
@@ -285,7 +304,7 @@ def insert_equation(
     shape_id = pkg.next_shape_id(part)
     box_name = f"Equation {shape_id}"
 
-    sp = etree.SubElement(sp_tree, qn("p:sp"))
+    sp = seat_ahead_of_extlst(sp_tree, etree.SubElement(sp_tree, qn("p:sp")))
     nvsp = etree.SubElement(sp, qn("p:nvSpPr"))
     cnv = etree.SubElement(nvsp, qn("p:cNvPr"))
     cnv.set("id", str(shape_id))
@@ -337,7 +356,8 @@ def add_equation_to_shape(
     """Append a LaTeX equation as a new math paragraph inside an existing
     shape's text body (existing paragraphs untouched).
 
-    `shape` is a shape id (int) or shape name (str). `position` is the
+    `shape` is a shape id, a unique name, "Group/Shape" or a view anchor
+    (a:3f9c2a), as every shape operation takes it. `position` is the
     0-based paragraph index the equation paragraph is inserted BEFORE
     (None or past-the-end appends). Shapes without an editable text body
     (tables, pictures, charts, groups) refuse honestly. Any conversion
@@ -351,7 +371,7 @@ def add_equation_to_shape(
 
     rec = resolve_slide(pkg, slide)
     elem, kind = _resolve_shape(pkg, rec, shape)
-    if kind in ("table", "chart", "picture", "group", "diagram", "ole"):
+    if kind in ("table", "chart", "picture", "media", "group", "diagram", "ole"):
         raise UnsupportedStructure(
             f"shape {shape!r} on slide {rec['index']} is a {kind}; equations "
             "go into text-bearing shapes (text boxes, placeholders, "
@@ -385,36 +405,56 @@ def add_equation_to_shape(
     }
 
 
-def list_equations(pkg: PptxPackage, scope=None) -> dict:
-    """Every native math equation on the selected slides (None = all).
+def _paragraph_equations(paragraphs, base: dict, out: list[dict]) -> None:
+    for pi, p in enumerate(paragraphs):
+        for om in p.iter(_OMATH):
+            out.append({**base, "paragraph": pi, "text": _approx_text(om)})
 
-    THIS IS THE READ PATH FOR MATH: equations never appear in get_text or
-    find_text output (math runs are outside the a:r text index by design).
-    Each entry carries slide index/id, shape id, the paragraph position of
-    the equation within the shape, and the linearized text approximation.
+
+def list_equations(pkg: PptxPackage, scope=None) -> dict:
+    """Every native math equation on the selected slides (None = all) and in
+    their speaker notes.
+
+    get_text and find_text show an equation as the same characters; this
+    list adds where each one is, in find_text's words: "slide" (a shape's
+    text, groups included), "table" (a table cell, with row and col, 0-based)
+    or "notes" (the slide's speaker notes). Each entry carries slide
+    index/id, the shape id (the table's, or the notes placeholder's), the
+    paragraph position of the equation within its text, and the linearized
+    text approximation. A shape, table or notes body PowerPoint keeps in a
+    compatibility wrapper is read from the branch PowerPoint shows, so its
+    equations are listed once.
     """
-    from .read import iter_shapes, slides_in_scope
+    from .read import (_cnvpr, iter_shapes, notes_bodies, notes_part_for,
+                       slides_in_scope, table_element, txbody_paragraphs)
 
     entries: list[dict] = []
     for rec in slides_in_scope(pkg, scope):
+        head = {"slide_index": rec["index"], "slide_id": rec["slide_id"]}
         sp_tree = pkg.root(rec["part"]).find(f"{qn('p:cSld')}/{qn('p:spTree')}")
-        if sp_tree is None:
-            continue
-        for elem, kind, _z, _parent in iter_shapes(sp_tree):
-            body = elem.find(qn("p:txBody"))
-            if body is None:
-                continue
-            cnvpr = elem.find(f"{qn('p:nvSpPr')}/{qn('p:cNvPr')}")
-            sid = int(cnvpr.get("id")) if cnvpr is not None else None
-            for pi, p in enumerate(body.findall(qn("a:p"))):
-                for om in p.iter(_OMATH):
-                    entries.append(
-                        {
-                            "slide_index": rec["index"],
-                            "slide_id": rec["slide_id"],
-                            "shape_id": sid,
-                            "paragraph": pi,
-                            "text": _approx_text(om),
-                        }
-                    )
+        if sp_tree is not None:
+            for elem, kind, _z, _parent in iter_shapes(sp_tree, wrapped=True):
+                sid = cnvpr_id(_cnvpr(elem))
+                if kind == "table":
+                    tbl = table_element(elem)
+                    if tbl is None:
+                        continue
+                    for r, tr in enumerate(tbl.findall(qn("a:tr"))):
+                        for c, tc in enumerate(tr.findall(qn("a:tc"))):
+                            _paragraph_equations(
+                                tc.findall(f"{qn('a:txBody')}/{qn('a:p')}"),
+                                {**head, "shape_id": sid, "where": "table", "row": r, "col": c},
+                                entries)
+                    continue
+                body = elem.find(qn("p:txBody"))
+                if body is None:
+                    continue
+                _paragraph_equations(body.findall(qn("a:p")),
+                                     {**head, "shape_id": sid, "where": "slide"}, entries)
+        npart = notes_part_for(pkg, rec["part"])
+        if npart is not None and pkg.has_part(npart):
+            for sp in notes_bodies(pkg, npart):
+                _paragraph_equations(txbody_paragraphs(sp),
+                                     {**head, "shape_id": cnvpr_id(_cnvpr(sp)), "where": "notes"},
+                                     entries)
     return {"equations": entries, "equation_count": len(entries)}

@@ -13,10 +13,9 @@ Design rules:
   to measure exact savings, the purge is simulated on a scratch copy of the
   package) and mutates NOTHING - callers can md5 the file to verify.
 - Pixel work needs a real codec. Pillow is an OPTIONAL dependency (the
-  '[optimize]' extra, never a required runtime dep): when it is not
-  importable, image recompression is refused honestly per-image
-  ("skipped-no-pillow") while the purge half, which is pure XML, always
-  runs.
+  '[optimize]' extra, never a required runtime dep): a dry run reports
+  per-image "skipped-no-pillow" actions, while a write refuses before any
+  image or package part is changed.
 - Image safety: only png/jpeg are ever touched (gif may animate, bmp/tiff/
   emf/wmf are left alone); EXIF orientation is baked in before resizing;
   a re-encode is kept only when it actually shrinks the part; images whose
@@ -250,8 +249,7 @@ def _plan_images(
             entry["action"] = "skipped-no-pillow"
             entry["note"] = (
                 "image recompression needs Pillow; install the [optimize] "
-                "extra (pip install kitchensink4ppt[optimize]). The purge "
-                "half ran regardless."
+                "extra (pip install kitchensink4ppt[optimize])."
             )
             if scale < 1.0:
                 entry["est_savings_bytes"] = round(len(data) * (1 - scale**2))
@@ -389,7 +387,7 @@ def compress_deck(
     *,
     max_dpi: int = 150,
     jpeg_quality: int = 85,
-    purge_unused: bool = True,
+    purge_unused: bool = False,
     dry_run: bool = False,
 ) -> dict:
     """Shrink a deck, offender report first. Downsamples raster images to
@@ -419,6 +417,14 @@ def compress_deck(
 
     entries, savable = _plan_images(pkg, max_dpi, jpeg_quality, unreferenced)
     media_total = sum(e["bytes"] for e in entries)
+    skipped_no_pillow = sum(
+        e["action"] == "skipped-no-pillow" for e in entries
+    )
+    if skipped_no_pillow and not dry_run:
+        raise PptMcpError(
+            "Pillow is not installed, so image recompression was refused "
+            "(install the [optimize] extra)"
+        )
 
     applied_savings = 0
     if not dry_run:
@@ -435,7 +441,7 @@ def compress_deck(
     purge_report: dict | None = None
     if purge_unused:
         if dry_run:
-            scratch = PptxPackage(pkg.path)
+            scratch = PptxPackage(pkg.path, reading=getattr(pkg, "reading", None))
             purge_report = _purge(scratch)
             del scratch
         else:
@@ -450,14 +456,14 @@ def compress_deck(
         "media_count": len(entries),
         "media_bytes_total": media_total,
         "media": entries,
+        "images_skipped_no_pillow": skipped_no_pillow,
         "image_savings_bytes": savable if dry_run else applied_savings,
         "purge": purge_report,
     }
-    if Image is None:
+    if skipped_no_pillow:
         result["note"] = (
             "Pillow is not installed, so image recompression was refused "
-            "(install the [optimize] extra); the purge half is pure XML "
-            "and ran normally"
+            "(install the [optimize] extra)"
         )
     if dry_run:
         result["note_dry_run"] = (

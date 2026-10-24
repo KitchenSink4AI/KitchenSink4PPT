@@ -15,7 +15,7 @@ import pytest
 
 from kitchensink4ppt.core.errors import PptMcpError
 from kitchensink4ppt.core.package import PptxPackage, qn
-from kitchensink4ppt.ops import design, generators, slides, themes
+from kitchensink4ppt.ops import design, generators, masters, slides, themes
 from kitchensink4ppt.ops.export import _find_soffice
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -96,6 +96,67 @@ def test_set_theme_colors_validation(tmp_path):
         themes.set_theme_colors(pkg, 99, {"accent1": "FF0000"})
 
 
+def test_dark_color_map_on_master_roundtrips(tmp_path):
+    path, pkg = _template_deck(tmp_path, "dark-map.pptx")
+    result = themes.set_theme_colors(
+        pkg,
+        color_map={"bg1": "dk1", "tx1": "lt1", "bg2": "dk2", "tx2": "lt2"},
+    )
+    assert result["scope"] == "master"
+    assert result["color_map"]["bg1"] == "dk1"
+    assert result["color_map"]["tx1"] == "lt1"
+    pkg.save()
+    reported = design.get_theme(PptxPackage(path))["color_map"]
+    assert reported["bg1"] == "dk1"
+    assert reported["tx1"] == "lt1"
+    assert set(reported) == {
+        "bg1", "tx1", "bg2", "tx2", "accent1", "accent2", "accent3",
+        "accent4", "accent5", "accent6", "hlink", "folHlink",
+    }
+
+
+def test_layout_color_map_override_and_inherit(tmp_path):
+    path, pkg = _template_deck(tmp_path, "layout-map.pptx")
+    layout = masters.list_master_elements(pkg)["masters"][0]["layouts"][0]
+    result = themes.set_theme_colors(
+        pkg, color_map={"bg1": "dk1", "tx1": "lt1"},
+        layout=layout["index"],
+    )
+    assert result["scope"] == "layout" and result["inherited"] is False
+    override = pkg.root(layout["part"]).find(
+        f"{qn('p:clrMapOvr')}/{qn('a:overrideClrMapping')}"
+    )
+    assert override is not None
+    assert len(override.attrib) == 12
+    assert override.get("bg1") == "dk1" and override.get("tx1") == "lt1"
+
+    inherited = themes.set_theme_colors(
+        pkg, color_map="inherit", layout=layout["index"]
+    )
+    assert inherited["inherited"] is True
+    assert pkg.root(layout["part"]).find(
+        f"{qn('p:clrMapOvr')}/{qn('a:masterClrMapping')}"
+    ) is not None
+    pkg.save()
+
+
+def test_color_map_validation_refuses_without_mutation(tmp_path):
+    _path, pkg = _template_deck(tmp_path, "bad-map.pptx")
+    master_part = masters.list_master_elements(pkg)["masters"][0]["part"]
+    before = pkg.raw_part(master_part)
+    dirty_before = set(pkg._dirty)
+    with pytest.raises(PptMcpError, match="unknown color_map"):
+        themes.set_theme_colors(pkg, color_map={"background": "dk1"})
+    with pytest.raises(PptMcpError, match="must name a theme slot"):
+        themes.set_theme_colors(pkg, color_map={"bg1": "black"})
+    with pytest.raises(PptMcpError, match="only to color_map"):
+        themes.set_theme_colors(
+            pkg, colors={"accent1": "FFFFFF"}, layout=0
+        )
+    assert pkg.raw_part(master_part) == before
+    assert pkg._dirty == dirty_before
+
+
 # -------------------------------------------------------------- font slots
 
 
@@ -127,6 +188,73 @@ def test_set_theme_fonts_validation(tmp_path):
         themes.set_theme_fonts(pkg, major={"weird": "X"})
     with pytest.raises(PptMcpError, match="non-empty"):
         themes.set_theme_fonts(pkg, minor="   ")
+
+
+def test_set_theme_fonts_reports_visible_literal_run_overrides(tmp_path):
+    from pptx import Presentation
+    from pptx.util import Inches
+
+    path = tmp_path / "font-overrides.pptx"
+    prs = Presentation()
+    expected_counts = (2, 1)
+    for slide_no, count in enumerate(expected_counts):
+        slide = prs.slides.add_slide(prs.slide_layouts[6])
+        box = slide.shapes.add_textbox(
+            Inches(1), Inches(1 + slide_no), Inches(6), Inches(1)
+        )
+        paragraph = box.text_frame.paragraphs[0]
+        for run_no in range(count):
+            run = paragraph.add_run()
+            run.text = f"literal-{slide_no}-{run_no}"
+            run.font.name = "Arial" if run_no == 0 else "Georgia"
+        theme_run = paragraph.add_run()
+        theme_run.text = "theme-linked"
+        theme_run.font.name = "+mn-lt"
+        empty_run = paragraph.add_run()
+        empty_run.text = ""
+        empty_run.font.name = "Ignored Empty Font"
+    prs.save(path)
+
+    pkg = PptxPackage(path)
+    before_slides = [pkg.raw_part(part) for part in pkg.slide_parts()]
+    result = themes.set_theme_fonts(pkg, major="Aptos Display", minor="Aptos")
+
+    assert result["explicit_font_run_count"] == 3
+    assert result["affected_slides"]["count"] == 2
+    assert result["explicit_font_affected_slides"]["count"] == 2
+    details = result["explicit_font_affected_slides"]["details"]
+    assert [item["slide_index"] for item in details] == [0, 1]
+    assert [item["explicit_font_run_count"] for item in details] == [2, 1]
+    assert details[0]["typefaces"] == [
+        {"typeface": "Arial", "run_count": 1},
+        {"typeface": "Georgia", "run_count": 1},
+    ]
+    assert details[1]["typefaces"] == [
+        {"typeface": "Arial", "run_count": 1}
+    ]
+    assert result["warnings"] == [
+        "text with its own font set directly kept that font: "
+        "explicit_font_run_count counts those runs and "
+        "explicit_font_affected_slides lists the slides they are on"
+    ]
+    assert [pkg.raw_part(part) for part in pkg.slide_parts()] == before_slides
+
+
+def test_set_theme_fonts_has_empty_override_report_when_runs_follow_theme(tmp_path):
+    path, pkg = _template_deck(tmp_path, "theme-following-fonts.pptx")
+    for node in pkg.root(pkg.slide_parts()[0]).iter(
+        qn("a:latin"), qn("a:ea"), qn("a:cs")
+    ):
+        node.set("typeface", "+mn-lt")
+    result = themes.set_theme_fonts(pkg, minor="Aptos")
+
+    assert result["explicit_font_run_count"] == 0
+    assert result["explicit_font_affected_slides"] == {
+        "count": 0,
+        "slide_ids": [],
+        "details": [],
+    }
+    assert "warnings" not in result
 
 
 # ------------------------------------------------------------- brand tools
@@ -175,6 +303,55 @@ def test_apply_brand_accepts_plain_hex_and_refuses_junk(tmp_path):
         themes.apply_brand(pkg, {})
     with pytest.raises(PptMcpError, match="unknown color slot"):
         themes.apply_brand(pkg, {"colors": {"nope": "112233"}})
+
+
+def test_apply_brand_accepts_documented_flat_font_keys(tmp_path):
+    path, pkg = _template_deck(tmp_path, "flat-fonts.pptx")
+
+    result = themes.apply_brand(
+        pkg,
+        {
+            "fonts": {
+                "major_latin": "Georgia",
+                "minor_latin": "Verdana",
+                "major_ea": "Malgun Gothic",
+            }
+        },
+    )
+
+    assert result["fonts_set"] == {
+        "major": {"latin": "Georgia", "ea": "Malgun Gothic"},
+        "minor": {"latin": "Verdana"},
+    }
+    pkg.save()
+    fonts = design.get_theme(PptxPackage(path))["fonts"]
+    assert fonts["major"]["latin"] == "Georgia"
+    assert fonts["major"]["ea"] == "Malgun Gothic"
+    assert fonts["minor"]["latin"] == "Verdana"
+
+
+def test_apply_brand_refuses_unknown_font_keys(tmp_path):
+    _path, pkg = _template_deck(tmp_path, "bad-fonts.pptx")
+    before = set(pkg._dirty)
+
+    with pytest.raises(PptMcpError, match="unknown.*font key"):
+        themes.apply_brand(
+            pkg,
+            {
+                "colors": {"accent1": "123456"},
+                "fonts": {"major_latin_typo": "Georgia"},
+            },
+        )
+    with pytest.raises(PptMcpError, match="unknown.*font key"):
+        themes.apply_brand(
+            pkg, {"fonts": {"major": {"latin": "Georgia", "typo": "X"}}}
+        )
+    with pytest.raises(PptMcpError, match="no usable"):
+        themes.apply_brand(
+            pkg,
+            {"colors": {"accent1": "123456"}, "fonts": {"major": {}}},
+        )
+    assert pkg._dirty == before
 
 
 # ------------------------------------- validation, render, and COM rounds

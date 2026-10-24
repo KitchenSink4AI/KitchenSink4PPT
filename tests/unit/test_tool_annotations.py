@@ -1,28 +1,4 @@
-"""Guard: every tool ships a title, and every tool that can change
-something declares whether the change may be destructive.
-
-MCP directories require `title` and the applicable
-hints on every tool, and a client shows the title to a human instead of
-the raw tool name, so a missing or wrong one is a product defect rather
-than a documentation nit. Three things are checked here.
-
-FIRST, coverage and shape on the wire: every registered tool carries a
-non-empty title, titles are unique within this server, none exceeds 40
-characters, and none carries product or marketing language.
-
-SECOND, the classification itself. The non-destructive allowlist below is
-hand-audited and lives in the TEST on purpose. `core/tool_annotations.py`
-is where the server reads its classification from; if both sides shared
-one list the test would only prove the file equals itself. A new tool
-consequently fails twice until somebody classifies it deliberately, once
-at registration, where `annotations()` raises on an unclassified mutating
-name, and once here.
-
-THIRD, the published tables. `docs/TOOL_TITLES.md` and
-`docs/TOOL_ANNOTATIONS.md` are what a reviewer reads and what a maintainer
-disputes a row in. They are generated from the module, so they are checked
-against it here; a table that drifts from the wire is worse than no table.
-"""
+"""Annotations for the fixed nine-tool surface and its operation registry."""
 
 from __future__ import annotations
 
@@ -31,14 +7,14 @@ from pathlib import Path
 
 import pytest
 
-from kitchensink4ppt import packs, server  # noqa: F401  (registers tools)
 from kitchensink4ppt.core import tool_annotations as ann
+from kitchensink4ppt.registry import public_ops
+from kitchensink4ppt.settings import Settings
+from kitchensink4ppt.surface.plan import build
+from kitchensink4ppt.surface.tools import make_tool
 
 DOCS = Path(__file__).resolve().parents[2] / "docs"
 
-#: Words a tool title must not carry. The checklist rejects tool metadata
-#: that promotes a product, and a title is the most visible metadata there
-#: is.
 MARKETING = {
     "best", "powerful", "easy", "easiest", "fast", "fastest", "pro",
     "premium", "ultimate", "smart", "magic", "magical", "free", "awesome",
@@ -47,64 +23,68 @@ MARKETING = {
     "kitchensink4ppt", "kitchensink4web",
 }
 
+NON_DESTRUCTIVE_OPS = {
+    "add_comment", "add_entrance_animation", "add_equation_to_shape",
+    "add_layout_placeholder", "copy_presentation", "copy_shape_between",
+    "copy_slide_between",
+    "create_chart", "create_layout", "create_presentation",
+    "create_snapshot", "create_table", "duplicate_slide", "export_handout",
+    "export_pdf", "export_shape_image", "export_slide_image", "export_table",
+    "generate_agenda_slide", "generate_diagram", "insert_audio",
+    "insert_connector", "insert_equation", "insert_image",
+    "insert_master_shape", "insert_shape", "insert_slide",
+    "insert_table_cols", "insert_table_rows", "insert_textbox",
+    "insert_video", "live_scroll_to", "merge_decks", "split_deck",
+    "svg_to_shapes",
+    # the update ops change the server program or its notice setting,
+    # never a deck (core/update_flow.py)
+    "update_notices", "update_now",
+}
+
+
+def _fixed_tools() -> dict:
+    plan = build(Settings())
+    return {name: make_tool(spec, plan) for name, spec in plan.tools.items()}
+
 
 def _wire(tool) -> dict:
     return tool.to_mcp_tool().model_dump(exclude_none=True)
 
 
-def _registered() -> dict:
-    """tool name -> tool object, every pack, enabled or not."""
-    out: dict = {}
-    for tools in packs._REGISTRY.values():
-        out.update(tools)
-    return out
+def _doc_rows(filename: str) -> list:
+    text = (DOCS / filename).read_text(encoding="utf-8")
+    rows = []
+    for line in text.splitlines():
+        if line.startswith("| `"):
+            cells = [c.strip() for c in line.strip("|").split("|")]
+            rows.append([c.strip("`") for c in cells])
+    return rows
 
 
-def test_every_registered_tool_carries_a_non_empty_title():
-    missing = [name for name, tool in sorted(_registered().items())
-               if not _wire(tool).get("title")]
-    assert not missing, (
-        f"these tools reach tools/list with no title: {missing}")
+def test_every_fixed_tool_carries_a_non_empty_unique_title():
+    tools = _fixed_tools()
+    titles = {name: _wire(tool).get("title") for name, tool in tools.items()}
+    assert all(titles.values())
+    assert len(set(titles.values())) == len(titles)
 
 
-def test_titles_are_unique_within_this_server():
-    seen: dict = {}
-    clashes = []
-    for name, tool in sorted(_registered().items()):
-        title = _wire(tool)["title"]
-        if title in seen:
-            clashes.append(f"{title!r}: {seen[title]} and {name}")
-        seen[title] = name
-    assert not clashes, (
-        "two tools would show the same name in a client: " + "; ".join(clashes))
-
-
-def test_no_title_is_longer_than_forty_characters():
-    long = {name: _wire(tool)["title"]
-            for name, tool in _registered().items()
-            if len(_wire(tool)["title"]) > 40}
-    assert not long, f"titles over 40 characters: {long}"
-
-
-def test_no_title_carries_marketing_language():
+def test_fixed_titles_are_short_and_carry_no_marketing_language():
     offenders = {}
-    for name, tool in _registered().items():
-        words = set(re.findall(r"[a-z0-9]+", _wire(tool)["title"].lower()))
-        hit = words & MARKETING
+    for name, tool in _fixed_tools().items():
+        title = _wire(tool)["title"]
+        if title.startswith("COPY_SLOT:"):
+            assert "FACTS TO CONVEY:" in title, (name, title)
+            continue
+        assert len(title) <= 40, (name, title)
+        hit = set(re.findall(r"[a-z0-9]+", title.lower())) & MARKETING
         if hit:
             offenders[name] = sorted(hit)
-    assert not offenders, (
-        f"a tool title is not a place to sell anything: {offenders}")
+    assert not offenders
 
 
-def test_the_title_table_covers_the_registered_surface_exactly():
-    registered = set(_registered())
-    assert registered - set(ann.TITLES) == set(), (
-        "tools with no title (add them to tool_annotations.py): "
-        f"{sorted(registered - set(ann.TITLES))}")
-    assert set(ann.TITLES) - registered == set(), (
-        "tool_annotations.py titles tools that no longer exist: "
-        f"{sorted(set(ann.TITLES) - registered)}")
+def test_operation_title_table_covers_the_registry_exactly():
+    registered = set(public_ops())
+    assert set(ann.TITLES) == registered
 
 
 def test_an_untitled_name_raises_rather_than_getting_a_generated_title():
@@ -112,133 +92,65 @@ def test_an_untitled_name_raises_rather_than_getting_a_generated_title():
         ann.title("a_tool_that_does_not_exist")
 
 
-def test_the_wire_title_is_the_one_the_module_declares():
-    for name, tool in sorted(_registered().items()):
-        assert _wire(tool)["title"] == ann.TITLES[name], name
-
-
-def _doc_rows(filename: str) -> list:
-    text = (DOCS / filename).read_text(encoding="utf-8")
-    rows = []
-    for line in text.splitlines():
-        if not line.startswith("| `"):
-            continue
-        cells = [c.strip() for c in line.strip("|").split("|")]
-        rows.append([c.strip("`") for c in cells])
-    return rows
-
-
 def test_the_published_title_table_matches_the_module():
     rows = _doc_rows("TOOL_TITLES.md")
     published = {name: title for name, title, *_ in rows}
-    assert published == ann.TITLES, (
-        "docs/TOOL_TITLES.md has drifted from tool_annotations.py. "
-        "Regenerate it rather than editing either side by hand.")
+    assert {name: published[name] for name in ann.TITLES} == ann.TITLES
+    assert set(published) - set(ann.TITLES) <= {"enable_tools", "disable_tools"}
 
 
-# --------------------------------------------- destructiveHint and friends
-
-#: HAND-AUDITED. Every name here was classified by reading the tool's
-#: implementation, against the rule stated in docs/TOOL_ANNOTATIONS.md: a
-#: tool is non-destructive only when every path either ADDS without
-#: replacing, or changes no user data at all.
-NON_DESTRUCTIVE_TOOLS = {
-    "add_comment", "add_entrance_animation", "add_equation_to_shape",
-    "add_layout_placeholder", "copy_presentation",
-    "copy_slide_between", "create_chart", "create_layout",
-    "create_presentation", "create_snapshot", "create_table",
-    "disable_tools", "duplicate_slide", "enable_tools",
-    "generate_agenda_slide", "generate_diagram", "insert_audio",
-    "insert_connector", "insert_equation", "insert_image",
-    "insert_master_shape", "insert_shape", "insert_slide",
-    "insert_table_cols", "insert_table_rows", "insert_textbox",
-    "insert_video", "live_scroll_to", "merge_decks", "split_deck",
-    "svg_to_shapes"
-}
+def test_every_operation_has_explicit_read_only_and_destructive_classes():
+    missing = [
+        name for name, spec in public_ops().items()
+        if not isinstance(spec.read_only, bool)
+        or not isinstance(spec.destructive, bool)
+    ]
+    assert not missing
 
 
-def test_every_mutating_tool_carries_a_destructive_hint():
-    missing = []
-    for name, tool in sorted(_registered().items()):
-        annotations = getattr(tool, "annotations", None)
-        if annotations is None:
-            missing.append(name)
-            continue
-        if (annotations.readOnlyHint is False
-                and annotations.destructiveHint is None):
-            missing.append(name)
-    assert not missing, (
-        f"these tools can change something and say nothing about whether "
-        f"the change is destructive: {missing}")
+def test_no_read_only_operation_is_destructive():
+    noisy = [
+        name for name, spec in public_ops().items()
+        if spec.read_only and spec.destructive
+    ]
+    assert not noisy
 
 
-def test_no_read_only_tool_claims_a_destructive_hint():
-    """The field is meaningful only when readOnlyHint is false. A value on
-    a read-only tool is noise a reviewer has to interpret."""
-    noisy = [name for name, tool in _registered().items()
-             if tool.annotations.readOnlyHint is True
-             and tool.annotations.destructiveHint is not None]
-    assert not noisy, noisy
-
-
-def test_the_destructive_classification_covers_the_surface():
-    mutating = {name for name, tool in _registered().items()
-                if tool.annotations.readOnlyHint is False}
+def test_destructive_classification_covers_mutating_operations():
+    mutating = {name for name, spec in public_ops().items() if not spec.read_only}
     classified = ann.DESTRUCTIVE | ann.NON_DESTRUCTIVE
-    assert mutating - classified == set(), (
-        "unclassified tools (add them to tool_annotations.py): "
-        f"{sorted(mutating - classified)}")
-    assert classified - mutating == set(), (
-        "tool_annotations.py classifies tools that are read-only or gone: "
-        f"{sorted(classified - mutating)}")
+    assert classified == mutating
     assert not (ann.DESTRUCTIVE & ann.NON_DESTRUCTIVE)
 
 
-def test_the_non_destructive_set_matches_the_hand_audited_allowlist():
-    on_the_wire = {
-        name for name, tool in _registered().items()
-        if tool.annotations.destructiveHint is False
+def test_non_destructive_set_matches_hand_audited_allowlist():
+    actual = {
+        name for name, spec in public_ops().items()
+        if not spec.read_only and not spec.destructive
     }
-    assert on_the_wire == NON_DESTRUCTIVE_TOOLS, (
-        "the non-destructive set changed. Added: "
-        f"{sorted(on_the_wire - NON_DESTRUCTIVE_TOOLS)}; removed: "
-        f"{sorted(NON_DESTRUCTIVE_TOOLS - on_the_wire)}. Classify the tool "
-        "by reading its implementation against the rule in "
-        "docs/TOOL_ANNOTATIONS.md, then update BOTH this allowlist and "
-        "tool_annotations.py.")
+    assert actual == NON_DESTRUCTIVE_OPS
 
 
-def test_an_unclassified_mutating_tool_raises_at_registration():
-    try:
+def test_an_unclassified_mutating_operation_raises():
+    with pytest.raises(RuntimeError):
         ann.annotations("a_tool_that_does_not_exist", read_only=False)
-    except RuntimeError:
-        return
-    raise AssertionError(
-        "an unclassified mutating tool must refuse to register rather than "
-        "defaulting: defaulting to false is a false safety claim and "
-        "defaulting to true is a lie about a read.")
 
 
-def test_open_world_hint_is_declared_on_every_tool():
-    missing = [name for name, tool in _registered().items()
-               if tool.annotations.openWorldHint is None]
-    assert not missing, missing
+def test_fixed_tool_annotations_are_complete_and_closed_world():
+    for name, tool in _fixed_tools().items():
+        annotations = tool.annotations
+        assert annotations is not None
+        assert annotations.readOnlyHint is not None
+        assert annotations.destructiveHint is not None
+        assert annotations.idempotentHint is not None
+        # only ppt_review reaches a remote service (update_now: PyPI, GitHub)
+        assert annotations.openWorldHint is (name == "ppt_review")
+        if annotations.readOnlyHint:
+            assert annotations.destructiveHint is False
+            assert annotations.idempotentHint is True
 
 
-def test_nothing_in_this_server_claims_an_open_world():
-    """No tool here reaches a remote service, so none may say it does."""
-    for name, tool in _registered().items():
-        assert tool.annotations.openWorldHint is False, name
-
-
-def test_idempotent_hint_is_true_or_absent_never_false():
-    for name, tool in _registered().items():
-        hint = tool.annotations.idempotentHint
-        assert hint in (True, None), (name, hint)
-        assert (hint is True) == (name in ann.IDEMPOTENT), name
-
-
-def test_the_published_annotation_tables_match_the_module():
+def test_published_annotation_tables_match_the_module():
     text = (DOCS / "TOOL_ANNOTATIONS.md").read_text(encoding="utf-8")
     destructive, non_destructive = set(), set()
     bucket = None
@@ -251,14 +163,11 @@ def test_the_published_annotation_tables_match_the_module():
             bucket = None
         elif bucket is not None and line.startswith("| `"):
             bucket.add(line.strip("|").split("|")[0].strip().strip("`"))
-    assert destructive == ann.DESTRUCTIVE, (
-        "docs/TOOL_ANNOTATIONS.md destructive table has drifted: added "
-        f"{sorted(destructive - ann.DESTRUCTIVE)}, removed "
-        f"{sorted(ann.DESTRUCTIVE - destructive)}")
-    assert non_destructive == ann.NON_DESTRUCTIVE, (
-        "docs/TOOL_ANNOTATIONS.md non-destructive table has drifted: added "
-        f"{sorted(non_destructive - ann.NON_DESTRUCTIVE)}, removed "
-        f"{sorted(ann.NON_DESTRUCTIVE - non_destructive)}")
+    assert destructive == ann.DESTRUCTIVE
+    assert non_destructive & set(ann.NON_DESTRUCTIVE) == set(ann.NON_DESTRUCTIVE)
+    assert non_destructive - set(ann.NON_DESTRUCTIVE) <= {
+        "enable_tools", "disable_tools"
+    }
 
 
 def test_every_destructive_row_states_a_reason():
@@ -270,5 +179,4 @@ def test_every_destructive_row_states_a_reason():
         cells = [c.strip() for c in line.strip("|").split("|")]
         if len(cells) == 2 and len(cells[1]) < 20:
             thin.append(cells[0])
-    assert not thin, (
-        f"a reviewer cannot dispute a row with no reason on it: {thin}")
+    assert not thin

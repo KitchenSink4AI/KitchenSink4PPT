@@ -1,23 +1,21 @@
-"""Regression tests for measured text fit, COM cleanup ownership, text
-carry, outline levels and busy-PowerPoint classification.
+"""Regression tests for text measurement, hyperlink carry and the COM bridge.
 
-- the measured text path ignored a:rPr/@spc and resolved inherited run
-    size, level and list-style margins incompletely, so an overflow could
-    come back as `font-metrics` + `likely_overflow: false`;
-- the failed-DispatchEx cleanup inferred ownership from an empty process
-    snapshot and force-ended every POWERPNT pid that appeared, so a
-    PowerPoint launched concurrently by the user could be killed;
-- the text carry compared the wrong hover element (a:hlinkHover instead
-    of a:hlinkMouseOver) and let one paragraph's disagreement strip links
-    that were unanimous inside other paragraphs;
-- a text= replacement could not state outline level 0, so an unindented
-    line kept the old paragraph's nesting;
-- the first Slides.Count access in the layer 2 walk sat outside the
-    environment classification, so a busy PowerPoint became opens_clean
-    false.
+- The measured text path accounts for a:rPr/@spc and resolves inherited run
+  size, level and list-style margins completely, so an overflow cannot come
+  back as `font-metrics` + `likely_overflow: false`.
+- The failed-DispatchEx cleanup never infers ownership from an empty
+  process snapshot and never force-ends a POWERPNT pid, so a PowerPoint
+  launched concurrently by the user is not killed.
+- The text carry compares the right hover element (a:hlinkMouseOver, not
+  a:hlinkHover), and one paragraph's disagreement does not strip links that
+  were unanimous inside other paragraphs.
+- A text= replacement can state outline level 0, so an unindented line does
+  not keep the old paragraph's nesting.
+- The first Slides.Count access in the layer 2 walk sits inside the
+  environment classification, so a busy PowerPoint does not become
+  opens_clean false.
 
-No PowerPoint is started by
-anything in this file.
+No PowerPoint is started by anything in this file.
 """
 
 from __future__ import annotations
@@ -35,6 +33,7 @@ from kitchensink4ppt.ops import fontmetrics as _fm
 from kitchensink4ppt.ops import text as tx
 
 
+# ------------------------------------------------------------------ text measurement
 
 
 def _metrics_shape(runs, *, spacing=None, lst_size=None, wrap="none",
@@ -84,8 +83,8 @@ metrics = pytest.mark.skipif(
 
 @metrics
 def test_character_spacing_widens_the_measured_line():
-    """G1a: PowerPoint adds a:rPr/@spc between characters. Measuring the
-    same string with and without it used to give the identical ratio."""
+    """PowerPoint adds a:rPr/@spc between characters. Measuring the same
+    string with and without it must not give the identical ratio."""
     plain_sp, plain_body, _ = _metrics_shape([("EXPANDED", "Calibri", 1200)])
     spaced_sp, spaced_body, _ = _metrics_shape(
         [("EXPANDED", "Calibri", 1200)], spacing=1000
@@ -99,7 +98,7 @@ def test_character_spacing_widens_the_measured_line():
 
 @metrics
 def test_character_spacing_can_flip_the_overflow_verdict():
-    """G1a, the customer-visible half: 10pt of tracking per character on a
+    """The customer-visible half: 10pt of tracking per character on a
     label that fits without it must not come back as a fit."""
     plain_sp, plain_body, _ = _metrics_shape([("EXPANDED", "Calibri", 1200)])
     spaced_sp, spaced_body, _ = _metrics_shape(
@@ -112,8 +111,9 @@ def test_character_spacing_can_flip_the_overflow_verdict():
 
 @metrics
 def test_an_inherited_list_style_size_is_measured_at_that_size():
-    """G1b: a run with no sz of its own, under a 28pt lvl1pPr, was measured
-    at the body default (12pt), which can reverse an overflow verdict."""
+    """A run with no sz of its own, under a 28pt lvl1pPr, must be measured
+    at 28pt rather than the body default (12pt), which can reverse an
+    overflow verdict."""
     _sp, body, p = _metrics_shape(
         [("Inherited", "Calibri", None)], lst_size=2800
     )
@@ -124,7 +124,7 @@ def test_an_inherited_list_style_size_is_measured_at_that_size():
 
 @metrics
 def test_a_size_that_does_not_resolve_forces_an_honest_estimate():
-    """G1b: no sz on the run, nothing in the chain to resolve it, and no
+    """No sz on the run, nothing in the chain to resolve it, and no
     placeholder to inherit from. The measured path must refuse rather than
     measure the body default."""
     sp, body, _p = _metrics_shape([("Unsized", "Calibri", None)])
@@ -135,8 +135,8 @@ def test_a_size_that_does_not_resolve_forces_an_honest_estimate():
 
 @metrics
 def test_the_run_that_forced_the_fallback_is_the_one_reported():
-    """A mixed body used to blame the FIRST run's face for a later
-    run's missing font."""
+    """A mixed body must not blame the FIRST run's face for a later run's
+    missing font."""
     sp, body, _p = _metrics_shape(
         [("fine ", "Calibri", 1200),
          ("missing", "NoSuchFontFamilyAnywhere", 1200)]
@@ -148,9 +148,9 @@ def test_the_run_that_forced_the_fallback_is_the_one_reported():
 
 @metrics
 def test_an_inherited_list_style_indent_narrows_the_usable_width():
-    """G1b: marL/indent that come from the shape's own list style rather
-    than from the paragraph used to be read as zero, so the measurement
-    thought it had the whole frame to lay text into."""
+    """marL/indent that come from the shape's own list style rather than
+    from the paragraph must not be read as zero, or the measurement thinks
+    it has the whole frame to lay text into."""
     sp, body, _p = _metrics_shape(
         [("Indented text here", "Calibri", 1200)], wrap="square"
     )
@@ -163,6 +163,7 @@ def test_an_inherited_list_style_indent_narrows_the_usable_width():
     assert indented["height_ratio"] > flat["height_ratio"]
 
 
+# ------------------------------------------------------------------ failed start
 
 pytestmark_win = pytest.mark.skipif(
     sys.platform != "win32", reason="the COM bridge is Windows only"
@@ -180,9 +181,9 @@ class _Pythoncom:
 def test_a_powerpoint_that_appears_during_a_failed_start_is_not_killed(
     monkeypatch,
 ):
-    """The entry snapshot was empty, so every pid that appeared after
-    it was force-ended. A user launching PowerPoint in that window lost
-    unsaved work."""
+    """With an empty entry snapshot, every pid that appears afterwards must
+    be left alone: force-ending it would cost a user who launched
+    PowerPoint in that window their unsaved work."""
     from kitchensink4ppt.com import bridge
 
     world = {"pids": set()}
@@ -215,9 +216,9 @@ def test_a_powerpoint_that_appears_during_a_failed_start_is_not_killed(
 def test_the_failed_start_reports_what_it_saw_and_what_it_did_not_do(
     monkeypatch,
 ):
-    """The refusal used to claim a process 'was ended', then
-    that it 'was left running'. It may say only what it observed and what
-    this call did not do; liveness at read time is not knowable here."""
+    """The refusal must not claim a process 'was ended', nor that it 'was
+    left running'. It may say only what it observed and what this call did
+    not do; liveness at read time is not knowable here."""
     from kitchensink4ppt.com import bridge
 
     world = {"pids": set()}
@@ -259,8 +260,8 @@ def test_nothing_in_the_failed_start_path_can_end_a_process():
 
 @pytestmark_win
 def test_the_retry_stops_once_a_powerpoint_has_appeared(monkeypatch):
-    """Retrying DispatchEx after something appeared would launch a
-    second process on top of a state we cannot explain."""
+    """Retrying DispatchEx after something appeared would launch a second
+    process on top of a state we cannot explain."""
     from kitchensink4ppt.com import bridge
 
     world = {"pids": set()}
@@ -284,6 +285,7 @@ def _com_error(hresult: int):
     return pywintypes.com_error(hresult, "fabricated for the test", None, None)
 
 
+# ------------------------------------------------------------------ hyperlink carry
 
 
 def _body_with_paragraphs(specs):
@@ -321,8 +323,8 @@ def _carry(old_body, paragraph_count):
 
 
 def test_a_paragraph_keeps_the_link_all_of_its_runs_share():
-    """Paragraph 1 mixes linked and unlinked runs; paragraph 2 shares
-    one link. The body-global flag stripped paragraph 2's link too."""
+    """Paragraph 1 mixes linked and unlinked runs; paragraph 2 shares one
+    link. A body-global flag would strip paragraph 2's link too."""
     old = _body_with_paragraphs([
         [("a:hlinkClick", "rId1"), None],
         [("a:hlinkClick", "rId2"), ("a:hlinkClick", "rId2")],
@@ -342,8 +344,9 @@ def test_a_paragraph_keeps_the_link_all_of_its_runs_share():
 
 
 def test_a_disagreeing_hover_link_is_seen():
-    """The code compared a:hlinkHover, which is not the run-level
-    element, so hover links compared equal whatever they pointed at."""
+    """Hover links are compared on the run-level element
+    (a:hlinkMouseOver). Comparing a:hlinkHover, which is not that element,
+    made hover links compare equal whatever they pointed at."""
     old = _body_with_paragraphs([
         [("a:hlinkMouseOver", "rId1"), None],
     ])
@@ -362,18 +365,20 @@ def test_the_run_level_hover_element_is_the_schema_one():
     assert "a:hlinkHover" not in sh._HLINK_TAGS
 
 
+# ------------------------------------------------------------------ outline level
 
 
 def test_an_unindented_line_states_level_zero():
-    """A line with no leading tab said nothing about its level, so a
-    flat replacement kept the nesting of the paragraph it replaced."""
+    """A line with no leading tab must state level 0: saying nothing about
+    its level let a flat replacement keep the nesting of the paragraph it
+    replaced."""
     specs = tx._parse_text_paragraphs("Top level\n\tSecond level\nTop again")
     assert [s["level"] for s in specs] == [0, 1, 0]
     assert all(s["level_explicit"] for s in specs)
 
 
 def test_a_flat_replacement_unnests_a_nested_paragraph():
-    """Through the carry: the old paragraph is at level 1 and
+    """End to end through the carry: the old paragraph is at level 1 and
     the replacement line has no tab, so the result is level 0."""
     from kitchensink4ppt.ops import shapes as sh
 
@@ -397,12 +402,13 @@ def test_a_flat_replacement_unnests_a_nested_paragraph():
     )
 
 
+# ------------------------------------------------------------------ first Slides.Count access
 
 
 @pytestmark_win
 def test_a_busy_powerpoint_at_the_first_slide_count_is_not_a_file_verdict():
-    """Pres.Slides.Count sat outside the classification, so a busy
-    application became opens_clean false on an innocent deck."""
+    """pres.Slides.Count must sit inside the classification: outside it, a
+    busy application became opens_clean false on an innocent deck."""
     from kitchensink4ppt.com import bridge
     from kitchensink4ppt.core.errors import PowerPointBusy
 
@@ -420,8 +426,8 @@ def test_a_busy_powerpoint_at_the_first_slide_count_is_not_a_file_verdict():
 
 @pytestmark_win
 def test_a_failure_at_the_first_slide_count_reports_no_coordinates():
-    """No slide was reached, so the four failed_* keys are absent and
-    the verdict says only that the load failed."""
+    """No slide was reached, so the four failed_* keys are absent and the
+    verdict says only that the load failed."""
     from kitchensink4ppt.com import bridge
 
     class _Slides:
@@ -451,7 +457,7 @@ def test_validate_does_not_promise_coordinates_it_may_not_have():
     )
 
 
-# ----------------------------------------------------------------- G3b
+# ----------------------------------------------------------------- run-level hover links
 #
 # The run-level hover element again, this time on the READING side. Every
 # whole-tree sweep and every container scan named a:hlinkClick and
@@ -464,7 +470,7 @@ def test_validate_does_not_promise_coordinates_it_may_not_have():
 
 def _run_hover_link(pkg, slide, shape_id, rid):
     """Turn the run's existing a:hlinkClick into an a:hlinkMouseOver, which
-    is what a mouse-over action on text looks like in a deck."""
+    is what a mouse-over action on text looks like in a real deck."""
     from kitchensink4ppt.ops import read as _read
     from kitchensink4ppt.ops import shapes as _shapes
 
@@ -555,13 +561,13 @@ def test_deleting_a_slide_neuters_a_run_level_mouse_over_jump(make_deck):
     )
 
 
-# ----------------------------------------------------------------- G2b
+# ----------------------------------------------------------------- unknown process table
 #
-# The same empty-snapshot flaw one layer up. powerpnt_pids() returned an
+# The same empty-snapshot hazard one layer up. powerpnt_pids() returned an
 # empty set whenever tasklist errored, timed out or printed something it
 # could not parse, so "unknown" and "nothing was running" were the same
 # value. _powerpoint_locked then computed launched = not before_pids, and
-# a session that had merely ATTACHED to the owner's PowerPoint believed it
+# a session that had merely ATTACHED to the user's PowerPoint believed it
 # had launched it and called Quit() on the way out.
 
 
@@ -629,10 +635,9 @@ class _Collection:
 class _FakeApp:
     """Enough of PowerPoint.Application to run a session to its cleanup.
 
-    That includes the acquisition token: a just-created
-    automation instance is not visible and holds no presentations and no
-    windows, and that is the only part of ownership a concurrent launch
-    cannot fake.
+    That includes the acquisition token: a just-created automation
+    instance is not visible and holds no presentations and no windows, and
+    that is the only part of ownership a concurrent launch cannot fake.
     """
 
     def __init__(self, visible=0, presentations=0, windows=0):
@@ -680,13 +685,13 @@ class _Win32:
 def test_an_unreadable_table_never_quits_the_instance_it_attached_to(
     monkeypatch,
 ):
-    """The harm: tasklist fails, the owner has PowerPoint open, the server
-    attaches to it and then quits it with the owner's unsaved work in it."""
+    """The harm: tasklist fails, the user has PowerPoint open, the server
+    attaches to it and then quits it with the user's unsaved work in it."""
     from kitchensink4ppt.com import bridge
 
     app, launched = _run_session(monkeypatch, bridge, lambda: None)
     assert launched is False, "an unknown table is not ownership"
-    assert app.quit_calls == 0, "the owner's PowerPoint was quit"
+    assert app.quit_calls == 0, "the user's PowerPoint was quit"
     assert not bridge._SELF_LAUNCHED_PIDS, "the kill-switch was armed"
 
 
@@ -745,7 +750,7 @@ def test_powerpoint_status_does_not_call_an_unknown_table_not_running(
     assert "error" in out and "process table" in out["error"]
 
 
-# ------------------------------------------------------------------ S1
+# ------------------------------------------------------------------ metrics note
 
 
 @metrics
@@ -762,9 +767,7 @@ def test_the_metrics_note_states_a_bounded_allowance_not_a_direction():
     assert note.endswith("PowerPoint's rendering is still the final authority")
 
 
-# ================================================================ REGRESSIONS, GROUP 4
-
-
+# ------------------------------------------------------------ process ownership
 
 
 @pytestmark_win
@@ -787,10 +790,9 @@ def test_a_nonzero_tasklist_with_stdout_text_is_unknown(monkeypatch):
 def test_the_users_instance_handed_to_us_by_dispatch_is_never_ours(
     monkeypatch,
 ):
-    """PowerPoint is a single-instance automation
-    server: a user who starts it between the empty snapshot and DispatchEx
-    is handed to US, and the before/after pid difference names THEIR
-    process. """
+    """PowerPoint is a single-instance automation server: a user who starts
+    it between the empty snapshot and DispatchEx is handed to US, and the
+    before/after pid difference names THEIR process."""
     import threading
 
     from kitchensink4ppt.com import bridge
@@ -877,21 +879,43 @@ def test_the_user_making_it_visible_stops_the_quit(monkeypatch):
 
 @pytestmark_win
 def test_nothing_in_the_com_package_can_end_a_powerpoint_process():
-    """1.3.1 removes force-kill from the timeout path, and there is no
-    other place in the package that ends a process. A source guard,
-    because this is easy to reintroduce and expensive to notice."""
+    """Only the bounded server-exit path may end its own PowerPoint.
+
+    The target must pass the journalled PID + creation-time + executable
+    image + /Automation identity checks. No operation or timeout path may
+    contain a process-ending primitive.
+    """
+    import ast
     import pathlib
 
     from kitchensink4ppt.com import bridge
 
     root = pathlib.Path(bridge.__file__).parent
+    tree = ast.parse((root / "bridge.py").read_text(encoding="utf-8"))
+    allowed_fn = next(
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "_end_owned_powerpoint_at_exit"
+    )
+    allowed = range(allowed_fn.lineno, allowed_fn.end_lineno + 1)
     offenders = []
     for path in sorted(root.glob("*.py")):
-        body = path.read_text(encoding="utf-8")
-        for forbidden in ("taskkill", "TerminateProcess", ".Terminate("):
-            if forbidden in body:
-                offenders.append(path.name + " contains " + forbidden)
+        for line_no, line in enumerate(
+            path.read_text(encoding="utf-8").splitlines(), 1
+        ):
+            code = line.split("#", 1)[0]
+            for forbidden in ("taskkill", "TerminateProcess", ".Terminate("):
+                if forbidden in code and not (
+                    path.name == "bridge.py" and line_no in allowed
+                ):
+                    offenders.append(
+                        f"{path.name}:{line_no} contains {forbidden}"
+                    )
     assert not offenders, "; ".join(offenders)
+    body = ast.unparse(allowed_fn)
+    assert body.index("_creation_time(") < body.index("TerminateProcess(")
+    assert body.index("powerpnt.exe") < body.index("TerminateProcess(")
+    assert body.index("_is_automation_instance(") < body.index("TerminateProcess(")
 
 
 @pytestmark_win
@@ -922,12 +946,13 @@ def test_a_timed_out_operation_names_the_pid_and_ends_nothing(monkeypatch):
     assert "was left running" not in message
 
 
+# ------------------------------------------------------------ inherited typeface and malformed indents
 
 
 @metrics
 def test_the_inherited_face_comes_from_the_runs_own_level():
-    """_body_typeface took the first a:defRPr anywhere in the shape's
-    lstStyle, so a level-two run was measured in level one's face."""
+    """_body_typeface must not take the first a:defRPr anywhere in the
+    shape's lstStyle: that measured a level-two run in level one's face."""
     sp, body, p = _metrics_shape([("Inherited face", "Calibri", 1200)])
     lst = body.find(qn("a:lstStyle"))
     # Level one names a face; level two, where this paragraph actually
@@ -958,8 +983,8 @@ def test_the_inherited_face_comes_from_the_runs_own_level():
     ("marL", "99999999999"),
 ])
 def test_a_malformed_indent_is_unmeasurable_not_zero(name, value):
-    """A malformed explicit marL/indent became zero, which measures
-    a frame nobody has."""
+    """A malformed explicit marL/indent must not become zero, which
+    measures a frame nobody has."""
     sp, body, p = _metrics_shape([("Some text", "Calibri", 1200)])
     p.find(qn("a:pPr")).set(name, value)
     rec = _overflow(sp, body)
@@ -967,6 +992,7 @@ def test_a_malformed_indent_is_unmeasurable_not_zero(name, value):
     assert name in rec["method_reason"]
 
 
+# ------------------------------------------------------------ replacing an existing hover link
 
 
 @pytest.mark.parametrize("hover_tag", ["a:hlinkMouseOver", "a:hlinkHover"])
@@ -974,8 +1000,9 @@ def test_a_malformed_indent_is_unmeasurable_not_zero(name, value):
 def test_setting_a_link_replaces_an_existing_run_hover_link(
     make_deck, hover_tag, kind
 ):
-    """_set_run_hlink removed only a:hlinkClick, so the old hover
-    element and its relationship survived beside the new link."""
+    """_set_run_hlink must remove the old hover element and its
+    relationship, not only a:hlinkClick, or they survive beside the new
+    link."""
     from kitchensink4ppt.core.package import PptxPackage
     from kitchensink4ppt.ops import links
     from kitchensink4ppt.ops import read as _read
@@ -1052,6 +1079,7 @@ def test_setting_a_link_replaces_an_existing_shape_hover_link(make_deck, kind):
     assert old_rid not in rids
 
 
+# ------------------------------------------------------------ busy or gone PowerPoint at slide id
 
 
 @pytestmark_win
@@ -1062,9 +1090,9 @@ def test_setting_a_link_replaces_an_existing_shape_hover_link(make_deck, kind):
 def test_a_busy_or_gone_powerpoint_at_slide_id_is_not_swallowed(
     hresult_name, error_name
 ):
-    """_slide_id_of caught EVERY exception and returned None, so a
-    busy or disconnected application never reached the classifier and the
-    walk carried on to a verdict about the file."""
+    """_slide_id_of must not catch EVERY exception and return None: that
+    kept a busy or disconnected application from reaching the classifier,
+    and the walk carried on to a verdict about the file."""
     from kitchensink4ppt.com import bridge
     from kitchensink4ppt.core import errors
 
@@ -1089,17 +1117,15 @@ def test_an_ordinary_slide_id_read_failure_is_still_just_none():
     assert bridge._slide_id_of(_Slide()) is None
 
 
-# ================================================================ REGRESSIONS, GROUP 5
-
-
+# ------------------------------------------------------------ timeout and grace
 #
-# Everything below is EVENT-DRIVEN. Earlier tests proved late completion with a
-# 10.8 second sleep racing _run_bounded's grace wait, and on a slow
-# machine the read-only dialog inspection took long enough that
-# the worker won the race and the test failed. No sleep decides an outcome
-# here: the worker blocks on an event the test owns, and the test
-# releases it from inside the stubbed dialog probe, which runs at a known
-# point in the grace window.
+# Everything below is EVENT-DRIVEN. A test that proves late completion with
+# a 10.8 second sleep racing _run_bounded's grace wait depends on the
+# machine: where the read-only dialog inspection takes long enough, the
+# worker wins the race and the test fails. No sleep decides an outcome
+# here: the worker blocks on an event the test owns, and the test releases
+# it from inside the stubbed dialog probe, which runs at a known point in
+# the grace window.
 
 
 class _TimeoutHarness:
@@ -1178,8 +1204,8 @@ def _timeout_harness(monkeypatch, bridge, token=None, outcome=None,
 def test_a_worker_still_running_when_the_refusal_is_built_gets_the_refusal(
     monkeypatch,
 ):
-    """The worker is held, so the refusal is what comes back, and
-    it carries the whole uncancelled-operation warning."""
+    """The worker is held, so the refusal is what comes back, and it
+    carries the whole uncancelled-operation warning."""
     from kitchensink4ppt.com import bridge
     from kitchensink4ppt.core.errors import PowerPointBlocked
 
@@ -1199,13 +1225,14 @@ def test_a_worker_still_running_when_the_refusal_is_built_gets_the_refusal(
     assert "check the output file before repeating the call" in message
 
 
+# ------------------------------------------------- stage control
 #
-# Earlier tests proved the two-stage ordering with tests that still left the
-# scheduler a vote: the stage-one case used timeout=0 and ASSUMED the
-# first wait could not observe a brand-new thread (200 instrumented runs
-# say it always did, so the first post-grace check was never reached),
-# and the stage-two harness set its own event before _run_bounded set its
-# internal one. Both are replaced here.
+# Tests that leave the scheduler a vote are flaky: a stage-one case that
+# uses timeout=0 ASSUMES the first wait cannot observe a brand-new thread
+# (200 instrumented runs say it always did, so the first post-grace check
+# was never reached), and a stage-two harness that sets its own event
+# before _run_bounded sets its internal one races the real signal. Neither
+# approach is used here.
 #
 # _COMPLETION_EVENT_FACTORY is the seam. The event below is real, and the
 # worker sets it exactly as in production; what the test decides is WHICH
@@ -1349,6 +1376,7 @@ def test_a_worker_that_never_completes_gets_the_refusal(monkeypatch):
     assert "The operation was NOT cancelled" in str(exc_info.value)
 
 
+# ----------------------------------------------- queued ghost write
 #
 # A caller that gives up while its worker is still QUEUED on the COM
 # serialization lock used to get PowerPointBusy and an invitation to
@@ -1397,10 +1425,10 @@ def _queued_worker(name):
 
 @pytestmark_win
 def test_a_call_abandoned_while_queued_never_runs_its_operation():
-    """The holder keeps the lock past the caller's wait, so the
-    caller is told the call was abandoned. The proof is what happens
-    AFTER the holder releases: the queued worker reaches the front of the
-    queue, loses the decision, and exits without ever entering fn."""
+    """The holder keeps the lock past the caller's wait, so the caller is
+    told the call was abandoned. The proof is what happens AFTER the
+    holder releases: the queued worker reaches the front of the queue,
+    loses the decision, and exits without ever entering fn."""
     from kitchensink4ppt.com import bridge
     from kitchensink4ppt.core.errors import PowerPointBusy
 
@@ -1426,8 +1454,8 @@ def test_a_call_abandoned_while_queued_never_runs_its_operation():
 
 @pytestmark_win
 def test_a_retry_after_an_abandoned_call_runs_the_operation_once():
-    """The refusal invites a retry, so the retry must be the
-    only execution there ever is."""
+    """The refusal invites a retry, so the retry must be the only
+    execution there ever is."""
     from kitchensink4ppt.com import bridge
     from kitchensink4ppt.core.errors import PowerPointBusy
 
@@ -1457,10 +1485,10 @@ def test_a_retry_after_an_abandoned_call_runs_the_operation_once():
 def test_a_worker_that_wins_the_start_decision_is_never_told_to_retry(
     monkeypatch,
 ):
-    """The other side of the same decision: the worker takes the
-    lock and starts fn in the instant before the caller would have
-    abandoned it. The caller must then follow the grace path and get the
-    worker's own answer, never a queue-contention retry.
+    """The other side of the same decision: the worker takes the lock and
+    starts fn in the instant before the caller would have abandoned it.
+    The caller must then follow the grace path and get the worker's own
+    answer, never a queue-contention retry.
 
     The completion seam makes the order explicit rather than hoped for:
     the lock is handed over during the caller's deadline wait, and that
@@ -1527,10 +1555,10 @@ def test_a_worker_that_raises_during_the_grace_surfaces_that_error(
 def test_a_token_cleared_during_the_grace_is_not_reported_as_a_pid(
     monkeypatch,
 ):
-    """The worker recorded pid 5150, then its session ended and
-    cleared the token while the deadline was passing. The evidence is read
-    when the refusal is BUILT, so the refusal cannot name a pid that is no
-    longer recorded, and the new wording cannot say it is still running."""
+    """The worker recorded pid 5150, then its session ended and cleared the
+    token while the deadline was passing. The evidence is read when the
+    refusal is BUILT, so the refusal cannot name a pid that is no longer
+    recorded, and the wording cannot say it is still running."""
     from kitchensink4ppt.com import bridge
     from kitchensink4ppt.core.errors import PowerPointBlocked
 
@@ -1551,8 +1579,8 @@ def test_a_token_cleared_during_the_grace_is_not_reported_as_a_pid(
 
 @pytestmark_win
 def test_a_recorded_pid_is_reported_state_neutrally(monkeypatch):
-    """What was observed and what this path did not do; no claim
-    about the process's current state and none about ownership."""
+    """What was observed and what this path did not do; no claim about the
+    process's current state and none about ownership."""
     from kitchensink4ppt.com import bridge
     from kitchensink4ppt.core.errors import PowerPointBlocked
 
@@ -1576,10 +1604,10 @@ def test_a_recorded_pid_is_reported_state_neutrally(monkeypatch):
     pytest.param(set, id="worker-never-touched-powerpoint"),
 ])
 def test_every_no_token_case_gets_the_same_neutral_clause(monkeypatch, table):
-    """An empty token is NOT evidence that PowerPoint was already
-    running: the table may be unreadable, the ownership gate may have
-    refused, no token may have been recorded yet, or the worker may never
-    have touched PowerPoint at all. One honest sentence covers all of it."""
+    """An empty token is NOT evidence that PowerPoint was already running:
+    the table may be unreadable, the ownership gate may have refused, no
+    token may have been recorded yet, or the worker may never have touched
+    PowerPoint at all. One honest sentence covers all of it."""
     from kitchensink4ppt.com import bridge
     from kitchensink4ppt.core.errors import PowerPointBlocked
 
@@ -1596,9 +1624,9 @@ def test_every_no_token_case_gets_the_same_neutral_clause(monkeypatch, table):
 
 
 def test_no_timeout_test_decides_an_outcome_with_a_sleep():
-    """Pinned: the earlier proof failed on a slow machine
-    because a sleep raced the grace wait. Nothing in this file may go back
-    to that."""
+    """No timeout test may decide an outcome with a sleep: a sleep that
+    races the grace wait fails on a slow machine. Nothing in this file may
+    go back to that."""
     import pathlib
     import re
 
@@ -1613,9 +1641,9 @@ def test_no_timeout_test_decides_an_outcome_with_a_sleep():
 
 @pytestmark_win
 def test_a_partial_startup_process_is_not_said_to_be_ended():
-    """_classify told the caller a half-started
-    PowerPoint "is ended by this call". Nothing is ended, and the
-    replacement claims no current state either."""
+    """_classify must not tell the caller a half-started PowerPoint "is
+    ended by this call". Nothing is ended, and the replacement claims no
+    current state either."""
     from kitchensink4ppt.com import bridge
 
     message = str(bridge._classify(_com_error(bridge.CO_E_SERVER_EXEC_FAILURE)))
@@ -1629,8 +1657,8 @@ def test_a_partial_startup_process_is_not_said_to_be_ended():
 
 @pytestmark_win
 def test_no_string_in_the_com_package_claims_a_process_was_ended():
-    """A source guard over the runtime strings, alongside the
-    guard that no code can end a process."""
+    """A source guard over the runtime strings, alongside the guard that
+    no code can end a process."""
     import pathlib
     import re
 
@@ -1655,12 +1683,13 @@ def test_no_string_in_the_com_package_claims_a_process_was_ended():
     assert not offenders, "\n".join(offenders)
 
 
+# ------------------------------------------------------------ margin bounds
 
 
 @metrics
 def test_a_negative_marl_is_unmeasurable():
-    """marL is ST_TextMargin, which is
-    NONNEGATIVE; the shared signed bound accepted marL="-1"."""
+    """marL is ST_TextMargin, which is NONNEGATIVE; the shared signed
+    bound accepted marL="-1"."""
     sp, body, p = _metrics_shape([("Some text", "Calibri", 1200)])
     p.find(qn("a:pPr")).set("marL", "-1")
     rec = _overflow(sp, body)
@@ -1693,7 +1722,7 @@ def test_a_hanging_indent_stays_measurable():
 
 
 def test_para_margins_rejects_a_negative_marl_directly():
-    """_para_margins itself must refuse."""
+    """_para_margins itself must refuse a negative marL."""
     p = etree.Element(qn("a:p"))
     etree.SubElement(p, qn("a:pPr")).set("marL", "-1")
     with pytest.raises(tx._Unmeasurable):

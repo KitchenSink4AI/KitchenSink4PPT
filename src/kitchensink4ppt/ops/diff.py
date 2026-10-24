@@ -1,7 +1,7 @@
 """Structural deck diff: compare two saved .pptx files, read-only.
 
-Built for the versioned-copies workflow (keeping dated copies of the
-same deck and asking "what changed between these two"). Both files are opened
+Built for the DTG-versioning workflow (the author keeps dated copies of the
+same deck and needs "what changed between these two"). Both files are opened
 through PptxPackage purely as readers: nothing here writes, marks dirty, or
 saves; compare_decks(a, a) is a no-op by construction.
 
@@ -30,21 +30,50 @@ renders the whole result for humans.
 from __future__ import annotations
 
 import difflib
+import hashlib
 from pathlib import Path
 
 from lxml import etree
 
+from ..core.errors import PptMcpError
 from ..core.package import PptxPackage, qn
 from .read import (
     _geometry,
     _layout_info,
     _ph,
+    chart_fingerprint,
+    chart_text_records,
     iter_shapes,
     notes_text,
     shape_text,
     slide_table,
     table_cells,
 )
+from .read import cnvpr_id
+
+
+def _media_fingerprint(pkg: PptxPackage, part: str, elem) -> str | None:
+    """Hash every embedded media payload referenced by one picture frame."""
+    targets: set[str] = set()
+    for node in elem.iter():
+        rid = node.get(qn("r:embed"))
+        if not rid:
+            continue
+        try:
+            target = pkg.relationship_target(part, rid)
+        except (KeyError, PptMcpError):
+            continue
+        if pkg.has_part(target):
+            targets.add(target)
+    if not targets:
+        return None
+    digest = hashlib.sha256()
+    for target in sorted(targets):
+        digest.update(target.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(pkg.raw_part(target))
+    return digest.hexdigest()
+
 
 #: Cap on unified-diff lines kept per slide (full decks of prose otherwise
 #: bloat the result; the count of dropped lines is reported honestly).
@@ -70,16 +99,19 @@ def _slide_snapshot(pkg: PptxPackage, rec: dict) -> dict:
                 if etree.QName(child).localname.startswith("nv"):
                     cnvpr = child.find(qn("p:cNvPr"))
                     break
-            sid = int(cnvpr.get("id")) if cnvpr is not None else None
+            sid = cnvpr_id(cnvpr)
             name = cnvpr.get("name", "") if cnvpr is not None else ""
-            shapes.append(
-                {
-                    "id": sid,
-                    "name": name,
-                    "kind": kind,
-                    "geometry": _geometry(elem),
-                }
-            )
+            shape = {
+                "id": sid,
+                "name": name,
+                "kind": kind,
+                "geometry": _geometry(elem),
+            }
+            if kind == "chart":
+                shape["chart_fingerprint"] = chart_fingerprint(pkg, part, elem)
+            elif kind in ("picture", "media"):
+                shape["media_fingerprint"] = _media_fingerprint(pkg, part, elem)
+            shapes.append(shape)
             if kind == "table":
                 cells = table_cells(elem)
                 if sid is not None:
@@ -94,7 +126,12 @@ def _slide_snapshot(pkg: PptxPackage, rec: dict) -> dict:
                 text_lines.extend(
                     ln for ln in shape_text(elem).split("\n") if ln
                 )
-            elif kind not in ("group", "picture", "chart", "diagram", "ole",
+            elif kind == "chart":
+                text_lines.extend(
+                    record["text"]
+                    for record in chart_text_records(pkg, part, elem)
+                )
+            elif kind not in ("group", "picture", "media", "diagram", "ole",
                               "graphicFrame"):
                 text_lines.extend(
                     ln for ln in shape_text(elem).split("\n") if ln
@@ -248,16 +285,38 @@ def _pair_changes(sa: dict, sb: dict) -> dict:
     added_ids = sorted(set(shapes_b) - set(shapes_a))
     removed_ids = sorted(set(shapes_a) - set(shapes_b))
     geo_changed = []
+    charts_changed = []
+    media_changed = []
     for sid in sorted(set(shapes_a) & set(shapes_b)):
         delta = _geo_delta(shapes_a[sid]["geometry"], shapes_b[sid]["geometry"])
         if delta is not None:
             geo_changed.append(
                 {"shape_id": sid, "name": shapes_b[sid]["name"], **delta}
             )
+        if shapes_a[sid].get("chart_fingerprint") != shapes_b[sid].get(
+            "chart_fingerprint"
+        ) and (
+            shapes_a[sid].get("chart_fingerprint") is not None
+            or shapes_b[sid].get("chart_fingerprint") is not None
+        ):
+            charts_changed.append(
+                {"shape_id": sid, "name": shapes_b[sid]["name"]}
+            )
+        if shapes_a[sid].get("media_fingerprint") != shapes_b[sid].get(
+            "media_fingerprint"
+        ) and (
+            shapes_a[sid].get("media_fingerprint") is not None
+            or shapes_b[sid].get("media_fingerprint") is not None
+        ):
+            media_changed.append(
+                {"shape_id": sid, "name": shapes_b[sid]["name"]}
+            )
     if (
         added_ids
         or removed_ids
         or geo_changed
+        or charts_changed
+        or media_changed
         or len(sa["shapes"]) != len(sb["shapes"])
     ):
         changes["shapes"] = {
@@ -275,6 +334,10 @@ def _pair_changes(sa: dict, sb: dict) -> dict:
             ],
             "geometry_changed": geo_changed,
         }
+    if charts_changed:
+        changes["charts_changed"] = charts_changed
+    if media_changed:
+        changes["media_changed"] = media_changed
 
     table_dims = []
     for sid in sorted(set(sa["tables"]) & set(sb["tables"])):
@@ -376,6 +439,14 @@ def _render_markdown(result: dict) -> str:
                     f"- Table id {t['shape_id']}: {t['rows_from']}x"
                     f"{t['cols_from']} -> {t['rows_to']}x{t['cols_to']}"
                 )
+        for item in ch.get("charts_changed", []):
+            lines.append(
+                f"- Chart id {item['shape_id']} ({item['name']!r}): content changed"
+            )
+        for item in ch.get("media_changed", []):
+            lines.append(
+                f"- Media id {item['shape_id']} ({item['name']!r}): picture, video or audio content changed"
+            )
         if "notes" in ch:
             lines.append("- Notes changed:")
             for ln in ch["notes"]["diff"][:12]:

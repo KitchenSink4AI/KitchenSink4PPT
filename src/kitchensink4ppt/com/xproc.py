@@ -1,21 +1,26 @@
 """Cross-PROCESS serialization for live COM sessions.
 
-Concurrency testing exposed a gap: ``com/serial.py`` holds a process-wide RLock and says so
-honestly, and the matrix measured what that scope leaves open. Two
-independent server processes against one application overlapped in 49 of
-50 operation pairs. The application's own STA serializes individual COM
-CALLS, but a tool call is a SEQUENCE of calls -- resolve a target, then
-write it -- and nothing kept two processes from interleaving inside one
-sequence. A find-then-assign replace could double-apply
-and report success to both callers; the PowerPoint equivalents are
+The same design as the Word editor's com/xproc.py, added after a
+concurrency test of the Word editor. That test ran against Word, but this
+live layer shares Word's architecture, so it shared the gap:
+``com/serial.py`` holds a process-wide RLock and says so honestly, and the
+test measured what that scope leaves open. Two independent server
+processes against one application overlapped in 49 of 50 operation pairs.
+The application's own STA serializes individual COM CALLS, but a tool call
+is a SEQUENCE of calls -- resolve a target, then write it -- and nothing
+kept two processes from interleaving inside one sequence. In Word the
+failure was a find-then-assign replace that double-applied and reported
+success to both callers; the PowerPoint equivalents are
 live_search_and_replace and every resolve-a-slide-then-mutate-it body in
 live_ops.
 
 PowerPoint being a singleton makes this MORE necessary, not less: two
 server processes do not merely reach the same application, they cannot
-reach anything else. There is no per-process isolation to fall back on.
+reach anything else. Whatever isolation two Word instances might have
+offered is not available here.
 
-Design, modeled on ``core/safesave.write_lock``:
+Design, the same as the Excel editor's ``core/safesave.write_lock``, which
+learned these lessons the expensive way:
 
 - **Atomic publish.** The payload is written to a private temp file and
   hard-linked into place, so the lockfile is never observable
@@ -29,20 +34,28 @@ Design, modeled on ``core/safesave.write_lock``:
   equality; our own PID under a foreign token is stale by definition.
 - **Release only if ours.** Unconditional unlink is how a leaked lock
   outlives every writer.
-- **Stale detection via process create time.** xlsx-mcp's PidJournal fix
-  (M-1) proved that "is some process holding that number right now" is
+- **A release never leaves the file behind** (core/lockrelease.py). A
+  waiting server reads the lockfile on every poll, and on Windows that read
+  blocks the holder's unlink for a moment. The old release swallowed the
+  failure, the file kept our token, and our next acquisition took it for a
+  nested hold and never released it: every other server waited out the full
+  window on every live edit until this process exited. The release now
+  retries, a lockfile still ours goes to a sweeper thread, and the
+  outermost hold in this process adopts a lockfile with its own token.
+- **Stale detection via process create time.** The Excel editor's PidJournal
+  fix proved that "is some process holding that number right now" is
   the wrong question: Windows recycles PIDs, and the answer can be the
   user's own application. The lock payload records the holder's process
   creation time (ctypes ``GetProcessTimes``, no psutil dependency), and a
   live PID whose creation time does not match is a recycled number, which
   makes the lock stale.
 
-Scope: APPLICATION, matching the Word port and matching what PowerPoint
+Scope: APPLICATION, matching the Word editor and matching what PowerPoint
 is. The cost is that two servers driving two different open decks now
 queue instead of overlapping, which costs nothing real: the STA already
 admitted one COM call at a time.
 
-Deliberate deviation from the Excel port: the lockfile lives in a local
+Deliberate deviation from the Excel editor: the lockfile lives in a local
 per-user directory, NOT beside the presentation. The live route never
 writes the presentation's folder, the target may sit on OneDrive or a
 network share where a stray lockfile would sync, and COM automation is
@@ -62,6 +75,7 @@ import time
 import uuid
 from pathlib import Path
 
+from ..core import lockrelease
 from ..core.errors import LiveLockTimeout
 
 #: Directory holding live-session lockfiles (per user, machine-local).
@@ -71,7 +85,7 @@ _LOCK_DIR_ENV = "KS4P_LIVE_LOCK_DIR"
 APP_SCOPE = "powerpoint-app"
 
 #: How long an acquirer waits for a live holder before refusing. Live COM
-#: operations are SLOW -- the matrix measured a 1191 ms median under load,
+#: operations are SLOW -- measured at a 1191 ms median under load,
 #: and a 20-mutation batch is one held session -- so the wait is generous.
 #: A refusal here must mean "the other server is genuinely stuck", never
 #: "the other server was doing ordinary work".
@@ -186,6 +200,14 @@ _OWNER_CREATED = _process_create_time(os.getpid())
 _MUTEXES: dict[str, threading.RLock] = {}
 _MUTEX_GUARD = threading.Lock()
 
+#: Open holds per scope in this process, nested ones included. Read and
+#: changed only by the thread holding that scope's mutex, so zero means no
+#: hold in this process is open: a lockfile with our token is a leftover.
+_DEPTH: dict[str, int] = {}
+
+#: Deletes lockfiles a release could not, while this process lives.
+_SWEEPER = lockrelease.Sweeper("ks4p-live-lock-sweeper")
+
 
 def _mutex_for(key: str) -> threading.RLock:
     with _MUTEX_GUARD:
@@ -251,9 +273,25 @@ def _is_ours(info: dict) -> bool:
     return not _foreign_host(info) and info.get("token") == _OWNER_TOKEN
 
 
-def _break_lock(lock_path: Path) -> None:
-    with contextlib.suppress(OSError):
-        lock_path.unlink(missing_ok=True)
+def _break_lock(lock_path: Path, judged: dict) -> None:
+    """Delete a lock nobody holds (stale or unreadable), with one winner
+    (core/lockrelease.py break_stale): ``judged`` is the record the acquire
+    loop read, or {} for a file it could not read, and the file goes only
+    while it is still that one. Two waiters that had both read a dead
+    holder's lockfile used to both delete "the lockfile", and the slower one
+    deleted the live lock the faster one had just published. A failure is
+    left to the acquire loop, which looks again on its next pass."""
+    lockrelease.break_stale(lock_path, judged, _read_lock_info,
+                            _UNREADABLE_GRACE_SECONDS)
+
+
+def _deletable(lock_path: Path) -> bool:
+    """The lockfile is there and this process may remove it: it carries our
+    token, or it cannot be read at all (the old release's rule)."""
+    if not lockrelease.present(lock_path):
+        return False
+    info = _read_lock_info(lock_path)
+    return not info or _is_ours(info)
 
 
 def _is_stale(info: dict) -> bool:
@@ -279,16 +317,25 @@ def _is_stale(info: dict) -> bool:
     return False
 
 
-def _acquire_lockfile(lock_path: Path, holder: str, wait: float) -> bool:
+def _acquire_lockfile(
+    lock_path: Path, holder: str, wait: float, *, adopt_own: bool = False
+) -> bool:
     """Create the advisory lockfile. Returns True when this call created it
     (and must therefore remove it); False for a re-entrant same-process
-    hold. Raises LiveLockTimeout when a live holder does not release."""
+    hold. Raises LiveLockTimeout when a live holder does not release.
+
+    ``adopt_own`` is set by the outermost hold in this process. A lockfile
+    with our token is then a leftover that an earlier release could not
+    delete, not a hold, so this call takes it over (returns True) and the
+    hold releases it when it ends."""
     deadline = time.monotonic() + wait
     while True:
         if _publish_lockfile(lock_path, holder):
             return True
         info = _read_lock_info(lock_path)
         if _is_ours(info):
+            if adopt_own:
+                return True
             # This process instance already holds it; the in-process mutex
             # (held by the caller) is the real serializer and a nested
             # acquisition must not deadlock.
@@ -301,7 +348,7 @@ def _acquire_lockfile(lock_path: Path, holder: str, wait: float) -> bool:
             except OSError:
                 continue                      # it vanished; try again
             if time.time() - born > _UNREADABLE_GRACE_SECONDS:
-                _break_lock(lock_path)
+                _break_lock(lock_path, info)
             elif time.monotonic() > deadline:
                 raise LiveLockTimeout(
                     "PowerPoint is held by a live-session lock this process "
@@ -313,7 +360,7 @@ def _acquire_lockfile(lock_path: Path, holder: str, wait: float) -> bool:
                 time.sleep(_POLL_SECONDS)
             continue
         if _is_stale(info):
-            _break_lock(lock_path)
+            _break_lock(lock_path, info)
             continue
         if time.monotonic() > deadline:
             pid = info.get("pid")
@@ -338,13 +385,12 @@ def _acquire_lockfile(lock_path: Path, holder: str, wait: float) -> bool:
         time.sleep(_POLL_SECONDS)
 
 
-def _release_lockfile(lock_path: Path) -> None:
-    """Remove the lockfile ONLY while it is still ours. Unconditional
-    unlink is how a leaked lock outlives every writer."""
-    info = _read_lock_info(lock_path)
-    if info and not _is_ours(info):
-        return
-    _break_lock(lock_path)
+def _release_lockfile(lock_path: Path) -> bool:
+    """Remove the lockfile ONLY while it is still ours, and make sure it
+    went. Unconditional unlink is how a leaked lock outlives every writer.
+    A failed unlink is retried; returns False when the file is still ours
+    after every retry, and cross_process_lock hands it to the sweeper."""
+    return lockrelease.release_lockfile(lock_path, _deletable)
 
 
 def holder_info(scope: str = APP_SCOPE) -> dict | None:
@@ -389,6 +435,8 @@ def cross_process_lock(
     """
     mutex = _mutex_for(scope)
     mutex.acquire()
+    depth = _DEPTH.get(scope, 0)
+    _DEPTH[scope] = depth + 1
     owns = False
     lock_path: Path | None = None
     try:
@@ -403,12 +451,23 @@ def cross_process_lock(
             # reduced coverage rather than letting a caller assume it.
             lock_path = None
         if lock_path is not None:
-            owns = _acquire_lockfile(lock_path, holder, wait)
+            owns = _acquire_lockfile(lock_path, holder, wait, adopt_own=depth == 0)
+            if owns:
+                _SWEEPER.forget(scope)
         yield owns
     finally:
-        if owns and lock_path is not None:
-            _release_lockfile(lock_path)
-        mutex.release()
+        try:
+            if (
+                owns and lock_path is not None
+                and not _release_lockfile(lock_path)
+            ):
+                _SWEEPER.add(scope, lock_path, mutex, _deletable)
+        finally:
+            if depth:
+                _DEPTH[scope] = depth
+            else:
+                _DEPTH.pop(scope, None)
+            mutex.release()
 
 
 def lock_state() -> dict:

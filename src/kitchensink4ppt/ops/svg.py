@@ -1,7 +1,7 @@
 """svg_to_shapes: THE compiler. Arbitrary SVG in, one grouped tree of
 native, editable PowerPoint shapes out. No rasterization, no external APIs.
 
-Pipeline (per research/20260830_1917_graphics_engine_feasibility.md):
+Pipeline:
 svgelements parse (CSS cascade resolved, transforms flattened into absolute
 user-space coordinates, use/defs instantiated) -> per drawable element one
 p:sp with a:custGeom -> user units scaled into the target inch box -> SVG
@@ -36,8 +36,9 @@ import re
 
 from lxml import etree
 
+from ..core import xmlsafe
 from ..core.errors import PptMcpError
-from ..core.package import PptxPackage, qn
+from ..core.package import PptxPackage, qn, seat_ahead_of_extlst
 from . import geometry as g
 from .read import resolve_slide
 from .shapes import _sp_tree
@@ -63,9 +64,10 @@ def _parse_svg_strict(svg_text: str) -> etree._Element:
     """Parse and structurally vet the SVG BEFORE svgelements sees it, so
     malformed XML, non-SVG documents, entity bombs, over-deep nesting, and
     <use> reference cycles refuse with an envelope error instead of raising
-    raw parser/recursion errors."""
+    raw parser/recursion errors. A document type declaration with
+    declarations of its own refuses before anything is parsed."""
     try:
-        root = etree.fromstring(svg_text.encode("utf-8"))
+        root = xmlsafe.fromstring(xmlsafe.svg_without_doctype(svg_text).encode("utf-8"))
     except etree.LxmlError as exc:
         raise PptMcpError(f"svg is not valid XML/SVG: {exc}") from exc
     name = _localname(root)
@@ -158,7 +160,7 @@ def _parse_gradients(svg_text: str) -> dict[str, dict]:
     """Collect linearGradient/radialGradient defs from the raw SVG (svgelements
     does not model paint servers). Single-level href inheritance resolved."""
     try:
-        root = etree.fromstring(svg_text.encode("utf-8"))
+        root = xmlsafe.fromstring(xmlsafe.svg_without_doctype(svg_text).encode("utf-8"))
     except etree.XMLSyntaxError:
         return {}
     grads: dict[str, dict] = {}
@@ -243,6 +245,9 @@ class _Compiler:
         self.se = se
         self.warnings: list[str] = []
         self.skipped: dict[str, int] = {}
+        # Every parser below, svgelements included, reads the drawing without
+        # a DOCTYPE; one with declarations of its own refuses here.
+        svg_text = xmlsafe.svg_without_doctype(svg_text)
         root = _parse_svg_strict(svg_text)  # refuses before recursion can blow
         self.gradients = _parse_gradients(svg_text)
         self._scan_unsupported(root)
@@ -299,7 +304,7 @@ class _Compiler:
         self.oy = g.in_to_emu(y_in)
         self.target_w = self.sx * src_w
         self.target_h = self.sy * src_h
-        # Refuse an oversize target box up front (C1): scaled coordinates
+        # Refuse an oversize target box up front: scaled coordinates
         # past 2^31-1 EMU produce a deck PowerPoint cannot open.
         g.check_emu_box(
             self.ox, self.oy, round(self.target_w), round(self.target_h),
@@ -351,8 +356,8 @@ class _Compiler:
             # cannot decode; the parse tree is not a reliable witness.
             self.skipped["image"] = n
             self.warn(
-                f"{n} embedded <image> element(s) skipped (picture insert "
-                "is the media pack's job)"
+                f"{n} embedded <image> element(s) skipped (use insert_image "
+                "for pictures)"
             )
         n = sum(
             1
@@ -758,6 +763,8 @@ def svg_to_shapes(
     w: float | None = None,
     h: float | None = None,
     *,
+    master=None,
+    layout=None,
     group: bool = True,
     name: str | None = None,
 ) -> dict:
@@ -775,8 +782,9 @@ def svg_to_shapes(
     """
     if not isinstance(svg, str) or "<" not in svg:
         raise PptMcpError("svg must be an SVG document string")
-    rec = resolve_slide(pkg, slide)
-    part = rec["part"]
+    from .media import _decorate_graphics_result, _resolve_graphics_target
+
+    kind, part, rec = _resolve_graphics_target(pkg, slide, master, layout)
     sp_tree = _sp_tree(pkg, part)
 
     compiler = _Compiler(svg, x, y, w, h)
@@ -810,16 +818,16 @@ def svg_to_shapes(
             nodes, group_id, name or "svg import"
         )
         sp_tree.append(wrapped)
+        seat_ahead_of_extlst(sp_tree, wrapped)
     else:
         for elem, _box in nodes:
             sp_tree.append(elem)
+            seat_ahead_of_extlst(sp_tree, elem)
     pkg.mark_dirty(part)
-    return {
+    result = {
         "group_id": group_id,
         "created": sorted(created),
         "shape_count": len([i for i in created if i != group_id]),
-        "slide_index": rec["index"],
-        "slide_id": rec["slide_id"],
         "warnings": compiler.warnings,
         "skipped": compiler.skipped,
         "target_box_in": [
@@ -829,3 +837,4 @@ def svg_to_shapes(
             round(compiler.target_h / g.EMU_PER_INCH, 3),
         ],
     }
+    return _decorate_graphics_result(pkg, kind, part, rec, result)

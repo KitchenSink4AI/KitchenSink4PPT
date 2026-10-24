@@ -32,6 +32,7 @@ from kitchensink4ppt.core.package import (
 )
 from kitchensink4ppt.ops.interdeck import (
     MASTER_ID_MIN,
+    RT_NOTES_MASTER,
     RT_SLIDE_MASTER,
     RT_THEME,
     copy_slide_between,
@@ -135,7 +136,7 @@ def test_link_mode_proposal_slide_to_fresh_template_deck(tmp_path):
     ]
     assert with_xfrm, "no inline spPr geometry on the copied slide"
     # Placeholders that inherited geometry from the source layout must have
-    # had it carried inline (corpus decks may have no placeholders).
+    # had it carried inline (real corpus decks may have no placeholders).
     spkg = PptxPackage(src)
     s_root = spkg.root(spkg.slide_parts()[1])
     inherited_ph = [
@@ -176,7 +177,7 @@ def _first_table_slide(pkg: PptxPackage) -> int | None:
 
 
 def test_link_mode_table_slide_heavy_to_proposal_derived(tmp_path):
-    # The heavy_deck may keep its tables on different slides than
+    # The real heavy_deck may keep its tables on different slides than
     # the synthetic stand-in; find one (falling back to the tables deck).
     src = _work_copy("heavy_deck.pptx", tmp_path)
     index = _first_table_slide(PptxPackage(src))
@@ -238,6 +239,40 @@ def test_notes_slide_travels_and_notes_master_is_imported(tmp_path, make_deck):
     )
 
 
+def test_notes_slide_reuses_relationship_only_destination_master(tmp_path):
+    """Real PowerPoint decks can omit notesMasterIdLst while retaining the
+    presentation relationship.  A copied notes slide must bind to that
+    existing master; adding a second registered master corrupts the deck."""
+    dest = _fresh_dest(
+        tmp_path, "notes_rel_only.pptx",
+        template=CORPUS / "proposal_deck.pptx",
+    )
+    src = _work_copy("conference_talk.pptx", tmp_path)
+    before = PptxPackage(dest)
+    assert before.presentation().find(qn("p:notesMasterIdLst")) is None
+    masters_before = {
+        n for n in before.part_names() if n.startswith("ppt/notesMasters/")
+    }
+
+    _copy_between(dest, src, 0)
+
+    pkg = PptxPackage(dest)
+    assert pkg.presentation().find(qn("p:notesMasterIdLst")) is None
+    assert {
+        n for n in pkg.part_names() if n.startswith("ppt/notesMasters/")
+    } == masters_before
+    copied_slide = pkg.slide_parts()[-1]
+    notes = _rel_targets(pkg, copied_slide, RT_NOTES_SLIDE)
+    assert len(notes) == 1
+    assert _rel_targets(pkg, notes[0], RT_NOTES_MASTER) == [
+        "ppt/notesMasters/notesMaster1.xml"
+    ]
+
+    from pptx import Presentation
+
+    Presentation(str(dest))
+
+
 def test_chart_family_travels_with_intact_workbook(tmp_path, make_deck):
     from kitchensink4ppt.ops.charts import create_chart
 
@@ -286,7 +321,7 @@ _RT_PACKAGE = (
 def test_import_mode_brings_design_family_without_collisions(tmp_path):
     src = _work_copy("proposal_deck.pptx", tmp_path)
     # Destination already HAS slideMaster1.xml / slideLayout1..N / theme1.xml:
-    # the exact partname-collision trap of the #1036 recipe.
+    # the exact partname-collision trap when importing a master.
     dest = _fresh_dest(tmp_path, template=CORPUS / "conference_talk.pptx")
     before = PptxPackage(dest)
     masters_before = len(
@@ -306,7 +341,7 @@ def test_import_mode_brings_design_family_without_collisions(tmp_path):
     assert any("theme" in p for p in res["imported_design_parts"])
 
     pkg = PptxPackage(dest)
-    # No duplicate zip entry names (the #1036 corruption).
+    # No duplicate zip entry names (what a partname collision corrupts).
     with zipfile.ZipFile(dest) as zf:
         names = zf.namelist()
     assert len(names) == len(set(names)), "duplicate partnames in package"
@@ -392,7 +427,7 @@ def test_slide_size_mismatch_warns_with_both_dimensions(tmp_path):
     from pptx import Presentation
     from pptx.util import Emu
 
-    # The destination is 16:9, so the SOURCE is the
+    # The destination is 16:9 now, so the SOURCE is the
     # 4:3 deck here; the warning is about the two disagreeing, in either
     # direction.
     src = tmp_path / "narrow.pptx"

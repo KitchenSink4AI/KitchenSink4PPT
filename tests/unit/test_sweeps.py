@@ -1,4 +1,4 @@
-"""Coverage: the traversal spine (ops/_traverse.py) and the
+"""Tier-1A coverage: the traversal spine (ops/_traverse.py) and the
 deck-wide sweeps built on it (ops/sweeps.py): font inventory/replace,
 color remap incl. literal-to-theme, deck-wide proofing language, and
 whole-deck logo replacement.
@@ -400,7 +400,7 @@ class TestSetLanguage:
     def test_korean_deck_wide(self, make_deck):
         path = make_deck("lang_ko.pptx")
         pkg = PptxPackage(path)
-        insert_textbox(pkg, 0, "정당성과 권위: 한국어 텍스트", 1, 1, 6, 1)
+        insert_textbox(pkg, 0, "판매량과 품질: 한국어 텍스트", 1, 1, 6, 1)
         insert_textbox(pkg, 1, "두 번째 슬라이드의 상자", 1, 1, 6, 1)
         pkg.save()
 
@@ -566,7 +566,7 @@ def _com_gate():
 @pytest.mark.timeout(600)
 def test_com_validator_on_swept_decks(tmp_path, make_deck):
     """PowerPoint itself must open every sweep output clean: font-swept
-    (proposal deck), color-swept (theme-mapped literals), language-set
+    (real proposal deck), color-swept (theme-mapped literals), language-set
     (ko-KR deck-wide), and logo-replaced decks in one validator run."""
     _com_gate()
 

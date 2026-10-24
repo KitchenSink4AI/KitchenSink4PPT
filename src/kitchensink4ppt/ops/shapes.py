@@ -9,7 +9,8 @@ id. Nothing here writes to disk; the caller decides when to save.
 Coordinates: public parameters are INCHES (floats); everything is stored as
 EMU ints (1 in = 914400 EMU, 1 pt = 12700 EMU). Slide addressing follows
 ops/read.py (0-based index or {"slide_id": N}); shapes are addressed by
-their per-slide p:cNvPr id.
+their per-slide p:cNvPr id or by name, inside groups too ("Group/Shape"
+names a shape within a group when its name alone repeats).
 
 Connectors: glued by default when shape ids are given. Glue is stCxn/endCxn
 (shape id + connection-site index into the target's cxnLst). Whenever a
@@ -30,13 +31,22 @@ into this math; edits under a rotated group carry a warning.
 from __future__ import annotations
 
 import copy as _copy
+import math
 
 from lxml import etree
 
-from ..core.errors import PptMcpError, TargetNotFound, UnsupportedStructure
-from ..core.package import PptxPackage, qn
+from ..core.errors import (
+    AmbiguousTarget,
+    PptMcpError,
+    TargetNotFound,
+    UnsupportedStructure,
+)
+from ..core.package import PptxPackage, qn, seat_ahead_of_extlst
+from ..core.xmlbool import attr_bool
 from . import geometry as g
-from .read import iter_shapes, resolve_slide
+from . import guides as _guides
+from . import scaling as _scaling
+from .read import iter_shapes, resolve_slide, stack_members
 
 # --------------------------------------------------------------- text_style
 
@@ -592,27 +602,41 @@ def _shape_id(elem: etree._Element) -> int | None:
 
 
 def _find_shape(
-    pkg: PptxPackage, part: str, shape_id: int
+    pkg: PptxPackage, part: str, shape_id
 ) -> tuple[etree._Element, list[etree._Element]]:
-    """(shape element, ancestor grpSp chain outermost-first) for one shape id.
-    Searches the whole tree including group interiors."""
+    """(shape element, ancestor grpSp chain outermost-first) for one shape,
+    by id or by name. Searches the whole tree including group interiors."""
+    if isinstance(shape_id, str):
+        return _find_named(pkg, part, shape_id)
     if isinstance(shape_id, bool) or not isinstance(shape_id, int):
-        raise PptMcpError(f"shape id must be an int, got {shape_id!r}")
+        raise PptMcpError(
+            f"shape must be a shape id (a whole number) or a shape name, got "
+            f"{shape_id!r}"
+        )
+
+    hits: list = []
 
     def _walk(container, chain):
         for child in container:
             if child.tag not in _SHAPE_TAGS:
                 continue
             if _shape_id(child) == shape_id:
-                return child, chain
+                hits.append((child, chain))
             if child.tag == qn("p:grpSp"):
-                found = _walk(child, chain + [child])
-                if found is not None:
-                    return found
-        return None
+                _walk(child, chain + [child])
 
-    hit = _walk(_sp_tree(pkg, part), [])
+    _walk(_sp_tree(pkg, part), [])
+    if len(hits) > 1:
+        # A damaged deck can give two shapes one id; picking the first
+        # would edit a shape the caller may not mean.
+        raise _shared_id_refusal(shape_id, [elem for elem, _chain in hits])
+    hit = hits[0] if hits else None
     if hit is None:
+        from .read import wrapped_refusal
+
+        refusal = wrapped_refusal(_sp_tree(pkg, part), shape_id)
+        if refusal is not None:
+            raise refusal
         known = sorted(
             i for i in (
                 _shape_id(e) for e, _k, _z, _p in iter_shapes(_sp_tree(pkg, part))
@@ -622,6 +646,188 @@ def _find_shape(
             f"no shape with id {shape_id} on that slide; ids present: {known}"
         )
     return hit
+
+
+def _shape_name(elem: etree._Element) -> str:
+    cnvpr = _cnvpr(elem)
+    return cnvpr.get("name", "") if cnvpr is not None else ""
+
+
+def _shared_id_refusal(
+    shape_id, elems: list[etree._Element], *, by_id_in_file: bool = False
+) -> AmbiguousTarget:
+    """The refusal for an address that names several shapes sharing one
+    id (a damaged deck; PowerPoint gives the second a new id when it opens
+    it). It lists the shapes and a next step that works: a shape's name,
+    or, for a change that records the id in the file (an animation),
+    PowerPoint's own repair."""
+    from .read import _shape_kind
+
+    names = [_shape_name(e) for e in elems]
+    listing = ", ".join(f"{n!r} ({_shape_kind(e)})" for n, e in zip(names, elems))
+    message = (
+        f"{len(elems)} shapes on this slide have id {shape_id}: {listing}, so "
+        "the id cannot tell them apart; nothing was changed."
+    )
+    repair = "open and save the deck in PowerPoint, which gives the second one a new id"
+    if by_id_in_file:
+        message += (
+            " This change names its shape by id in the file, so " + repair
+            + ", then make it again."
+        )
+    elif len(set(names)) == len(names):
+        message += f" Address one by its name (for example {names[-1]!r}), or {repair}."
+    else:
+        message += f" To tell them apart, {repair}."
+    return AmbiguousTarget(message)
+
+
+def _all_shapes(container, chain=()):
+    """(element, ancestor groups outermost-first) for every shape under
+    container, depth first, group members included."""
+    for child in container:
+        if child.tag not in _SHAPE_TAGS:
+            continue
+        yield child, list(chain)
+        if child.tag == qn("p:grpSp"):
+            yield from _all_shapes(child, (*chain, child))
+
+
+def _chain_of(elem: etree._Element) -> list[etree._Element]:
+    """The groups that contain elem, outermost first."""
+    chain = []
+    parent = elem.getparent()
+    while parent is not None and parent.tag == qn("p:grpSp"):
+        chain.append(parent)
+        parent = parent.getparent()
+    return list(reversed(chain))
+
+
+def _shape_inventory(pkg: PptxPackage, part: str, limit: int = 40) -> str:
+    rows = []
+    for elem, chain in _all_shapes(_sp_tree(pkg, part)):
+        where = "/".join(_shape_name(g_) for g_ in chain)
+        label = f"{_shape_id(elem)}:{_shape_name(elem)!r}"
+        rows.append(f"{label} in {where!r}" if where else label)
+    more = len(rows) - limit
+    text = ", ".join(rows[:limit]) or "none"
+    return text + (f", and {more} more" if more > 0 else "")
+
+
+def _named(elems, name: str):
+    return [(e, c) for e, c in elems if _shape_name(e) == name]
+
+
+def _find_named(
+    pkg: PptxPackage, part: str, ref: str
+) -> tuple[etree._Element, list[etree._Element]]:
+    """A shape by its name, searched through groups. A name that more than
+    one shape carries is refused with their ids; "Group/Shape" picks the one
+    inside a named group. A name made only of digits that no shape carries
+    is read as an id, and a view anchor that no shape carries as its name
+    ("a:3f9c2a", as get_presentation_view prints it) finds its shape."""
+    tree = _sp_tree(pkg, part)
+    everything = list(_all_shapes(tree))
+    hits = _named(everything, ref)
+    if not hits and "/" in ref:
+        hits = _path_hits(everything, ref)
+    if len(hits) == 1:
+        return hits[0]
+    if len(hits) > 1:
+        listing = ", ".join(
+            f"id {_shape_id(e)}"
+            + (f" in group {_shape_name(c[-1])!r}" if c else "")
+            for e, c in hits
+        )
+        raise AmbiguousTarget(
+            f"{len(hits)} shapes on that slide are named {ref!r}: {listing}. "
+            "Address the shape by id, or by its group's name and its own "
+            'as "Group/Shape".'
+        )
+    stripped = ref.strip()
+    if stripped.isdigit():
+        return _find_shape(pkg, part, int(stripped))
+    from . import view as _view
+
+    hexpart = _view.shape_anchor_hex(stripped)
+    if hexpart is not None:
+        return _find_by_anchor(pkg, part, ref, hexpart)
+    if _view.is_slide_or_cell_anchor(stripped):
+        raise PptMcpError(
+            f"{ref!r} is a slide or table-cell anchor, and this argument takes "
+            "a shape: its shape anchor (a:3f9c2a), its id or its name. A "
+            "table cell is edited with set_table_cells, or with its cell "
+            "anchor in apply_edits."
+        )
+    from .read import wrapped_refusal
+
+    refusal = wrapped_refusal(tree, ref)
+    if refusal is not None:
+        raise refusal
+    raise TargetNotFound(
+        f"no shape named {ref!r} on that slide; shapes present (id:name): "
+        f"{_shape_inventory(pkg, part)}"
+    )
+
+
+def _find_by_anchor(
+    pkg: PptxPackage, part: str, ref: str, hexpart: str
+) -> tuple[etree._Element, list[etree._Element]]:
+    """A shape by the anchor get_presentation_view printed for it. The hex
+    is a prefix of the digest of the slide id and the shape id, matched on
+    this slide first; an anchor of a shape on another slide is refused
+    naming that slide, and one that matches nothing is stale."""
+    from . import read as _read
+    from . import view as _view
+
+    slide_id = next(
+        (rec["slide_id"] for rec in _read.slide_table(pkg) if rec["part"] == part),
+        None,
+    )
+    here = []
+    if slide_id is not None:
+        for elem, chain in _all_shapes(_sp_tree(pkg, part)):
+            sid = _shape_id(elem)
+            if sid is not None and _view.anchor_digest(slide_id, sid).startswith(hexpart):
+                here.append((elem, chain))
+    if len(here) == 1:
+        return here[0]
+    if here and len({_shape_id(elem) for elem, _chain in here}) == 1:
+        raise _shared_id_refusal(_shape_id(here[0][0]), [elem for elem, _chain in here])
+    if here:
+        ids = ", ".join(str(_shape_id(elem)) for elem, _chain in here)
+        raise AmbiguousTarget(
+            f"anchor {ref!r} matches {len(here)} shapes on that slide (ids "
+            f"{ids}); send the whole anchor the view printed, or the shape's id."
+        )
+    info = _view.resolve_anchor(pkg, "a:" + hexpart)  # stale: TargetNotFound
+    if info["part"] == part:
+        refusal = _read.wrapped_refusal(_sp_tree(pkg, part), info["shape_id"])
+        if refusal is not None:
+            raise refusal
+    raise TargetNotFound(
+        f"anchor {ref!r} names shape {info['shape_id']} on slide_number "
+        f"{info['slide_index'] + 1}, not a shape on the slide this call names. "
+        "Send that slide with the anchor, or the id of a shape on this one."
+    )
+
+
+def _path_hits(everything, ref: str):
+    """Shapes matching "Outer/Inner/...": each later name is searched inside
+    the shape the earlier names chose, at any depth."""
+    names = [part for part in ref.split("/")]
+    if any(not name for name in names):
+        return []
+    current = _named(everything, names[0])
+    for name in names[1:]:
+        found = []
+        for elem, _chain in current:
+            if elem.tag != qn("p:grpSp"):
+                continue
+            inside = list(_all_shapes(elem, (*_chain_of(elem), elem)))
+            found.extend(_named(inside, name))
+        current = found
+    return current
 
 
 def _spPr_of(elem: etree._Element) -> etree._Element:
@@ -701,7 +907,7 @@ def _chain_transform(chain: list[etree._Element]) -> tuple[float, float, float, 
         xfrm = grp.find(f"{qn('p:grpSpPr')}/{qn('a:xfrm')}")
         if xfrm is None:
             continue
-        if xfrm.get("rot") or xfrm.get("flipH") or xfrm.get("flipV"):
+        if _xfrm_turned(xfrm):
             rotated = True
         x, y, cx, cy = _xfrm_box(xfrm)
         choff = xfrm.find(qn("a:chOff"))
@@ -733,6 +939,127 @@ def _slide_box(elem: etree._Element, chain: list[etree._Element]) -> tuple[float
     x, y, cx, cy = _xfrm_box(_require_xfrm(elem))
     ax, bx, ay, by, _rot = _chain_transform(chain)
     return ax * x + bx, ay * y + by, ax * cx, ay * cy
+
+
+def _group_parts(grp: etree._Element):
+    """(xfrm, off, ext, chOff, chExt) of a group, creating chOff/chExt equal
+    to off/ext when a group was written without them."""
+    xfrm = grp.find(f"{qn('p:grpSpPr')}/{qn('a:xfrm')}")
+    if xfrm is None:
+        return None
+    off, ext = xfrm.find(qn("a:off")), xfrm.find(qn("a:ext"))
+    if off is None or ext is None:
+        return None
+    choff, chext = xfrm.find(qn("a:chOff")), xfrm.find(qn("a:chExt"))
+    if choff is None:
+        choff = etree.SubElement(xfrm, qn("a:chOff"))
+        choff.set("x", off.get("x"))
+        choff.set("y", off.get("y"))
+    if chext is None:
+        chext = etree.SubElement(xfrm, qn("a:chExt"))
+        chext.set("cx", ext.get("cx"))
+        chext.set("cy", ext.get("cy"))
+    return xfrm, off, ext, choff, chext
+
+
+def _xfrm_turned(xfrm: etree._Element | None) -> bool:
+    """Whether an a:xfrm rotates or flips. rot="0", flipH="0" and
+    flipH="false" do neither; an unreadable rot counts as turned."""
+    if xfrm is None:
+        return False
+    try:
+        rot = int((xfrm.get("rot") or "0").strip())
+    except ValueError:
+        return True
+    return rot != 0 or attr_bool(xfrm, "flipH") or attr_bool(xfrm, "flipV")
+
+
+def _turned(grp: etree._Element) -> bool:
+    return _xfrm_turned(grp.find(f"{qn('p:grpSpPr')}/{qn('a:xfrm')}"))
+
+
+def _refit_groups(chain: list[etree._Element]) -> tuple[list[int], list[str]]:
+    """Refit each group in chain, innermost first, the way PowerPoint does
+    after a member moves or grows: the group's child extent (chOff/chExt)
+    becomes the union of its members' boxes and its frame (off/ext) follows
+    through the group's own scale, so nothing moves on the slide. Returns
+    (refitted group ids, warnings). A rotated or flipped group is left as it
+    is: its frame cannot change without moving what it holds."""
+    refitted: list[int] = []
+    warnings: list[str] = []
+    for grp in reversed(chain):
+        if _turned(grp):
+            warnings.append(
+                f"group {_shape_id(grp)} is rotated or flipped, so its frame "
+                "was not refitted to its members; PowerPoint refits it the "
+                "next time the group is touched there"
+            )
+            break
+        parts = _group_parts(grp)
+        if parts is None:
+            break
+        _xfrm, off, ext, choff, chext = parts
+        boxes = []
+        for child in grp:
+            if child.tag not in _SHAPE_TAGS:
+                continue
+            cx = _xfrm_of(child)
+            if cx is None or cx.find(qn("a:off")) is None or cx.find(qn("a:ext")) is None:
+                continue
+            boxes.append(_xfrm_box(cx))
+        if not boxes:
+            break
+        x0 = min(b[0] for b in boxes)
+        y0 = min(b[1] for b in boxes)
+        x1 = max(b[0] + b[2] for b in boxes)
+        y1 = max(b[1] + b[3] for b in boxes)
+        cur = (int(choff.get("x")), int(choff.get("y")),
+               int(chext.get("cx")), int(chext.get("cy")))
+        if cur == (x0, y0, x1 - x0, y1 - y0):
+            continue
+        if cur[2] == 0 or cur[3] == 0:
+            break
+        sx = int(ext.get("cx")) / cur[2]
+        sy = int(ext.get("cy")) / cur[3]
+        left = int(off.get("x")) + round((x0 - cur[0]) * sx)
+        top = int(off.get("y")) + round((y0 - cur[1]) * sy)
+        off.set("x", str(left))
+        off.set("y", str(top))
+        ext.set("cx", str(max(0, round((x1 - x0) * sx))))
+        ext.set("cy", str(max(0, round((y1 - y0) * sy))))
+        choff.set("x", str(x0))
+        choff.set("y", str(y0))
+        chext.set("cx", str(x1 - x0))
+        chext.set("cy", str(y1 - y0))
+        refitted.append(_shape_id(grp))
+    return refitted, warnings
+
+
+def _insertion_group(
+    pkg: PptxPackage, part: str, group
+) -> tuple[etree._Element, list[etree._Element]]:
+    """The existing group a new shape goes into, with the chain that maps
+    its child space to the slide (outermost first, the group itself last)."""
+    grp, chain = _find_shape(pkg, part, group)
+    if grp.tag != qn("p:grpSp"):
+        raise PptMcpError(
+            f"shape {_shape_id(grp)} ({_shape_name(grp)!r}) is not a group; "
+            "send the id or name of a group to insert into, or leave group "
+            "out to place the shape on the slide"
+        )
+    full = [*chain, grp]
+    turned = [g_ for g_ in full if _turned(g_)]
+    if turned:
+        raise UnsupportedStructure(
+            f"group {_shape_id(turned[0])} is rotated or flipped; a shape "
+            "cannot be placed inside it at a slide position without moving. "
+            "Insert the shape on the slide, or straighten the group first"
+        )
+    if _group_parts(grp) is None:
+        raise UnsupportedStructure(
+            f"group {_shape_id(grp)} has no transform to place a shape in"
+        )
+    return grp, full
 
 
 # ------------------------------------------------------------ shape builder
@@ -827,6 +1154,7 @@ def insert_shape(
     rotation: float = 0.0,
     flip_h: bool = False,
     flip_v: bool = False,
+    group=None,
 ) -> dict:
     """Insert one native shape at x, y with size w x h (inches, slide space).
 
@@ -836,6 +1164,8 @@ def insert_shape(
     fill / line / effect / text / text_style: see ops/geometry.py specs.
     Without an explicit fill the shape carries PowerPoint's default theme
     style block (accent1) so it renders theme-native.
+    group: an existing group (id or name) to put the shape in, at the same
+    slide position; the group's frame grows to hold it.
     """
     rec = resolve_slide(pkg, slide)
     part = rec["part"]
@@ -843,13 +1173,22 @@ def insert_shape(
     for value, label in ((w, "w"), (h, "h")):
         if float(value) <= 0:
             raise PptMcpError(f"{label} must be positive inches, got {value}")
+    container, chain = sp_tree, []
+    if group is not None:
+        container, chain = _insertion_group(pkg, part, group)
     shape_id = pkg.next_shape_id(part)
     warnings: list[str] = []
 
     x_emu, y_emu = g.in_to_emu(x), g.in_to_emu(y)
     cx_emu, cy_emu = g.in_to_emu(w), g.in_to_emu(h)
+    path_cx, path_cy = cx_emu, cy_emu
+    if chain:
+        # Slide inches into the group's own child space.
+        ax, bx, ay, by, _turn = _chain_transform(chain)
+        x_emu, y_emu = round((x_emu - bx) / ax), round((y_emu - by) / ay)
+        cx_emu, cy_emu = round(cx_emu / ax), round(cy_emu / ay)
 
-    sp = etree.SubElement(sp_tree, qn("p:sp"))
+    sp = seat_ahead_of_extlst(container, etree.SubElement(container, qn("p:sp")))
     display = name or f"{shape_type.replace('prst:', '')} {shape_id}"
     nv = _nv_pr(sp, "p:nvSpPr", shape_id, display)
     etree.SubElement(nv, qn("p:cNvSpPr"))
@@ -864,14 +1203,21 @@ def insert_shape(
     if shape_type == "freeform":
         if adjustments:
             raise PptMcpError("freeform shapes take a path, not adjustments")
-        geom, warnings = _freeform_geom(path, cx_emu, cy_emu)
+        geom, warnings = _freeform_geom(path, path_cx, path_cy)
         sppr.append(geom)
     else:
         if path is not None:
             raise PptMcpError(
                 'path is only valid with shape_type="freeform"'
             )
-        sppr.append(g.prst_geom(_resolve_preset(shape_type), adjustments))
+        prst = _resolve_preset(shape_type)
+        geom = g.prst_geom(prst)
+        if adjustments:
+            # Names and values are checked as set_shape_adjustments checks
+            # them, and the preset's whole list is written (guides.py: what
+            # PowerPoint opens).
+            _write_handles(geom, prst, _handle_values(prst, adjustments, None))
+        sppr.append(geom)
     fill_el = g.fill_element(fill)
     if fill_el is not None:
         sppr.append(fill_el)
@@ -889,6 +1235,10 @@ def insert_shape(
     body = g.txbody(text if text is not None else "", base_style)
     _apply_extra_run_props(body, extra_style)
     sp.append(body)
+    refitted: list[int] = []
+    if chain:
+        refitted, refit_warnings = _refit_groups(chain)
+        warnings.extend(refit_warnings)
     pkg.mark_dirty(part)
     result = {
         "shape_id": shape_id,
@@ -898,8 +1248,315 @@ def insert_shape(
         "type": shape_type,
         "name": display,
     }
+    if chain:
+        result["group_id"] = _shape_id(chain[-1])
+        if refitted:
+            result["refitted_groups"] = refitted
     if warnings:
         result["warnings"] = warnings
+    return result
+
+
+# ----------------------------------------------------------- adjust handles
+
+#: Presets whose angle handles are a start and an end on one circle; their
+#: degrees fold into a single turn (-90 is 270, 360 is 0).
+_ANGLE_FOLD = frozenset({"arc", "blockArc", "chord", "pie"})
+
+
+def _preset_geometry(elem: etree._Element) -> tuple[str, etree._Element]:
+    """(preset name, a:prstGeom) of a shape or connector, or a refusal that
+    says why the shape has no adjust handles to set."""
+    tag = etree.QName(elem).localname
+    if tag == "grpSp":
+        raise UnsupportedStructure(
+            f"shape {_shape_id(elem)} is a group; a group has no adjust "
+            "handles. Address a shape inside it by id or by name"
+        )
+    if tag == "graphicFrame":
+        raise UnsupportedStructure(
+            f"shape {_shape_id(elem)} is a table, chart or diagram frame; it "
+            "has no adjust handles"
+        )
+    sppr = elem.find(qn("p:spPr"))
+    geom = sppr.find(qn("a:prstGeom")) if sppr is not None else None
+    if geom is None:
+        raise UnsupportedStructure(
+            f"shape {_shape_id(elem)} has no preset geometry (a freeform or "
+            "custom outline); only preset shapes have adjust handles"
+        )
+    return geom.get("prst", ""), geom
+
+
+def _stored_handles(geom: etree._Element) -> dict[str, str]:
+    """Each stored handle's formula; of a handle stored twice, the first,
+    which is the one _write_handles keeps."""
+    stored: dict[str, str] = {}
+    for name, fmla in _stored_list(geom):
+        stored.setdefault(name, fmla)
+    return stored
+
+
+def _val(fmla: str) -> int | None:
+    return _guides.stored_value(fmla)
+
+
+def _handle_rows(prst: str, geom: etree._Element) -> list[dict]:
+    stored = _stored_handles(geom)
+    rows = []
+    for name, default in _guides.handles(prst) or ():
+        fmla = stored.get(name)
+        value = _val(fmla) if fmla is not None else default
+        row: dict = {"name": name, "value": value, "default": default,
+                     "set": fmla is not None}
+        if fmla is not None and value is None:
+            row["formula"] = fmla
+        if _guides.is_angle(prst, name) and value is not None:
+            row["degrees"] = _guides.degrees_of(value)
+        rows.append(row)
+    return rows
+
+
+def _handle_values(prst: str, adjustments, degrees) -> dict[str, int]:
+    """The handles to write, by name, as stored values. Every name is
+    checked against the preset's own list before anything is written."""
+    known = _guides.handles(prst)
+    if known is None:
+        raise UnsupportedStructure(
+            f"{prst!r} is not a DrawingML preset name, so its adjust handles "
+            "are not known; nothing was changed"
+        )
+    names = [name for name, _default in known]
+    if not names:
+        raise PptMcpError(
+            f"the {prst} preset has no adjust handles; nothing was changed"
+        )
+    listing = ", ".join(
+        f"{name} (default {default}"
+        + (", an angle" if _guides.is_angle(prst, name) else "") + ")"
+        for name, default in known
+    )
+    if adjustments is None:
+        adjustments = {}
+    if isinstance(adjustments, (list, tuple)):
+        if len(adjustments) > len(names):
+            raise PptMcpError(
+                f"{len(adjustments)} adjustments were sent but the {prst} "
+                f"preset has {len(names)} handles: {listing}"
+            )
+        adjustments = dict(zip(names, adjustments))
+    if not isinstance(adjustments, dict):
+        raise PptMcpError(
+            "adjustments must be an object of handle name to value, such as "
+            f'{{"{names[0]}": {known[0][1]}}}'
+        )
+    if degrees is None:
+        degrees = {}
+    if not isinstance(degrees, dict):
+        raise PptMcpError(
+            "degrees must be an object of angle handle name to degrees, such "
+            'as {"adj1": 180}'
+        )
+    out: dict[str, int] = {}
+    for source, given in (("adjustments", adjustments), ("degrees", degrees)):
+        for name, value in given.items():
+            if name not in names:
+                raise PptMcpError(
+                    f"{name!r} is not a handle of the {prst} preset; its "
+                    f"handles are {listing}"
+                )
+            if name in out:
+                raise PptMcpError(
+                    f"{name} was sent in both adjustments and degrees; send it "
+                    "once"
+                )
+            out[name] = _handle_value(prst, name, value, source)
+    return out
+
+
+def _handle_value(prst: str, name: str, value, source: str) -> int:
+    stored = _handle_number(prst, name, value, source)
+    if not _guides.VALUE_MIN <= stored <= _guides.VALUE_MAX:
+        raise PptMcpError(
+            f"{source} {name} = {value!r} is out of range: a handle takes a whole "
+            f"number from {_guides.VALUE_MIN} to {_guides.VALUE_MAX}. Most handles "
+            "count in 100000ths (100000 is the whole side) and angles in 60000ths "
+            "of a degree"
+        )
+    return stored
+
+
+def _handle_number(prst: str, name: str, value, source: str) -> int:
+    angle = _guides.is_angle(prst, name)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise PptMcpError(f"{source} {name} must be a number, got {value!r}")
+    if isinstance(value, float) and not math.isfinite(value):
+        raise PptMcpError(f"{source} {name} must be a finite number")
+    if source == "degrees":
+        if not angle:
+            raise PptMcpError(
+                f"{name} of the {prst} preset is not an angle; set it in "
+                "adjustments instead (a whole number as stored, or a fraction "
+                "such as 0.25)"
+            )
+        if prst in _ANGLE_FOLD:
+            stored = round((float(value) % 360) * _guides.PER_DEGREE)
+            return stored % _guides.FULL_TURN
+        if not -360 <= float(value) <= 360:
+            raise PptMcpError(f"degrees {name} must be between -360 and 360")
+        return round(float(value) * _guides.PER_DEGREE)
+    if isinstance(value, float):
+        if angle:
+            raise PptMcpError(
+                f"{name} of the {prst} preset is an angle; send it in degrees "
+                f'(degrees {{"{name}": 180}}), or as a whole number in '
+                "60000ths of a degree in adjustments"
+            )
+        if abs(value) > 10:
+            raise PptMcpError(
+                f"adjustments {name} = {value!r} has a decimal point, which "
+                "makes it a fraction (0.25 is 25%); send a stored value as a "
+                "whole number without one"
+            )
+        return round(value * 100000)
+    return int(value)
+
+
+def _write_handles(
+    geom: etree._Element, prst: str, values: dict[str, int]
+) -> None:
+    """Store the preset's WHOLE handle list in its own order: the values
+    given, the value each other handle already stores, else its default.
+    PowerPoint refuses a deck whose list names only some of a preset's
+    handles, lists them out of order, names a guide the preset lacks or
+    names one twice (guides.py), so a stored list in any of those shapes is
+    rewritten whole: the first stored "val N" of each handle that
+    PowerPoint can read is kept, any other formula becomes the handle's
+    default (PowerPoint writes only "val N" here), and anything else is
+    dropped."""
+    avlst = geom.find(qn("a:avLst"))
+    if avlst is None:
+        avlst = etree.Element(qn("a:avLst"))
+        geom.insert(0, avlst)
+    kept: dict[str, str] = {}
+    for name, fmla in _stored_list(geom):
+        value = _val(fmla)
+        if (name not in kept and value is not None
+                and _guides.STORED_MIN <= value <= _guides.STORED_MAX):
+            kept[name] = fmla
+    for child in list(avlst):
+        avlst.remove(child)
+    for name, default in _guides.handles(prst) or ():
+        gd = etree.SubElement(avlst, qn("a:gd"))
+        gd.set("name", name)
+        if name in values:
+            gd.set("fmla", f"val {int(values[name])}")
+        else:
+            gd.set("fmla", kept.get(name, f"val {default}"))
+
+
+def _stored_list(geom: etree._Element) -> list[tuple[str, str]]:
+    avlst = geom.find(qn("a:avLst"))
+    if avlst is None:
+        return []
+    return [(gd.get("name"), gd.get("fmla", "")) for gd in avlst.findall(qn("a:gd"))]
+
+
+def _list_warning(prst: str, problem: str) -> str:
+    return (
+        f"PowerPoint refuses to open a deck holding this shape's adjust list: "
+        f"{problem}. Setting any of its handles with set_shape_adjustments "
+        "writes the whole list and repairs it."
+    )
+
+
+def adjust_list_problems(pkg: PptxPackage) -> list[dict]:
+    """Every preset shape on the slides, layouts and masters whose stored
+    adjust list PowerPoint would refuse (guides.list_problem), in order."""
+    parts = [(part, f"slide {number}", number)
+             for number, part in enumerate(pkg.slide_parts(), start=1)]
+    parts += [
+        (name, name.rsplit("/", 1)[-1][:-len(".xml")], None)
+        for name in sorted(pkg.part_names())
+        if name.startswith(("ppt/slideLayouts/slideLayout", "ppt/slideMasters/slideMaster"))
+        and name.endswith(".xml")
+    ]
+    found: list[dict] = []
+    for part, where, number in parts:
+        for geom in pkg.root(part).iter(qn("a:prstGeom")):
+            prst = geom.get("prst", "")
+            problem = _guides.list_problem(prst, _stored_list(geom))
+            if problem is None:
+                continue
+            owner = geom.getparent().getparent() if geom.getparent() is not None else None
+            cnv = owner.find(f".//{qn('p:cNvPr')}") if owner is not None else None
+            found.append({
+                "where": where, "part": part, "slide_number": number, "preset": prst,
+                "shape": cnv.get("name") if cnv is not None else None,
+                "shape_id": int(cnv.get("id")) if cnv is not None
+                and (cnv.get("id") or "").isdigit() else None,
+                "problem": problem,
+            })
+    return found
+
+
+def adjust_list_message(found: list[dict]) -> str:
+    """validate's sentence for adjust_list_problems, naming at most three."""
+    named = []
+    for item in found[:3]:
+        shape = f'shape "{item["shape"]}"' if item["shape"] else "a shape"
+        named.append(f'{shape} ({item["preset"]}) on {item["where"]}: {item["problem"]}')
+    more = f"; and {len(found) - 3} more" if len(found) > 3 else ""
+    return (
+        "PowerPoint refuses to open a deck holding these adjust lists: "
+        + "; ".join(named) + more
+        + ". Setting any handle of such a shape with set_shape_adjustments writes "
+        "its whole list and repairs it."
+    )
+
+
+_ANGLE_NOTE = (
+    "Angles count in degrees clockwise from 3 o'clock: 0 points right, 90 "
+    "down, 180 left and 270 up. An arc, chord or pie runs clockwise from its "
+    "adj1 angle to its adj2 angle, so adj1 180 and adj2 0 is the top half "
+    "and adj1 0 and adj2 180 the bottom half."
+)
+
+
+def shape_adjustments(
+    pkg: PptxPackage, slide, shape, *, adjustments=None, degrees=None,
+) -> dict:
+    """Read, or with adjustments or degrees set, a preset shape's adjust
+    handles. Reading changes nothing; setting marks the slide dirty."""
+    rec = resolve_slide(pkg, slide)
+    part = rec["part"]
+    elem, _chain = _find_shape(pkg, part, shape)
+    prst, geom = _preset_geometry(elem)
+    result: dict = {
+        "shape_id": _shape_id(elem),
+        "name": _shape_name(elem),
+        "preset": prst,
+    }
+    if adjustments or degrees:
+        values = _handle_values(prst, adjustments, degrees)
+        _write_handles(geom, prst, values)
+        pkg.mark_dirty(part)
+        order = [name for name, _default in _guides.handles(prst)]
+        result["updated"] = sorted(values, key=order.index)
+    elif _guides.handles(prst) is None:
+        result["warnings"] = [
+            f"{prst!r} is not a DrawingML preset name; its handles are not "
+            "known"
+        ]
+    else:
+        problem = _guides.list_problem(prst, _stored_list(geom))
+        if problem is not None:
+            result["warnings"] = [_list_warning(prst, problem)]
+    result["adjustments"] = _handle_rows(prst, geom)
+    if prst in _guides.ANGLES:
+        result["note"] = _ANGLE_NOTE
+    result["slide_index"] = rec["index"]
+    result["slide_id"] = rec["slide_id"]
     return result
 
 
@@ -1070,7 +1727,7 @@ def insert_connector(
     sp_tree = _sp_tree(pkg, part)
     shape_id = pkg.next_shape_id(part)
     display = name or f"{kind} connector {shape_id}"
-    cxnsp = etree.SubElement(sp_tree, qn("p:cxnSp"))
+    cxnsp = seat_ahead_of_extlst(sp_tree, etree.SubElement(sp_tree, qn("p:cxnSp")))
     nv = etree.SubElement(cxnsp, qn("p:nvCxnSpPr"))
     cnvpr = etree.SubElement(nv, qn("p:cNvPr"))
     cnvpr.set("id", str(shape_id))
@@ -1125,8 +1782,8 @@ def _connector_endpoints_slide(
     xfrm box and flips."""
     xfrm = _require_xfrm(cxnsp)
     x, y, cx, cy = _xfrm_box(xfrm)
-    flip_h = xfrm.get("flipH") == "1"
-    flip_v = xfrm.get("flipV") == "1"
+    flip_h = attr_bool(xfrm, "flipH")
+    flip_v = attr_bool(xfrm, "flipV")
     sx = x + (cx if flip_h else 0)
     sy = y + (cy if flip_v else 0)
     ex = x + (0 if flip_h else cx)
@@ -1211,25 +1868,41 @@ def set_shape(
     text: str | None = None,
     text_style: dict | None = None,
     name: str | None = None,
+    scale_text: bool = False,
+    scale_lines: bool = False,
+    no_wrap: bool = False,
 ) -> dict:
     """Edit one shape in place by id: move (absolute x/y or delta dx/dy,
     inches, SLIDE space even inside groups), resize (w/h inches), rotate,
     flip, restyle (fill/line/effect specs per ops/geometry.py; pass "none"
-    to remove), replace text (simple single-style), rename. Connectors glued
+    to remove), replace text (simple single-style; ``\\n`` paragraphs and
+    ``\\v`` soft line breaks), rename. Connectors glued
     to the shape are rerouted automatically. Only the parameters given are
-    touched."""
+    touched. scale_text and scale_lines, with a new w or h, scale the text
+    sizes and line widths inside the shape or group by the smaller of the
+    width and height ratios; no_wrap keeps each paragraph of the text boxes
+    inside on one line."""
     rec = resolve_slide(pkg, slide)
     part = rec["part"]
     elem, chain = _find_shape(pkg, part, shape)
+    if _shape_id(elem) is not None:
+        shape = _shape_id(elem)  # a name resolves to the id the answer reports
     changed: list[str] = []
     warnings: list[str] = []
     preserved: list[str] = []
     text_facts: dict = {}
+    refitted: list[int] = []
 
     if (x is not None or y is not None) and (dx is not None or dy is not None):
         raise PptMcpError("use absolute x/y or delta dx/dy, not both")
+    if (scale_text or scale_lines) and w is None and h is None:
+        raise PptMcpError(
+            "scale_text and scale_lines follow a change of size; send w or h "
+            "with them"
+        )
 
     geo_change = any(v is not None for v in (x, y, dx, dy, w, h))
+    factor = 1.0
     if geo_change and _xfrm_of(elem) is None:
         seeded = _seed_xfrm(pkg, part, elem)
         if seeded is not None:
@@ -1261,7 +1934,27 @@ def set_shape(
         new_cx = round(g.in_to_emu(w) / ax) if w is not None else cur_cx
         new_cy = round(g.in_to_emu(h) / ay) if h is not None else cur_cy
         if new_cx < 0 or new_cy < 0:
-            raise PptMcpError("w and h must be positive inches")
+            raise PptMcpError(
+                "w and h cannot be negative; send a size in inches (0 suits a "
+                "straight line)"
+            )
+        if (scale_text or scale_lines) and (
+                (w is not None and new_cx == 0) or (h is not None and new_cy == 0)):
+            # A factor of 0 would write every text size at the 1 pt floor and
+            # every line at nothing; h=0 is a likely way to mean "keep it".
+            raise PptMcpError(
+                "scale_text and scale_lines scale by the new size, and a w or h "
+                "of 0 would shrink every text size and line to nothing; send the "
+                "new size, or leave w or h out to keep that side as it is"
+            )
+        ratios = []
+        if w is not None and cur_cx > 0:
+            ratios.append(new_cx / cur_cx)
+        if h is not None and cur_cy > 0:
+            ratios.append(new_cy / cur_cy)
+        if ratios:
+            # With one side given, the other keeps its size: a ratio of 1.
+            factor = min(ratios + ([1.0] if len(ratios) == 1 else []))
         g.check_emu_box(new_x, new_y, new_cx, new_cy, what=f"shape {shape}")
         off = xfrm.find(qn("a:off"))
         ext = xfrm.find(qn("a:ext"))
@@ -1275,6 +1968,9 @@ def set_shape(
                 "group resized: children scale through ext/chExt, positions "
                 "were not rewritten"
             )
+        if chain:
+            refitted, refit_warnings = _refit_groups(chain)
+            warnings.extend(refit_warnings)
     if rotation is not None or flip_h is not None or flip_v is not None:
         xfrm = _require_xfrm(elem)
         if rotation is not None:
@@ -1334,7 +2030,7 @@ def set_shape(
     elif text_style is not None:
         raise PptMcpError(
             "text_style only applies together with text (single-style "
-            "replace); rich in-place restyling is the text pack's job"
+            "replace); use format_text for rich in-place restyling"
         )
 
     if name is not None:
@@ -1343,6 +2039,17 @@ def set_shape(
             raise UnsupportedStructure(f"shape {shape} has no cNvPr to rename")
         cnvpr.set("name", name)
         changed.append("name")
+
+    scaled: dict = {}
+    if scale_text:
+        scaled["text_scaled"] = _scaling.scale_text(pkg, part, elem, factor)
+        changed.append("text_size")
+    if scale_lines:
+        scaled["lines_scaled"] = _scaling.scale_lines(pkg, part, elem, factor)
+        changed.append("line_width")
+    if no_wrap:
+        scaled["unwrapped"] = _scaling.unwrap_text_boxes(elem)
+        changed.append("wrap")
 
     if not changed:
         raise PptMcpError("set_shape called with nothing to change")
@@ -1365,6 +2072,11 @@ def set_shape(
         "slide_index": rec["index"],
         "slide_id": rec["slide_id"],
     }
+    if chain:
+        result["group_id"] = _shape_id(chain[-1])
+    if geo_change and chain and refitted:
+        result["refitted_groups"] = refitted
+    result.update(scaled)
     if preserved:
         result["preserved"] = preserved
     # What the carry could NOT preserve, stated rather than left to be
@@ -1409,13 +2121,42 @@ def delete_shape(pkg: PptxPackage, slide, shape: int) -> dict:
 
     timing_report = _prune_spids(pkg.root(part), deleted_ids)
     pkg.mark_dirty(part)
-    return {
+    out = {
         "deleted": sorted(deleted_ids),
         "unglued_connectors": unglued,
         "timing_report": timing_report,
         "slide_index": rec["index"],
         "slide_id": rec["slide_id"],
     }
+    notes = _reused_id_notes(pkg, part, rec["slide_id"], deleted_ids)
+    if notes:
+        out["warnings"] = notes
+    return out
+
+
+def _reused_id_notes(
+    pkg: PptxPackage, part: str, slide_id: int, freed: set[int]
+) -> list[str]:
+    """A note when a change freed the highest shape ids on a slide. A new
+    shape takes one more than the highest id left (PowerPoint numbers new
+    shapes the same way), and a view anchor names a shape by slide id and
+    shape id, so an anchor read before this change would name the next new
+    shape here instead of going stale."""
+    from . import view as _view
+
+    left = [int(c.get("id")) for c in pkg.root(part).iter(qn("p:cNvPr"))
+            if (c.get("id") or "").isdigit()]
+    top = max(left, default=1)
+    reused = sorted(i for i in freed if i > top)
+    if not reused:
+        return []
+    ids = ", ".join(str(i) for i in reused)
+    anchors = ", ".join(f"a:{_view.anchor_digest(slide_id, i)[:6]}" for i in reused)
+    return [
+        f"shape id {ids} was the highest on this slide, so the next shape added "
+        f"here takes it and answers to the old anchor {anchors}; take anchors "
+        "from a new get_presentation_view before editing by anchor again"
+    ]
 
 
 # ------------------------------------------------------------------ groups
@@ -1489,11 +2230,128 @@ def group_shapes(pkg: PptxPackage, slide, ids: list[int], *, name: str | None = 
     }
 
 
+_MC_NS = "http://schemas.openxmlformats.org/markup-compatibility/2006"
+_MC_AC = f"{{{_MC_NS}}}AlternateContent"
+_P14_XFRM = "{http://schemas.microsoft.com/office/powerpoint/2010/main}xfrm"
+#: A group's own children; everything else in a p:grpSp is a member.
+_GROUP_OWN = (qn("p:nvGrpSpPr"), qn("p:grpSpPr"), qn("p:extLst"))
+#: Markup-compatibility attributes whose values name namespace prefixes.
+_MC_PREFIX_ATTRS = tuple(
+    f"{{{_MC_NS}}}{a}" for a in
+    ("Ignorable", "ProcessContent", "MustUnderstand", "PreserveElements", "PreserveAttributes")
+)
+
+
+def _box_of(el: etree._Element):
+    """The xfrm that places one shape element (None when it inherits its
+    box), or False when `el` is nothing this module can place."""
+    if el.tag == qn("p:graphicFrame"):
+        return el.find(qn("p:xfrm"))
+    if el.tag == qn("p:contentPart"):
+        return el.find(_P14_XFRM)
+    if el.tag in _SHAPE_TAGS:
+        pr = el.find(qn("p:grpSpPr" if el.tag == qn("p:grpSp") else "p:spPr"))
+        return pr.find(qn("a:xfrm")) if pr is not None else None
+    return False
+
+
+def _member_boxes(member: etree._Element) -> list | None:
+    """The xfrms an ungroup rescales for one group member: a shape's own, or,
+    for a compatibility wrapper (mc:AlternateContent, which PowerPoint uses
+    for an equation box, ink and a newer chart), the shape in every branch.
+    None when the member holds something whose box cannot be found."""
+    if member.tag in _SHAPE_TAGS:
+        found = _xfrm_of(member)
+        return [found] if found is not None else []
+    if member.tag == _MC_AC:
+        boxes: list = []
+        for branch in member:
+            for el in branch:
+                if not isinstance(el.tag, str):
+                    continue
+                inner = _member_boxes(el) if el.tag == _MC_AC else None
+                if el.tag == _MC_AC:
+                    if inner is None:
+                        return None
+                    boxes.extend(inner)
+                    continue
+                found = _box_of(el)
+                if found is False:
+                    return None
+                if found is not None:
+                    boxes.append(found)
+        return boxes
+    found = _box_of(member)
+    if found is False:
+        return None
+    return [found] if found is not None else []
+
+
+def _member_id(member: etree._Element) -> int | None:
+    from .read import wrapped_shape_id
+
+    if member.tag == _MC_AC:
+        return wrapped_shape_id(member)
+    sid = _shape_id(member)
+    if sid is not None or member.tag in _SHAPE_TAGS:
+        return sid
+    for node in member.iter():
+        if isinstance(node.tag, str) and etree.QName(node).localname == "cNvPr":
+            raw = node.get("id") or ""
+            return int(raw) if raw.isdigit() else None
+    return None
+
+
+def _prefix_scope(member: etree._Element) -> list[tuple[etree._Element, str, str]]:
+    """(element, prefix, namespace) for every prefix a markup-compatibility
+    attribute inside `member` names (mc:Choice Requires, mc:Ignorable), as it
+    resolves where the member is now. An XML library keeps the declarations
+    of the names it sees, and a prefix named only in an attribute's value is
+    not one of them, so a move can leave it undeclared."""
+    out = []
+    for node in member.iter():
+        if not isinstance(node.tag, str):
+            continue
+        values = [node.get(a) for a in _MC_PREFIX_ATTRS]
+        if node.tag == f"{{{_MC_NS}}}Choice":
+            values.append(node.get("Requires"))
+        for value in values:
+            for token in (value or "").split():
+                prefix = token.split(":", 1)[0]
+                uri = node.nsmap.get(prefix)
+                if uri:
+                    out.append((node, prefix, uri))
+    return out
+
+
+def _keep_prefix_scope(member: etree._Element, scope) -> etree._Element:
+    """Declare again, on the moved member itself, any prefix of `scope` that
+    no longer resolves; returns the member (a new element when it had to be
+    rebuilt to carry the declaration)."""
+    missing = {p: u for node, p, u in scope if node.nsmap.get(p) != u}
+    if not missing:
+        return member
+    parent = member.getparent()
+    own = {p: u for p, u in member.nsmap.items() if parent.nsmap.get(p) != u}
+    fresh = etree.Element(member.tag, nsmap={**own, **missing})
+    for key, value in member.attrib.items():
+        fresh.set(key, value)
+    fresh.text, fresh.tail = member.text, member.tail
+    for child in list(member):
+        fresh.append(child)
+    parent.replace(member, fresh)
+    return fresh
+
+
 def ungroup_shapes(pkg: PptxPackage, slide, group: int) -> dict:
     """Dissolve one group: children get the group transform baked into their
     xfrm (position and scale) so visual positions are preserved, then move up
     to the group's parent at the group's z-position. Rotated or flipped
-    groups are refused (baking rotation into children is lossy)."""
+    groups are refused (baking rotation into children is lossy). A member
+    PowerPoint stores in a compatibility wrapper (an equation box, ink, a
+    newer chart) moves out whole, every branch rescaled; a member whose box
+    cannot be found is refused before anything changes, unless the group
+    neither moves nor scales what it holds."""
     rec = resolve_slide(pkg, slide)
     part = rec["part"]
     elem, _chain = _find_shape(pkg, part, group)
@@ -1502,45 +2360,85 @@ def ungroup_shapes(pkg: PptxPackage, slide, group: int) -> dict:
     xfrm = elem.find(f"{qn('p:grpSpPr')}/{qn('a:xfrm')}")
     if xfrm is None:
         raise UnsupportedStructure(f"group {group} has no transform")
-    if xfrm.get("rot") or xfrm.get("flipH") or xfrm.get("flipV"):
+    if _xfrm_turned(xfrm):
         raise UnsupportedStructure(
             f"group {group} is rotated or flipped; ungroup it in PowerPoint "
             "(baking rotation into children is not supported)"
         )
     ax, bx, ay, by, _rot = _chain_transform([elem])
+    identity = (ax, bx, ay, by) == (1.0, 0.0, 1.0, 0.0)
     parent = elem.getparent()
     freed: list[int] = []
-    children = [c for c in elem if c.tag in _SHAPE_TAGS]
-    marker = elem
+    # Every member, wrapped ones included: the group is removed below, so a
+    # member left out here would be deleted with it.
+    children = [c for c in elem if isinstance(c.tag, str) and c.tag not in _GROUP_OWN]
+    plans = []
     for child in children:
-        cxfrm = _xfrm_of(child)
-        if cxfrm is not None:
+        boxes = _member_boxes(child)
+        if boxes is None and not identity:
+            what = etree.QName(child).localname
+            raise UnsupportedStructure(
+                f"group {group} holds a member this tool cannot place ({what}), "
+                "and the group moves or resizes what it holds, so ungrouping it "
+                "here could put that member in the wrong place; nothing was "
+                "changed. Ungroup it in PowerPoint instead."
+            )
+        moves = []
+        for cxfrm in boxes or []:
             cx, cy, ccx, ccy = _xfrm_box(cxfrm)
+            moves.append((cxfrm, round(ax * cx + bx), round(ay * cy + by),
+                          round(ax * ccx), round(ay * ccy)))
+        plans.append((child, moves))
+    marker = elem
+    for child, moves in plans:
+        for cxfrm, x, y, cx, cy in moves:
+            # A child group's frame is scaled; its chOff/chExt stay, which
+            # keeps its interior mapping consistent.
             off = cxfrm.find(qn("a:off"))
             ext = cxfrm.find(qn("a:ext"))
-            off.set("x", str(round(ax * cx + bx)))
-            off.set("y", str(round(ay * cy + by)))
-            ext.set("cx", str(round(ax * ccx)))
-            ext.set("cy", str(round(ay * ccy)))
-            if child.tag == qn("p:grpSp"):
-                # Child group frame scaled; chOff/chExt untouched keeps its
-                # interior mapping consistent.
-                pass
+            off.set("x", str(x))
+            off.set("y", str(y))
+            ext.set("cx", str(cx))
+            ext.set("cy", str(cy))
+        scope = _prefix_scope(child)
         elem.remove(child)
         marker.addnext(child)
+        child = _keep_prefix_scope(child, scope)
         marker = child
-        cid = _shape_id(child)
+        cid = _member_id(child)
         if cid is not None:
             freed.append(cid)
+    group_id = _shape_id(elem)
     parent.remove(elem)
+    # An animation that targets the group has nothing to play once the group
+    # is gone (PowerPoint drops it too); left in place its target names a
+    # shape that no longer exists and PowerPoint repairs the deck.
+    timing_report = None
+    if group_id is not None:
+        from .animations import _prune_spids
+
+        timing_report = _prune_spids(pkg.root(part), {group_id})
     pkg.mark_dirty(part)
-    return {
+    out = {
         "ungrouped": group,
         "freed_ids": freed,
         "changed_ids": freed,
         "slide_index": rec["index"],
         "slide_id": rec["slide_id"],
     }
+    if timing_report and (timing_report["effects_removed"] or timing_report["builds_removed"]
+                          or timing_report["conds_removed"]):
+        out["timing_report"] = timing_report
+        out["warnings"] = [
+            f"group {group} had {timing_report['effects_removed']} animation effect(s); "
+            "they were removed because the group no longer exists. Add the animation "
+            "to the shapes that were in it if you still want it"
+        ]
+    notes = _reused_id_notes(pkg, part, rec["slide_id"],
+                             {group_id} if group_id is not None else set())
+    if notes:
+        out["warnings"] = out.get("warnings", []) + notes
+    return out
 
 
 # -------------------------------------------------------- align / distribute
@@ -1701,7 +2599,9 @@ def set_z_order(pkg: PptxPackage, slide, shape: int, action: str) -> dict:
     part = rec["part"]
     elem, _chain = _find_shape(pkg, part, shape)
     parent = elem.getparent()
-    siblings = [c for c in parent if c.tag in _SHAPE_TAGS]
+    # A wrapped shape (an equation, ink) holds one place in the stack, so a
+    # step forward or back passes it like any other shape.
+    siblings = stack_members(parent)
     idx = siblings.index(elem)
     moved = False
     if action == "front" and idx < len(siblings) - 1:
@@ -1718,7 +2618,7 @@ def set_z_order(pkg: PptxPackage, slide, shape: int, action: str) -> dict:
         moved = True
     if moved:
         pkg.mark_dirty(part)
-    new_siblings = [c for c in parent if c.tag in _SHAPE_TAGS]
+    new_siblings = stack_members(parent)
     return {
         "shape_id": shape,
         "action": action,

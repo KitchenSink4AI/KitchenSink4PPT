@@ -2,15 +2,14 @@
 sweep (fonts, colors, language, logo replace, compression, and future
 callers such as deck-wide search scope).
 
-Why this exists: the audit's clearest architectural finding is that the
-missing high-demand functionality (Slidewise-class font fixing, color
-unification, logo swap, language setting) is ONE move repeated: walk every
+Why this exists: deck-wide jobs (font fixing, color unification, logo
+swap, language setting) are ONE move repeated: walk every
 text run and every color in the WHOLE package - slides, slideLayouts,
 slideMasters, notesSlides, notesMaster(s), handoutMaster(s), inside groups,
 inside graphicFrame tables, and inside chart parts - with per-part handlers.
 The COM object model cannot reach phantom font declarations, chart runs, or
-shared media parts cleanly; raw XML can, which is why commercial add-ins
-exist for exactly these jobs and why this spine is file-based.
+shared media parts cleanly; raw XML can, which is why this spine is
+file-based.
 
 Contract (matches every ops module): read helpers are pure package readers;
 nothing here calls mark_dirty() or writes to disk. Mutating sweeps live in
@@ -75,6 +74,48 @@ _BUCKET_PATTERNS: dict[str, re.Pattern] = {
 
 ALL_BUCKETS = tuple(_BUCKET_PATTERNS)
 
+_PML = "application/vnd.openxmlformats-officedocument.presentationml."
+_DML = "application/vnd.openxmlformats-officedocument.drawingml."
+#: content type -> bucket. The [Content_Types].xml entry says what a part
+#: is, so it decides first; the name patterns above still place a part whose
+#: type says nothing useful. Another program may name a layout, a notes page
+#: or a chart differently, and PowerPoint names a chartex chart (waterfall,
+#: treemap, sunburst, ...) chartExN.xml: by name alone they were skipped.
+#: chartex text is DrawingML (a:r, a:defRPr) inside cx:rich and cx:txPr,
+#: which the run, font and colour walks already read element by element.
+_BUCKET_BY_TYPE: dict[str, str] = {
+    _PML + "slide+xml": "slides",
+    _PML + "slideLayout+xml": "layouts",
+    _PML + "slideMaster+xml": "masters",
+    _PML + "notesSlide+xml": "notes",
+    _PML + "notesMaster+xml": "notesMasters",
+    _PML + "handoutMaster+xml": "handoutMasters",
+    _DML + "chart+xml": "charts",
+    "application/vnd.ms-office.chartex+xml": "charts",
+    _DML + "diagramData+xml": "diagrams",
+    "application/vnd.ms-office.drawingml.diagramDrawing+xml": "diagrams",
+}
+
+
+def bucket_map(pkg: PptxPackage) -> dict[str, str]:
+    """{part: bucket} for every traversable part: by content type first,
+    then by name. The presentation bucket is ppt/presentation.xml alone
+    (the package refuses a deck whose main part is anywhere else)."""
+    types = pkg.content_type_map()
+    out: dict[str, str] = {}
+    for name in pkg.part_names():
+        if name == PRESENTATION_PART:
+            out[name] = "presentation"
+            continue
+        bucket = _BUCKET_BY_TYPE.get(types.get(name, ""))
+        if bucket is None:
+            bucket = next(
+                (b for b, pattern in _BUCKET_PATTERNS.items()
+                 if b != "presentation" and pattern.match(name)), None)
+        if bucket is not None:
+            out[name] = bucket
+    return out
+
 
 def normalize_scope(scope) -> tuple[str, ...]:
     """'all' / None -> every bucket; a bucket name or list of names -> that
@@ -106,15 +147,15 @@ def parts_in_scope(pkg: PptxPackage, scope="all") -> list[tuple[str, str]]:
     buckets = normalize_scope(scope)
     out: list[tuple[str, str]] = []
     names = pkg.part_names()
+    placed = bucket_map(pkg)
     for bucket in buckets:
-        pattern = _BUCKET_PATTERNS[bucket]
         if bucket == "slides":
             ordered = [p for p in pkg.slide_parts() if pkg.has_part(p)]
             seen = set(ordered)
-            ordered += [n for n in names if pattern.match(n) and n not in seen]
+            ordered += [n for n in names if placed.get(n) == bucket and n not in seen]
             out += [(p, bucket) for p in ordered]
         else:
-            out += [(n, bucket) for n in names if pattern.match(n)]
+            out += [(n, bucket) for n in names if placed.get(n) == bucket]
     return out
 
 
@@ -216,6 +257,7 @@ _ROLE_BY_ANCESTOR = {
     qn("p:spPr"): "fill",
     qn("p:grpSpPr"): "fill",
     qn("c:spPr"): "fill",
+    "{http://schemas.microsoft.com/office/drawing/2014/chartex}spPr": "fill",
     qn("a:tcPr"): "fill",
     qn("a:fillRef"): "fill",
     qn("a:tcTxStyle"): "text",
@@ -478,11 +520,12 @@ def unused_layouts(pkg: PptxPackage) -> list[str]:
 def orphan_notes_slides(pkg: PptxPackage) -> list[str]:
     """notesSlide parts no slide references (leftovers of deleted slides)."""
     refs = internal_rel_map(pkg)
+    placed = bucket_map(pkg)
     out = []
     for name in pkg.part_names():
-        if _BUCKET_PATTERNS["notes"].match(name):
+        if placed.get(name) == "notes":
             sources = refs.get(name, set())
-            if not any(_BUCKET_PATTERNS["slides"].match(s) for s in sources):
+            if not any(placed.get(s) == "slides" for s in sources):
                 out.append(name)
     return out
 

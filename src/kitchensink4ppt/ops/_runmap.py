@@ -1,15 +1,15 @@
 """Character-offset map over a DrawingML paragraph's runs, plus the
 schema-order rank-insert helpers for a:rPr and a:pPr children.
 
-Ported from word-mcp's ops/_runmap.py pattern, adapted to the a:p content
+Adapted from the Word editor's run map to the a:p content
 model. PowerPoint fragments logically continuous text into many a:r elements
 (formatting boundaries, language tagging, paste seams). Any edit addressed by
 character position must be resolved through this map, never by per-run string
 operations: a match can start in one run and end three runs later.
 
 Content model of one a:p (EG_TextRun): a:r (text run holding one a:t),
-a:br (line break, one atomic newline slot), a:fld (field: slide number,
-date; renders its CACHED a:t text). The map's visible text matches
+a:br (soft line break, one atomic vertical-tab slot), a:fld (field: slide
+number, date; renders its CACHED a:t text). The map's visible text matches
 ops.read.paragraph_text exactly, so find_text offsets resolve through it.
 
 Atomics: a:br occupies a single character slot and can never split. a:fld
@@ -19,7 +19,8 @@ guessed at (rewriting the cache would silently desync on the next open).
 
 Edits apply right-to-left against one snapshot of the map: offsets left of an
 applied edit stay valid, and a replacement whose output re-contains the
-search text can never be re-matched.
+search text can never be re-matched (the self-referencing-replacement
+lesson from the Word editor).
 
 Splitting a run for a mid-run boundary clones its a:rPr onto every fragment,
 so formatting a character range never bleeds outside the range.
@@ -37,7 +38,7 @@ from ..core.package import qn
 # --------------------------------------------------------- schema-order maps
 #
 # OOXML property containers are order-sensitive; children go in by RANK,
-# never appended (harvest pitfall 2). Sequences verified against ECMA-376
+# never appended. Sequences verified against ECMA-376
 # CT_TextCharacterProperties / CT_TextParagraphProperties (python-pptx
 # oxml/text.py models the same _tag_seq). The graphics code can import
 # rank_insert/ensure_child for spPr-family containers with its own tables.
@@ -73,8 +74,9 @@ RPR_ORDER = (
 #: a:hlinkClick and a:hlinkMouseOver are the RUN-level pair (inside a:rPr).
 #: Whole-tree sweeps that removed a relationship used to name the first two
 #: only, so a run's mouse-over link kept an r:id pointing at a rel that was
-#: gone, and list_hyperlinks did not report the link at all. Reading all three is correct everywhere: a
-#: container can only hold the ones its own schema allows.
+#: gone, and list_hyperlinks did not report the link at all. Reading all
+#: three is correct everywhere: a container can only hold the ones its own
+#: schema allows.
 HLINK_ELEMENTS = ("a:hlinkClick", "a:hlinkHover", "a:hlinkMouseOver")
 
 #: The hover spellings, for a reader deciding what to call a trigger.
@@ -189,7 +191,7 @@ class Segment:
 
     def __init__(self, el: etree._Element, kind: str, start: int, end: int):
         self.el = el
-        self.kind = kind  # "run" | "br" | "fld"
+        self.kind = kind  # "run" | "br" | "fld" | "wrapped"
         self.start = start
         self.end = end
 
@@ -206,11 +208,24 @@ def build_map(p: etree._Element) -> tuple[str, list[Segment]]:
     """Visible text of one a:p plus segments mapping character offsets to
     elements. The text is IDENTICAL to ops.read.paragraph_text(p), so
     find_text offsets resolve through this map. Runs with empty a:t
-    contribute nothing (and are never touched by edits)."""
+    contribute nothing (and are never touched by edits). An
+    mc:AlternateContent (an inline equation, a run for a newer version), or
+    math written straight into the paragraph (a14:m), is one atomic
+    "wrapped" slot holding the text PowerPoint shows for it; edits never cut
+    into it (ops/_wrapped.py)."""
+    from ._wrapped import A14_M_TAG, AC_TAG, wrapped_text
+
     segments: list[Segment] = []
     parts: list[str] = []
     pos = 0
     for child in p:
+        if child.tag in (AC_TAG, A14_M_TAG):
+            text = wrapped_text(child)
+            if text:
+                segments.append(Segment(child, "wrapped", pos, pos + len(text)))
+                parts.append(text)
+                pos += len(text)
+            continue
         local = etree.QName(child).localname
         if local == "r":
             t = _run_t(child)
@@ -222,7 +237,7 @@ def build_map(p: etree._Element) -> tuple[str, list[Segment]]:
             pos += len(text)
         elif local == "br":
             segments.append(Segment(child, "br", pos, pos + 1))
-            parts.append("\n")
+            parts.append("\v")
             pos += 1
         elif local == "fld":
             t = _run_t(child)
@@ -245,7 +260,25 @@ def _clone_run_shell(ref: etree._Element) -> etree._Element:
     return run
 
 
+def _clone_break_shell(ref: etree._Element) -> etree._Element:
+    """New a:br carrying a deep copy of ``ref``'s a:rPr."""
+    br = etree.Element(qn("a:br"))
+    rpr = ref.find(qn("a:rPr"))
+    if rpr is not None:
+        br.append(copy.deepcopy(rpr))
+    return br
+
+
 def _refuse_field(seg: Segment, context: str) -> None:
+    if seg.kind == "wrapped":
+        from ._wrapped import wrapped_text
+
+        raise UnsupportedStructure(
+            f"{context} overlaps {wrapped_text(seg.el)!r}, an equation or other "
+            "content PowerPoint stores in a compatibility wrapper, which this "
+            "server does not rewrite; nothing was changed. Narrow the range or "
+            "pattern to the words around it, or edit it in PowerPoint."
+        )
     t = _run_t(seg.el)
     cached = t.text if t is not None else ""
     raise UnsupportedStructure(
@@ -268,7 +301,8 @@ def replace_range(
     The replacement lands in the first affected a:r (inheriting that run's
     formatting); remaining covered run text is removed, runs left empty are
     dropped, a:br fully inside the range is removed (single-char atomics
-    cannot be partially covered). Any overlap with an a:fld refuses.
+    cannot be partially covered). Any overlap with an a:fld or a wrapper
+    refuses.
 
     Call with spans from ONE build_map snapshot, applied right-to-left:
     offsets left of each applied edit stay valid, and replacements are never
@@ -278,8 +312,45 @@ def replace_range(
     if not affected:
         raise ValueError("range matches no text segments")
     for seg in affected:
-        if seg.kind == "fld":
+        if seg.kind in ("fld", "wrapped"):
             _refuse_field(seg, "the edit range")
+
+    if "\v" in replacement:
+        first, last = affected[0], affected[-1]
+        first_text = (
+            (_run_t(first.el).text or "") if first.kind == "run" else ""
+        )
+        last_text = (
+            (_run_t(last.el).text or "") if last.kind == "run" else ""
+        )
+        prefix = first_text[: max(start - first.start, 0)]
+        suffix = last_text[min(end - last.start, len(last_text)) :]
+        insert_at = p.index(first.el)
+        first_ref = first.el
+        last_ref = last.el
+        for element in dict.fromkeys(seg.el for seg in affected):
+            p.remove(element)
+
+        nodes: list[etree._Element] = []
+        if prefix:
+            run = _clone_run_shell(first_ref)
+            etree.SubElement(run, qn("a:t")).text = prefix
+            nodes.append(run)
+        chunks = replacement.split("\v")
+        for index, chunk in enumerate(chunks):
+            if chunk:
+                run = _clone_run_shell(first_ref)
+                etree.SubElement(run, qn("a:t")).text = chunk
+                nodes.append(run)
+            if index < len(chunks) - 1:
+                nodes.append(_clone_break_shell(first_ref))
+        if suffix:
+            run = _clone_run_shell(last_ref)
+            etree.SubElement(run, qn("a:t")).text = suffix
+            nodes.append(run)
+        for offset, element in enumerate(nodes):
+            p.insert(insert_at + offset, element)
+        return
 
     anchor_prev = affected[0].el.getprevious()
     ref_shell = _clone_run_shell(affected[0].el)
@@ -342,6 +413,9 @@ def split_for_range(
 
     out: list[etree._Element] = []
     for seg in affected:
+        if seg.kind == "wrapped":
+            # A wrapper has no run properties of its own to set.
+            _refuse_field(seg, "the format range")
         if seg.kind == "fld":
             if start > seg.start or end < seg.end:
                 _refuse_field(seg, "the format range boundary")

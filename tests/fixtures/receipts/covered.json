@@ -1,0 +1,12 @@
+{
+  "key_id": "fixture-key",
+  "payload": {
+    "schema": 1,
+    "product": "kitchensink4ppt-business",
+    "license_id": "FIXTURE-0001",
+    "licensee": "Fixture Holdings Ltd",
+    "issued_on": "2026-01-15",
+    "updates_through": "2027-01-15"
+  },
+  "signature": "sofaPf3haJ5FNSD3Qh/jDg+yGev7pWZ7hfKvYJcIHDNP6yeoTFRPUjY84+Rn5lDPOfU2JNepv84cx/VgGhZrCA=="
+}

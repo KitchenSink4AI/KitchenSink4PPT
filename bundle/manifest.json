@@ -3,8 +3,8 @@
   "name": "kitchensink4ppt",
   "display_name": "KitchenSink4PPT",
   "description": "Lets Claude build and edit PowerPoint decks for you: slides, text, real vector diagrams, tables, charts, and speaker notes.",
-  "long_description": "KitchenSink4PPT connects Claude to your presentations. Ask it to build slides, draw diagrams from real shapes you can still move, fill tables, or fix a deck due in the morning. Every change lands after an automatic backup, the work is checked when it saves, and nothing about your decks leaves your machine. Part of the KitchenSink4 family (Word, PowerPoint, Excel, Web) from KitchenSink4AI (kitchensink4.ai).",
-  "version": "1.3.2",
+  "long_description": "KitchenSink4PPT connects Claude to your presentations. Ask it to build slides, draw diagrams from real shapes you can still move, fill tables, or fix a deck due in the morning. Every change lands after an automatic backup and the work is checked when it saves. The server runs on your computer and KitchenSink4AI never receives your decks; your AI app handles what the server reads under its own settings. Part of the KitchenSink4 family (Word, PowerPoint, Excel, Web) from KitchenSink4AI (kitchensink4.ai). macOS is untested in this release.",
+  "version": "2.0.0",
   "author": {
     "name": "KitchenSink4AI",
     "email": "support@kitchensink4.ai",
@@ -16,7 +16,7 @@
     "type": "git",
     "url": "https://github.com/KitchenSink4AI/KitchenSink4PPT"
   },
-  "homepage": "https://kitchensink4.ai/KitchenSink4PPT/",
+  "homepage": "https://community.kitchensink4.ai/ppt/",
   "documentation": "https://github.com/KitchenSink4AI/KitchenSink4PPT#readme",
   "support": "https://github.com/KitchenSink4AI/KitchenSink4PPT/issues",
   "icon": "icon.png",
@@ -35,30 +35,14 @@
     "mcp_config": {
       "command": "uvx",
       "args": [
-        "kitchensink4ppt==1.3.2"
+        "kitchensink4ppt==2.0.0"
       ],
       "env": {
-        "KS4P_ALL_TOOLS": "${user_config.all_tools}",
-        "KS4P_LOCK_TOOLS": "${user_config.lock_tools}"
+        "KS4P_INSTALL_ROUTE": "mcpb"
       }
     }
   },
-  "user_config": {
-    "all_tools": {
-      "type": "boolean",
-      "title": "Load every tool at startup",
-      "description": "Off: starts with the core set, and Claude can ask for more mid-session. On: every tool loads from the first message, which costs more of Claude's working memory but never needs a follow-up. Use with care: the full set includes the tools that drive the real application.",
-      "default": false,
-      "required": false
-    },
-    "lock_tools": {
-      "type": "boolean",
-      "title": "Lock the tool set at startup",
-      "description": "On: the tools chosen at startup are final, and nothing can add more mid-session. A safety preference; most people leave it off.",
-      "default": false,
-      "required": false
-    }
-  },
+  "user_config": {},
   "compatibility": {
     "platforms": [
       "win32",

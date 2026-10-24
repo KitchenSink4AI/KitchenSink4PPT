@@ -10,8 +10,10 @@ than one target refuses, listing the candidates.
 
 Addressing:
 - slide: 0-based presentation-order index (int) or {"slide_id": N}.
-- shape: the p:cNvPr id (int, unique per slide) or the shape name (str;
-  refuses when several shapes share the name).
+- shape: the p:cNvPr id (int, unique per slide; digits as text too), the
+  shape name (str, searched through groups; refuses when several shapes
+  share the name), "Group/Shape", or the view anchor "a:3f9c2a" from
+  get_presentation_view. One resolver for all of them: shapes._find_shape.
 - placeholder: a type string ("title", "subtitle", "body", "content", or a
   raw p:ph type value) or an idx int (the p:ph idx, 0 when absent).
 - character ranges are PER PARAGRAPH (paragraph index + start/end offsets),
@@ -42,9 +44,11 @@ from ..core.errors import (
     TargetNotFound,
     UnsupportedStructure,
 )
-from ..core.package import PptxPackage, qn
+from ..core.package import PptxPackage, qn, resolve_target, seat_ahead_of_extlst
+from ..core.xmlbool import xml_bool
 from . import _regex
 from . import inherit as _inh
+from ._casenote import CaseTally
 from ._runmap import (
     BULLET_CHOICE_TAGS,
     FILL_CHOICE_TAGS,
@@ -59,9 +63,13 @@ from ._runmap import (
     replace_range,
     split_for_range,
 )
+from ._textcontent import append_text as _append_paragraph_text
 from .read import (
     _dgm,
+    chart_text_records,
+    in_wrapper,
     iter_shapes,
+    notes_bodies,
     notes_part_for,
     paragraph_text,
     resolve_slide,
@@ -70,6 +78,7 @@ from .read import (
     table_element,
     txbody_paragraphs,
 )
+from .read import cnvpr_id
 
 EMU_PER_INCH = 914400
 EMU_PER_POINT = 12700
@@ -187,8 +196,8 @@ _UNDERLINE_VALUES = {
 #: Placeholder type aliases (values are the p:ph type strings they match,
 #: FIRST entry = the preferred exact type). "body" and "content" are one
 #: alias set: a Title-and-Content layout's content placeholder is type
-#: "obj", and agents asking for "body" used to dead-end on NOT_FOUND
-#: (production-test finding). When a slide carries both types, the exact
+#: "obj", and agents asking for "body" used to dead-end on NOT_FOUND.
+#: When a slide carries both types, the exact
 #: type wins; several same-type matches still refuse as ambiguous.
 _PH_ALIASES = {
     "title": ("title", "ctrTitle"),
@@ -198,7 +207,7 @@ _PH_ALIASES = {
 }
 
 #: Shape kinds that carry no directly editable text body (find_text parity).
-_NO_TEXT_KINDS = ("group", "picture", "chart", "diagram", "ole", "graphicFrame")
+_NO_TEXT_KINDS = ("group", "picture", "media", "chart", "diagram", "ole", "graphicFrame")
 
 _HEX_COLOR = _stdlib_re.compile(r"\A#?([0-9A-Fa-f]{6})\Z")
 
@@ -276,7 +285,7 @@ def _ph_of(sp: etree._Element) -> etree._Element | None:
 
 def _shape_id(elem: etree._Element) -> int | None:
     cnvpr = _cnvpr_of(elem)
-    return int(cnvpr.get("id")) if cnvpr is not None else None
+    return cnvpr_id(cnvpr)
 
 
 def _shape_name(elem: etree._Element) -> str:
@@ -287,43 +296,25 @@ def _shape_name(elem: etree._Element) -> str:
 def _resolve_shape(
     pkg: PptxPackage, rec: dict, shape
 ) -> tuple[etree._Element, str]:
-    """(shape element, kind) for a shape selector on one slide record:
-    int = p:cNvPr id, str = shape name (refuses on several same-named
-    shapes). Groups are recursed, so grouped shapes resolve by id too."""
-    sp_tree = _sp_tree(pkg, rec["part"])
-    if sp_tree is None:
+    """(shape element, kind) for a shape selector on one slide record,
+    through the shape operations' own resolver (shapes._find_shape), so
+    every operation that takes a shape takes the same addresses: the
+    p:cNvPr id (digits as text too, when no shape has them as its name),
+    the shape name (searched through groups; a repeated name refuses with
+    every candidate), "Group/Shape", or the view anchor
+    get_presentation_view prints ("a:3f9c2a", brackets optional)."""
+    from .read import _shape_kind
+    from .shapes import _find_shape
+
+    if _sp_tree(pkg, rec["part"]) is None:
         raise TargetNotFound(f"slide {rec['index']} has no shape tree")
-    matches: list[tuple[etree._Element, str]] = []
-    inventory: list[str] = []
-    for elem, kind, _z, _parent in iter_shapes(sp_tree):
-        sid = _shape_id(elem)
-        name = _shape_name(elem)
-        inventory.append(f"{sid}:{name!r} ({kind})")
-        if isinstance(shape, int) and not isinstance(shape, bool):
-            if sid == shape:
-                matches.append((elem, kind))
-        elif isinstance(shape, str):
-            if name == shape:
-                matches.append((elem, kind))
-        else:
-            raise PptMcpError(
-                "shape selector must be a shape id (int) or shape name "
-                f"(str); got {shape!r}"
-            )
-    if len(matches) == 1:
-        return matches[0]
-    if not matches:
-        raise TargetNotFound(
-            f"no shape {shape!r} on slide {rec['index']}; shapes present: "
-            f"{', '.join(inventory) or 'none'}"
+    if isinstance(shape, bool) or not isinstance(shape, (int, str)):
+        raise PptMcpError(
+            "shape must be a shape id, a shape name, \"Group/Shape\" or a "
+            f"view anchor such as a:3f9c2a; got {shape!r}"
         )
-    listing = ", ".join(
-        f"id {_shape_id(e)} ({k})" for e, k in matches
-    )
-    raise AmbiguousTarget(
-        f"{len(matches)} shapes on slide {rec['index']} match {shape!r}: "
-        f"{listing}. Address the shape by id instead."
-    )
+    elem, _chain = _find_shape(pkg, rec["part"], shape)
+    return elem, _shape_kind(elem)
 
 
 def _require_txbody(
@@ -354,7 +345,8 @@ def _require_txbody(
         etree.SubElement(body, qn("a:bodyPr"))
         etree.SubElement(body, qn("a:lstStyle"))
         # A p:txBody with zero a:p violates the content model and makes
-        # PowerPoint refuse the whole deck, naming nothing. Same shape ops/masters.py builds.
+        # PowerPoint refuse the whole deck, naming nothing. Same shape
+        # ops/masters.py builds.
         etree.SubElement(body, qn("a:p"))
     return body
 
@@ -429,8 +421,15 @@ def _apply_paragraph_props(
     *,
     align: str | None = None,
     line_spacing: float | None = None,
+    space_before: float | None = None,
+    space_after: float | None = None,
 ) -> None:
-    if align is None and line_spacing is None:
+    if (
+        align is None
+        and line_spacing is None
+        and space_before is None
+        and space_after is None
+    ):
         return
     ppr = ensure_pPr(p)
     if align is not None:
@@ -456,6 +455,21 @@ def _apply_paragraph_props(
         else:
             spc = etree.SubElement(lnspc, qn("a:spcPts"))
             spc.set("val", str(int(round(line_spacing * 100))))
+    for name, tag, value in (
+        ("space_before", "a:spcBef", space_before),
+        ("space_after", "a:spcAft", space_after),
+    ):
+        if value is None:
+            continue
+        if isinstance(value, bool) or not 0 <= value <= 1584:
+            raise PptMcpError(
+                f"{name} must be 0..1584 points; got {value!r}"
+            )
+        holder = ensure_child(ppr, tag, PPR_ORDER)
+        for child in list(holder):
+            holder.remove(child)
+        pts = etree.SubElement(holder, qn("a:spcPts"))
+        pts.set("val", str(int(round(value * 100))))
 
 
 # ---------------------------------------------------------- paragraph build
@@ -508,11 +522,10 @@ def _build_paragraph(spec: dict, run_props: dict | None = None) -> etree._Elemen
         ppr = etree.SubElement(p, qn("a:pPr"))
         ppr.set("lvl", str(spec["level"]))
     if spec["text"]:
-        r = etree.SubElement(p, qn("a:r"))
+        configure = None
         if run_props:
-            _apply_run_props(ensure_rPr(r), **run_props)
-        t = etree.SubElement(r, qn("a:t"))
-        t.text = spec["text"]
+            configure = lambda rpr: _apply_run_props(rpr, **run_props)
+        _append_paragraph_text(p, spec["text"], configure)
     return p
 
 
@@ -597,6 +610,99 @@ def _replace_body_paragraphs(
     return len(specs), preserved, facts
 
 
+def _restore_layout_placeholder(
+    pkg: PptxPackage,
+    slide_part: str,
+    slide_tree: etree._Element,
+    selector,
+) -> tuple[etree._Element, str, int] | None:
+    """Recreate one deleted slide placeholder from its layout skeleton.
+
+    The new shape carries only identity and placeholder binding. Geometry
+    and formatting remain inherited from the layout, matching PowerPoint's
+    Reset behavior and the skeleton used for a newly inserted slide.
+    """
+    if not (
+        isinstance(selector, str)
+        or (isinstance(selector, int) and not isinstance(selector, bool))
+    ):
+        raise PptMcpError(
+            "placeholder selector must be a type string or an idx int; "
+            f"got {selector!r}"
+        )
+    layout_part = None
+    try:
+        rels = pkg.rels_for(slide_part)
+    except KeyError:
+        return None
+    for rel in rels.getroot():
+        if rel.get("Type", "").endswith("/slideLayout") and (
+            rel.get("TargetMode") != "External"
+        ):
+            layout_part = resolve_target(slide_part, rel.get("Target", ""))
+            break
+    if layout_part is None or not pkg.has_part(layout_part):
+        return None
+    layout_tree = _sp_tree(pkg, layout_part)
+    if layout_tree is None:
+        return None
+    found: list[tuple[etree._Element, str, int]] = []
+    for shape in layout_tree.findall(qn("p:sp")):
+        ph = _ph_of(shape)
+        if ph is None:
+            continue
+        ph_type = ph.get("type", "obj")
+        ph_idx = int(ph.get("idx", "0"))
+        if isinstance(selector, int):
+            match = ph_idx == selector
+        else:
+            match = ph_type in _PH_ALIASES.get(selector, (selector,))
+        if match:
+            found.append((shape, ph_type, ph_idx))
+    if len(found) > 1 and selector in ("body", "content"):
+        primary = _PH_ALIASES[selector][0]
+        exact = [item for item in found if item[1] == primary]
+        if exact:
+            found = exact
+    if len(found) > 1:
+        listing = ", ".join(f"type={t} idx={i}" for _s, t, i in found)
+        raise AmbiguousTarget(
+            f"{len(found)} layout placeholders match {selector!r}: "
+            f"{listing}. Address by idx (int) instead."
+        )
+    if not found:
+        return None
+
+    layout_shape, ph_type, ph_idx = found[0]
+    source_ph = _ph_of(layout_shape)
+    shape_id = pkg.next_shape_id(slide_part)
+    new_shape = seat_ahead_of_extlst(slide_tree, etree.SubElement(slide_tree, qn("p:sp")))
+    nvsp = etree.SubElement(new_shape, qn("p:nvSpPr"))
+    cnvpr = etree.SubElement(nvsp, qn("p:cNvPr"))
+    cnvpr.set("id", str(shape_id))
+    source_name = _cnvpr_of(layout_shape)
+    cnvpr.set(
+        "name",
+        (source_name.get("name") if source_name is not None else None)
+        or f"{ph_type} Placeholder {shape_id}",
+    )
+    cnvsp = etree.SubElement(nvsp, qn("p:cNvSpPr"))
+    etree.SubElement(cnvsp, qn("a:spLocks")).set("noGrp", "1")
+    nvpr = etree.SubElement(nvsp, qn("p:nvPr"))
+    new_ph = etree.SubElement(nvpr, qn("p:ph"))
+    for attr in ("type", "orient", "sz", "idx"):
+        value = source_ph.get(attr) if source_ph is not None else None
+        if value is not None:
+            new_ph.set(attr, value)
+    etree.SubElement(new_shape, qn("p:spPr"))
+    body = etree.SubElement(new_shape, qn("p:txBody"))
+    etree.SubElement(body, qn("a:bodyPr"))
+    etree.SubElement(body, qn("a:lstStyle"))
+    etree.SubElement(body, qn("a:p"))
+    pkg.mark_dirty(slide_part)
+    return new_shape, ph_type, ph_idx
+
+
 # ========================================================== public API
 
 
@@ -613,7 +719,8 @@ def set_placeholder_text(
     one alias set matching both body and obj placeholders, with the exact
     type preferred when a slide has both; or a raw p:ph type value) or by
     idx (int; a p:ph without idx counts as 0). Content: `text` with '\\n'
-    paragraph breaks and leading tabs for bullet levels, or
+    paragraph breaks, '\\v' soft line breaks, and leading tabs for bullet
+    levels, or
     `paragraphs=[{"text": ..., "level": 0..8}, ...]`. Existing paragraphs
     are fully replaced, but their formatting is carried onto the new text
     (indents, spacing, bullet definition, run size, colour and typeface)
@@ -650,11 +757,20 @@ def set_placeholder_text(
                 "placeholder selector must be a type string or an idx int; "
                 f"got {placeholder!r}"
             )
+    restored_from_layout = False
     if not candidates:
-        raise TargetNotFound(
-            f"no placeholder {placeholder!r} on slide {rec['index']}; "
-            f"placeholders present: {', '.join(inventory) or 'none'}"
+        restored = _restore_layout_placeholder(
+            pkg, rec["part"], sp_tree, placeholder
         )
+        if restored is not None:
+            candidates = [restored]
+            restored_from_layout = True
+        else:
+            raise TargetNotFound(
+                f"no placeholder {placeholder!r} on slide {rec['index']}; "
+                f"placeholders present: {', '.join(inventory) or 'none'}, "
+                "and its layout has no unique matching placeholder to restore"
+            )
     if len(candidates) > 1 and placeholder in ("body", "content"):
         # The body/content alias set matches both types; when the slide
         # carries both, the asked-for exact type wins instead of refusing.
@@ -686,6 +802,7 @@ def set_placeholder_text(
         "placeholder_idx": ph_idx,
         "paragraphs": count,
         "characters": sum(len(s["text"]) for s in specs),
+        "restored_from_layout": restored_from_layout,
     }
     if preserved:
         out["preserved"] = preserved
@@ -715,7 +832,8 @@ def insert_textbox(
 ) -> dict:
     """New text box at (x, y) sized (w, h). Units per the module rule:
     floats and small ints are inches, ints of 10000+ are EMU; unit='in' or
-    'emu' overrides. Text splits on '\\n' with leading tabs as levels.
+    'emu' overrides. Text splits on '\\n' with leading tabs as levels; '\\v'
+    inserts a soft line break inside the current paragraph.
     Optional run formatting applies to every created run; `align` to every
     paragraph. The box gets prstGeom rect, noFill, and square wrapping
     (wrap=False disables wrapping)."""
@@ -739,7 +857,7 @@ def insert_textbox(
     shape_id = pkg.next_shape_id(part)
     box_name = name or f"TextBox {shape_id - 1}"
 
-    sp = etree.SubElement(sp_tree, qn("p:sp"))
+    sp = seat_ahead_of_extlst(sp_tree, etree.SubElement(sp_tree, qn("p:sp")))
     nvsp = etree.SubElement(sp, qn("p:nvSpPr"))
     cnv = etree.SubElement(nvsp, qn("p:cNvPr"))
     cnv.set("id", str(shape_id))
@@ -821,6 +939,8 @@ def format_text(
     color: str | None = None,
     align: str | None = None,
     line_spacing: float | None = None,
+    space_before: float | None = None,
+    space_after: float | None = None,
     anchor: str | None = None,
     wrap: bool | None = None,
 ) -> dict:
@@ -830,8 +950,9 @@ def format_text(
     split at the range boundaries, cloning their rPr, so formatting never
     bleeds outside the range. `color` accepts hex ('1F4E79') or a theme
     token ('accent1', which stays theme-linked as schemeClr). align and
-    line_spacing are paragraph properties and apply to the touched
-    paragraphs. rPr children are written in schema order.
+    line_spacing, space_before and space_after are paragraph properties
+    and apply to the touched paragraphs (space_before/space_after are
+    points, 0..1584, written as a:spcBef/a:spcAft). rPr children are written in schema order.
 
     anchor (top|middle|bottom) and wrap are a:bodyPr properties of the
     SHAPE, so they apply to the whole text frame whatever paragraph or
@@ -855,12 +976,15 @@ def format_text(
         not run_props
         and align is None
         and line_spacing is None
+        and space_before is None
+        and space_after is None
         and anchor is None
         and wrap is None
     ):
         raise PptMcpError(
             "nothing to do: pass at least one of font, size_pt, bold, "
-            "italic, underline, color, align, line_spacing, anchor, wrap"
+            "italic, underline, color, align, line_spacing, space_before, "
+            "space_after, anchor, wrap"
         )
     if anchor is not None and anchor not in _ANCHOR_VALUES:
         raise PptMcpError(
@@ -884,9 +1008,6 @@ def format_text(
             f"shape {_shape_id(elem)} on slide {rec['index']} has an empty "
             "text body; add text first (set_placeholder_text/insert_textbox)"
         )
-        # insert_textbox lives in the graphics pack; set_placeholder_text is
-        # lite and correctly triggers no hint (discoverability round fix 4).
-        exc.hint_tools = ["insert_textbox"]
         raise exc
     if paragraph is not None:
         if not 0 <= paragraph < len(paras):
@@ -921,7 +1042,10 @@ def format_text(
                     if run_props:
                         _apply_run_props(ensure_rPr(child), **run_props)
                     runs_formatted += 1
-        _apply_paragraph_props(p, align=align, line_spacing=line_spacing)
+        _apply_paragraph_props(
+            p, align=align, line_spacing=line_spacing,
+            space_before=space_before, space_after=space_after,
+        )
 
     frame_changed: list[str] = []
     if anchor is not None or wrap is not None:
@@ -970,8 +1094,13 @@ def set_bullets(
     `paragraphs` selects indexes (int or list; None = all). Existing bullet
     properties on the touched paragraphs are replaced. Optional size_pct
     (25..400, percent of text size), color (hex or theme token), and level
-    (0..8, which also writes hanging-indent geometry so the bullet does not
-    sit at the text edge). Writes per-paragraph a:pPr overrides only; shape
+    (0..8, which also writes hanging-indent geometry: marL = 0.25 in + 0.5 in
+    per level, indent = -0.25 in, so the bullet does not sit at the text
+    edge). With level omitted, a char or autonum bullet on a plain text box
+    still gets that hanging geometry at the paragraph's own level (0 when
+    none), unless the paragraph already carries its own marL; placeholders
+    keep the indent they inherit from the layout. style "none" drops any
+    marL/indent from the paragraph so it inherits again. Writes per-paragraph a:pPr overrides only; shape
     and master lstStyle defaults are never touched."""
     aliases = {"char": "char", "autonum": "autonum", "number": "autonum", "none": "none"}
     if style not in aliases:
@@ -997,6 +1126,7 @@ def set_bullets(
     rec = resolve_slide(pkg, slide)
     elem, kind = _resolve_shape(pkg, rec, shape)
     body = _require_txbody(elem, kind, rec)
+    is_placeholder = _ph_of(elem) is not None
     paras = body.findall(qn("a:p"))
     if not paras:
         raise TargetNotFound(
@@ -1027,12 +1157,30 @@ def set_bullets(
     for i in indexes:
         ppr = ensure_pPr(paras[i])
         remove_children(ppr, bullet_family)
+        if style == "none":
+            # The glyph goes; so does the hanging indent an earlier bullet
+            # call wrote, or the text would stay pushed in with no bullet.
+            for attr in ("marL", "indent"):
+                if attr in ppr.attrib:
+                    del ppr.attrib[attr]
+        elif level is None and not is_placeholder and ppr.get("marL") is None:
+            # A bullet with no hanging indent sits glued to the text. A
+            # plain text box inherits marL=0, so give it the level-0 (or
+            # its own lvl) geometry; placeholders inherit a real indent
+            # from the layout and are left alone.
+            try:
+                own = int(ppr.get("lvl", "0"))
+            except ValueError:
+                own = 0
+            own = min(max(own, 0), 8)
+            ppr.set("marL", str(228600 + 457200 * own))
+            ppr.set("indent", "-228600")
         if level is not None:
             ppr.set("lvl", str(level))
             if style != "none":
                 # Default hanging-indent geometry (quarter inch hang, half
                 # inch per level) so an explicit level does not leave the
-                # bullet glued to the text edge (research doc Part VI).
+                # bullet glued to the text edge.
                 ppr.set("marL", str(228600 + 457200 * level))
                 ppr.set("indent", "-228600")
         if style == "none":
@@ -1106,20 +1254,45 @@ def _compile_matcher(find: str, replace: str, regex: bool, match_case: bool):
     return _matches
 
 
-def _replace_in_paragraph(p: etree._Element, matcher, where: str) -> int:
+def _replace_in_paragraph(
+    p: etree._Element, matcher, where: str, skipped: list | None = None
+) -> int:
     text, segments = build_map(p)
     if not text:
         return 0
     spans = matcher(text)
     if not spans:
         return 0
+    wrapped = [seg for seg in segments if seg.kind == "wrapped"]
+    if wrapped:
+        # An equation (or a run for a newer version) in a compatibility
+        # wrapper is never rewritten: a match touching one is left and
+        # counted in `skipped`, and the others go ahead.
+        kept = [m for m in spans if not any(w.start < m[1] and w.end > m[0] for w in wrapped)]
+        if skipped is not None and len(kept) < len(spans):
+            skipped.append(len(spans) - len(kept))
+        spans = kept
+        if not spans:
+            return 0
     # Snapshot once, apply right-to-left: offsets left of each edit stay
     # valid and replacement output can never be re-matched.
     for s, e, rep in reversed(spans):
+        if "\n" in rep:
+            raise UnsupportedStructure(
+                f"{where}: a search-and-replace match is confined to one "
+                "paragraph, so its replacement cannot insert a paragraph "
+                "break. Use '\\v' for a soft line break, or rewrite the "
+                "shape/placeholder/cell text to add paragraphs."
+            )
         try:
             replace_range(p, segments, s, e, rep)
         except UnsupportedStructure as exc:
             raise UnsupportedStructure(f"{where}: {exc}") from exc
+        # A replacement holding a soft break rebuilds the runs it touched,
+        # so the next match to the left (it may share one of them) resolves
+        # through a fresh map. Text left of this edit did not move, so the
+        # snapshot's offsets for the remaining matches still hold.
+        _text, segments = build_map(p)
     return len(spans)
 
 
@@ -1150,25 +1323,75 @@ def _slide_paragraph_sites(pkg: PptxPackage, rec: dict):
                 yield p, f"slide {rec['index']} shape {sid}", rec["part"]
 
 
-def _diagram_paragraph_sites(pkg: PptxPackage, rec: dict):
+def _wrapped_slide_paragraphs(pkg: PptxPackage, rec: dict):
+    """Yield every paragraph of the shapes PowerPoint keeps in a slide-level
+    compatibility wrapper on one slide (a text box or table saved with an
+    equation), from the branch PowerPoint shows: the paragraphs the reads
+    show and _slide_paragraph_sites, which edits walk, does not reach."""
+    sp_tree = _sp_tree(pkg, rec["part"])
+    if sp_tree is None:
+        return
+    for elem, kind, _z, _parent in iter_shapes(sp_tree, wrapped=True):
+        if not in_wrapper(elem):
+            continue
+        if kind == "table":
+            tbl = table_element(elem)
+            if tbl is not None:
+                yield from tbl.iter(qn("a:p"))
+        elif kind not in _NO_TEXT_KINDS:
+            yield from txbody_paragraphs(elem)
+
+
+def _diagram_paragraph_sites(pkg: PptxPackage, rec: dict, seen: set[str] | None = None):
     """Yield (a:p, where, part) for every SmartArt paragraph reachable from
     one slide: the data model AND the cached drawing, because a replacement
     that lands in one and not the other leaves the old words on screen for
-    every viewer that does not regenerate the diagram."""
+    every viewer that does not regenerate the diagram. A part named in
+    `seen` is skipped and every part walked is added to it, so parts that
+    two frames share are walked once per call."""
     from .diagrams import _dsp, diagram_frames, drawing_part_of
 
+    seen = set() if seen is None else seen
     for _frame, data_part in diagram_frames(pkg, rec["part"]):
-        if data_part is None or not pkg.has_part(data_part):
+        if data_part is None or not pkg.has_part(data_part) or data_part in seen:
             continue
+        seen.add(data_part)
         for t in pkg.root(data_part).iter(_dgm("t")):
             for p in t.findall(qn("a:p")):
                 yield p, f"slide {rec['index']} SmartArt", data_part
-        drawing = drawing_part_of(pkg, data_part)
-        if drawing is None:
+        drawing = drawing_part_of(pkg, data_part, rec["part"])
+        if drawing is None or drawing in seen:
             continue
+        seen.add(drawing)
         for body in pkg.root(drawing).iter(_dsp("txBody")):
             for p in body.findall(qn("a:p")):
                 yield p, f"slide {rec['index']} SmartArt (cached)", drawing
+
+
+def _smartart_sharers_outside(pkg: PptxPackage, rec: dict, in_scope: set[str]) -> list[int]:
+    """Indexes of slides outside the scope that reach any SmartArt part this
+    slide reaches (decks copied by older tools share them)."""
+    from .slides import _diagram_graph
+
+    mine = _diagram_graph(pkg, rec["part"])[0]
+    if not mine:
+        return []
+    return [
+        other["index"]
+        for other in slides_in_scope(pkg, None)
+        if other["part"] not in in_scope and mine & _diagram_graph(pkg, other["part"])[0]
+    ]
+
+
+def _give_slide_own_smartart(pkg: PptxPackage, slide_part: str) -> None:
+    """Copy every SmartArt part the slide reaches and point the slide at the
+    copies, as duplicate_slide does for a duplicated slide."""
+    from ..core.package import rels_name
+    from .slides import _clone_diagram_bundle
+
+    rels_part = rels_name(slide_part)
+    _clone_diagram_bundle(pkg, slide_part, slide_part, pkg.root(rels_part))
+    pkg.mark_dirty(rels_part)
 
 
 def search_and_replace(
@@ -1180,6 +1403,7 @@ def search_and_replace(
     regex: bool = False,
     match_case: bool = True,
     include_notes: bool = False,
+    remove_empty_paragraphs: bool = False,
 ) -> dict:
     """Deck-wide (or scoped) text replacement, fragmented-run safe: matches
     resolve through the run map, so a hit spanning three runs is one edit
@@ -1188,45 +1412,132 @@ def search_and_replace(
     search text is never re-matched ('partner' -> 'partner-network'
     cannot loop). Matches cannot cross paragraph boundaries. regex=True runs
     the pattern through the ReDoS guard and supports group references in
-    `replace`; match_case=False matches case-insensitively. A match
+    `replace`; match_case=False matches case-insensitively. With
+    match_case=True (the default) text in another case is never changed,
+    and when some was left, case_note says how much, on which slides, and
+    that match_case=False includes it (ops/_casenote.py). A match
     overlapping a field (slide number/date) refuses the whole call and
-    nothing is written to disk. Returns per-slide counts and the total."""
+    nothing is written to disk. ``\v`` in a replacement emits a soft line
+    break; ``\n`` refuses because one match cannot span or create paragraph
+    boundaries. Returns per-slide counts and the total.
+    Chart labels are intentionally read-only; matching labels are counted
+    separately in chart_matches_skipped and matches_found. So are matches
+    inside an equation or other content PowerPoint stores in a compatibility
+    wrapper (wrapped_matches_skipped, with a warning naming the slides).
+
+    remove_empty_paragraphs=True removes each paragraph a replacement left
+    with no text but spaces and line breaks, in slide shapes, table cells and
+    notes (not SmartArt, whose data model and drawing would disagree). A
+    paragraph that was empty before keeps its place, and a text body keeps
+    at least one paragraph."""
     if not find:
         raise PptMcpError("search_and_replace needs a non-empty find string")
     matcher = _compile_matcher(find, replace, regex, match_case)
+    tally = CaseTally(find, regex) if match_case else None
+
+    def _probe(p, slide_index: int) -> None:
+        """Count other-case matches in one paragraph before it is changed,
+        leaving out those in an equation or other wrapped content, which a
+        replace in any case leaves too (wrapped_matches_skipped)."""
+        if tally is not None:
+            text, segments = build_map(p)
+            if text:
+                wrapped = [(seg.start, seg.end) for seg in segments if seg.kind == "wrapped"]
+                tally.add(slide_index, text, matcher(text), skip=wrapped)
 
     slides_out: list[dict] = []
     total = 0
-    for rec in slides_in_scope(pkg, scope):
+    skipped_total = 0
+    removed_total = 0
+    warnings: list[str] = []
+    wrapped_skips: list[int] = []
+    wrapped_slides: list[int] = []
+    recs = slides_in_scope(pkg, scope)
+    in_scope = {r["part"] for r in recs}
+    seen_diagram_parts: set[str] = set()
+    for rec in recs:
         count = 0
+        emptied: list = []
+        skips_before = sum(wrapped_skips)
         for p, where, _part in _slide_paragraph_sites(pkg, rec):
-            count += _replace_in_paragraph(p, matcher, where)
+            _probe(p, rec["index"])
+            hits = _replace_in_paragraph(p, matcher, where, wrapped_skips)
+            count += hits
+            if hits and remove_empty_paragraphs and _blank(p):
+                emptied.append(p)
+        # A shape PowerPoint keeps in a slide-level wrapper (a text box saved
+        # with an equation): find_text finds its words, and no edit rewrites
+        # a wrapper, so its matches are left and counted as skipped.
+        for p in _wrapped_slide_paragraphs(pkg, rec):
+            found = len(matcher(build_map(p)[0]))
+            if found:
+                wrapped_skips.append(found)
+        sharers = _smartart_sharers_outside(pkg, rec, in_scope)
+        if sharers and any(
+            matcher(build_map(p)[0]) for p, _w, _d in _diagram_paragraph_sites(pkg, rec)
+        ):
+            _give_slide_own_smartart(pkg, rec["part"])
+            listed = ", ".join(str(i) for i in sharers)
+            warnings.append(
+                f"slide {rec['index']}: its SmartArt shared parts with slide(s) "
+                f"{listed}, outside the scope; slide {rec['index']} now has its "
+                "own copy, so the replacement does not reach those slides"
+            )
         diagram_count = 0
         diagram_parts: set[str] = set()
-        for p, where, dpart in _diagram_paragraph_sites(pkg, rec):
-            hits = _replace_in_paragraph(p, matcher, where)
+        for p, where, dpart in _diagram_paragraph_sites(pkg, rec, seen_diagram_parts):
+            _probe(p, rec["index"])
+            hits = _replace_in_paragraph(p, matcher, where, wrapped_skips)
             if hits:
                 diagram_count += hits
                 diagram_parts.add(dpart)
         for dpart in diagram_parts:
             pkg.mark_dirty(dpart)
+        chart_matches_skipped = 0
+        sp_tree = _sp_tree(pkg, rec["part"])
+        if sp_tree is not None:
+            for elem, kind, _z, _parent in iter_shapes(sp_tree):
+                if kind != "chart":
+                    continue
+                for record in chart_text_records(pkg, rec["part"], elem):
+                    chart_matches_skipped += len(matcher(record["text"]))
         notes_count = 0
         if include_notes:
             npart = notes_part_for(pkg, rec["part"])
             if npart is not None and pkg.has_part(npart):
+                # PowerPoint keeps a notes body that holds an equation in a
+                # wrapper, with a copy in its Fallback. Both copies are
+                # changed, so they stay in step; only the body PowerPoint
+                # shows is counted.
+                shown = notes_bodies(pkg, npart)
+                notes_changed = False
                 for sp in pkg.root(npart).iter(qn("p:sp")):
                     ph = _ph_of(sp)
                     if ph is None or ph.get("type") != "body":
                         continue
+                    counted = any(sp is body for body in shown)
                     for p in txbody_paragraphs(sp):
-                        notes_count += _replace_in_paragraph(
-                            p, matcher, f"slide {rec['index']} notes"
+                        if counted:
+                            _probe(p, rec["index"])
+                        hits = _replace_in_paragraph(
+                            p, matcher, f"slide {rec['index']} notes",
+                            wrapped_skips if counted else [],
                         )
-                if notes_count:
+                        if counted:
+                            notes_count += hits
+                        notes_changed = notes_changed or bool(hits)
+                        if hits and remove_empty_paragraphs and _blank(p):
+                            emptied.append(p)
+                if notes_changed:
                     pkg.mark_dirty(npart)
+        removed = _drop_paragraphs(emptied)
+        removed_total += removed
+        wrapped_here = sum(wrapped_skips) - skips_before
+        if wrapped_here:
+            wrapped_slides.append(rec["index"] + 1)
         if count:
             pkg.mark_dirty(rec["part"])
-        if count or notes_count or diagram_count:
+        if count or notes_count or diagram_count or chart_matches_skipped or wrapped_here:
             entry = {
                 "slide_index": rec["index"],
                 "slide_id": rec["slide_id"],
@@ -1236,18 +1547,63 @@ def search_and_replace(
                 entry["notes_count"] = notes_count
             if diagram_count:
                 entry["diagram_count"] = diagram_count
+            if chart_matches_skipped:
+                entry["chart_matches_skipped"] = chart_matches_skipped
+            if wrapped_here:
+                entry["wrapped_matches_skipped"] = wrapped_here
+            if remove_empty_paragraphs:
+                entry["paragraphs_removed"] = removed
             slides_out.append(entry)
         total += count + notes_count + diagram_count
+        skipped_total += chart_matches_skipped
 
-    return {
+    out = {
         "find": find,
         "replace": replace,
         "regex": regex,
         "match_case": match_case,
         "notes_included": include_notes,
         "total": total,
+        "matches_found": total + skipped_total + sum(wrapped_skips),
+        "chart_matches_skipped": skipped_total,
         "slides": slides_out,
     }
+    if remove_empty_paragraphs:
+        out["paragraphs_removed"] = removed_total
+    if wrapped_skips:
+        skipped_here = sum(wrapped_skips)
+        out["wrapped_matches_skipped"] = skipped_here
+        listed = ", ".join(str(n) for n in wrapped_slides)
+        warnings.append(
+            f"{skipped_here} match{'es' if skipped_here != 1 else ''} on slide_number "
+            f"{listed} sit in an equation or other content PowerPoint stores in "
+            "a compatibility wrapper, and were left unchanged; edit them in PowerPoint"
+        )
+    case_note = tally.note("replace", total) if tally is not None else None
+    if case_note:
+        out["case_note"] = case_note
+    if warnings:
+        out["warnings"] = warnings
+    return out
+
+
+def _blank(p: etree._Element) -> bool:
+    """True when a paragraph shows no text: nothing but spaces and breaks."""
+    text, _segments = build_map(p)
+    return not text.replace("\v", "").strip()
+
+
+def _drop_paragraphs(paragraphs: list) -> int:
+    """Remove the paragraphs a replacement emptied, keeping at least one in
+    each text body (the schema needs one, and PowerPoint refuses a body
+    without). Returns how many were removed."""
+    removed = 0
+    for p in paragraphs:
+        body = p.getparent()
+        if body is not None and len(body.findall(qn("a:p"))) > 1:
+            body.remove(p)
+            removed += 1
+    return removed
 
 
 # --------------------------------------------------------------- autofit
@@ -1255,7 +1611,7 @@ def search_and_replace(
 
 def _pct_value(raw: str | None, default: float) -> float:
     """Autofit percent attribute: integer thousandths ('62500') or the
-    later-edition percent string ('62.5%'). Read both, per the research."""
+    later-edition percent string ('62.5%'). Read both."""
     if raw is None:
         return default
     raw = raw.strip()
@@ -1291,7 +1647,7 @@ def _first_run_style(body: etree._Element) -> tuple[bool, bool]:
     for tag in ("a:rPr", "a:defRPr"):
         for el in body.iter(qn(tag)):
             if el.get("b") is not None or el.get("i") is not None:
-                return el.get("b") == "1", el.get("i") == "1"
+                return xml_bool(el.get("b")), xml_bool(el.get("i"))
     return bold, italic
 
 
@@ -1430,7 +1786,8 @@ def _body_typeface(
 
     It used to take the first a:defRPr anywhere in the shape's a:lstStyle,
     regardless of outline level, so a level-two run could be measured in
-    level one's face while the result still said font-metrics. The list styles are read at the run's ACTUAL level
+    level one's face while the result still said font-metrics. The list
+    styles are read at the run's ACTUAL level
     now, by _rpr_chain over inherit.level_ppr_chain, the same effective
     chain the size resolver walks; this is only what is left when that
     chain names nothing. Deliberately does NOT look at other runs."""
@@ -1509,7 +1866,7 @@ def _resolve_run(
     def flag(name: str) -> bool:
         for el in rpr_chain:
             if el.get(name) is not None:
-                return el.get(name) == "1"
+                return xml_bool(el.get(name))
         return False
 
     face = None
@@ -1715,6 +2072,7 @@ def _overflow_heuristic(
     size_pt: float | None = None,
     pkg=None,
     part: str | None = None,
+    frame: tuple[int, int] | None = None,
 ) -> dict | None:
     """Fit estimate against the frame's inner box.
 
@@ -1731,10 +2089,14 @@ def _overflow_heuristic(
     Callers that can resolve those pass them; without them a placeholder
     inheriting its geometry cannot be estimated at all and an unsized run
     falls back to a flat guess. `pkg`/`part` let the typeface resolve
-    through the theme; without them the measured path is unavailable."""
+    through the theme; without them the measured path is unavailable.
+    `frame` (cx, cy) in EMU replaces the box outright: fit_text measures a
+    shape that grows with its text against the room it can grow into."""
     xfrm = elem.find(f"{qn('p:spPr')}/{qn('a:xfrm')}")
     ext = xfrm.find(qn("a:ext")) if xfrm is not None else None
-    if ext is None and box is not None:
+    if frame is not None:
+        cx, cy = int(frame[0]), int(frame[1])
+    elif ext is None and box is not None:
         cx, cy = int(box[2]), int(box[3])
     elif ext is None:
         return {
@@ -1790,7 +2152,7 @@ def _overflow_heuristic(
     lines = 0
     for p in body.findall(qn("a:p")):
         plain = paragraph_text(p)
-        for chunk in plain.split("\n"):  # a:br forces a line
+        for chunk in plain.split("\v"):  # a:br forces a visual line
             lines += max(1, math.ceil(len(chunk) * char_w / inner_w))
     est_h = lines * line_h
     ratio = est_h / inner_h
@@ -1813,7 +2175,9 @@ def _estimate_reason(body: etree._Element, pkg=None, part: str | None = None) ->
 
     Four closed reasons, and they are not interchangeable: an extra that is
     not installed, a typeface that does not resolve, a typeface with no file
-    on this machine, and a file that exists but whose metrics will not parse."""
+    on this machine, and a file that exists but whose metrics will not parse
+    (the last one used to report the third, which sends someone to install a
+    font they already have)."""
     from . import fontmetrics as _fm
 
     if not _fm.available():
@@ -1900,6 +2264,7 @@ def get_autofit_state(pkg: PptxPackage, slide=None, shape=None, *,
         slides_out = [
             {
                 "slide_index": rec["index"],
+                "slide_number": rec["index"] + 1,
                 "slide_id": rec["slide_id"],
                 "shapes": _autofit_slide_records(pkg, rec),
             }
@@ -1945,6 +2310,39 @@ def get_autofit_state(pkg: PptxPackage, slide=None, shape=None, *,
 
 # ------------------------------------------------------------------ fit_text
 
+#: The a:bodyPr autofit choice by element name, in get_autofit_state's words.
+_AUTOFIT_MODE_OF = {
+    "normAutofit": "normAutofit",
+    "spAutoFit": "spAutoFit",
+    "noAutofit": "none",
+}
+
+_FIT_NOT_OVERFLOWING = (
+    "the heuristic does not estimate this shape as overflowing (or its "
+    "geometry is inherited); nothing was changed"
+)
+_FIT_GROWS_ON_SLIDE = (
+    "the shape is set to resize to fit its text, and at this size it grows "
+    "and stays on the slide, so there is nothing to fit; nothing was changed"
+)
+_FIT_OFF_SLIDE = (
+    "the shape is set to resize to fit its text, but it starts at or past "
+    "the slide's edge, so there is no room on the slide to fit its text "
+    "into; nothing was changed. Move it onto the slide with set_shape, then "
+    "fit again"
+)
+_FIT_SIZE_UNKNOWN = (
+    "a run's size is inherited and could not be established, so it cannot "
+    "be scaled without guessing; nothing was changed. Set the sizes with "
+    "format_text, then fit again"
+)
+_FIT_NOTE_AUTOFIT = (
+    "Each shape keeps its own autofit setting: text set to shrink on "
+    "overflow is fitted through that setting's font scale, other text by "
+    "rewriting its sizes, and a shape set to resize to fit its text is "
+    "fitted to the room it can grow into on the slide."
+)
+
 
 def _explicit_size_elements(body: etree._Element) -> list[etree._Element]:
     """Every element in the body carrying an explicit sz (rPr, defRPr,
@@ -1955,6 +2353,49 @@ def _explicit_size_elements(body: etree._Element) -> list[etree._Element]:
             if el.get("sz") is not None:
                 out.append(el)
     return out
+
+
+def _autofit_choice(bodypr: etree._Element | None) -> str | None:
+    """The autofit mode a bodyPr states itself, or None when it states
+    none."""
+    if bodypr is None:
+        return None
+    for child in bodypr:
+        if not isinstance(child.tag, str):
+            continue
+        mode = _AUTOFIT_MODE_OF.get(etree.QName(child).localname)
+        if mode is not None:
+            return mode
+    return None
+
+
+def _effective_autofit(elem: etree._Element, pkg=None,
+                       part: str | None = None) -> tuple[str, str]:
+    """(mode, where it is set) for one shape: its own bodyPr, else, for a
+    placeholder, its layout twin's, else its master twin's. Nothing set
+    anywhere is no autofit ("none", "default"), which is how PowerPoint
+    draws it."""
+    body = elem.find(qn("p:txBody"))
+    mode = _autofit_choice(
+        body.find(qn("a:bodyPr")) if body is not None else None)
+    if mode is not None:
+        return mode, "shape"
+    key = _inh.placeholder_key(_inh.placeholder_of(elem))
+    if key is not None and pkg is not None and part:
+        layout = _inh.layout_part_of(pkg, part)
+        master = _inh.master_part_of(pkg, layout)
+        for where, twin in (
+            ("layout", _inh.layout_twin(pkg, layout, key)),
+            ("master", _inh.master_twin(pkg, master, key)),
+        ):
+            if twin is None:
+                continue
+            tbody = twin.find(qn("p:txBody"))
+            mode = _autofit_choice(
+                tbody.find(qn("a:bodyPr")) if tbody is not None else None)
+            if mode is not None:
+                return mode, where
+    return "none", "default"
 
 
 def _set_normautofit(
@@ -1976,110 +2417,275 @@ def _set_normautofit(
         bodypr.insert(0, norm)
 
 
+def _slide_size(pkg) -> tuple[int, int]:
+    """(cx, cy) of the slide in EMU; the DrawingML default when unstated."""
+    sld = pkg.presentation().find(qn("p:sldSz")) if pkg is not None else None
+    if sld is None:
+        return 9144000, 6858000
+    return int(sld.get("cx")), int(sld.get("cy"))
+
+
+def _frame_box(elem: etree._Element, pkg=None, part: str | None = None):
+    """(x, y, cx, cy, own, grouped) in slide EMU: the box the text is laid
+    out in. A shape's own box is mapped through any groups it sits in; a
+    placeholder with no box of its own is drawn in its layout's (or
+    master's), and own is False. None when there is no box anywhere."""
+    from . import shapes as _shapes
+
+    xfrm = elem.find(f"{qn('p:spPr')}/{qn('a:xfrm')}")
+    if (xfrm is not None and xfrm.find(qn("a:off")) is not None
+            and xfrm.find(qn("a:ext")) is not None):
+        chain = _shapes._chain_of(elem)
+        try:
+            x, y, cx, cy = _shapes._slide_box(elem, chain)
+        except Exception:
+            return None
+        return int(x), int(y), int(cx), int(cy), True, bool(chain)
+    if pkg is not None and part:
+        box = _inh.inherited_box(pkg, part, elem)
+        if box is not None:
+            return (*box, False, False)
+    return None
+
+
+def _inherited_run_sizes(elem, body, pkg=None, part=None):
+    """(run, its rPr or None, size in points) for every text run whose rPr
+    states no size, resolved through the placeholder chain BEFORE anything
+    changes. None when one of them cannot be established."""
+    out = []
+    for p in body.findall(qn("a:p")):
+        level = _para_level(p)
+        for child in p:
+            if child.tag not in (qn("a:r"), qn("a:fld")):
+                continue
+            rpr = child.find(qn("a:rPr"))
+            if rpr is not None and rpr.get("sz") is not None:
+                continue
+            size = _certain_size_pt(rpr, p, body, elem, level, pkg, part)
+            if size is None:
+                return None
+            out.append((child, rpr, size))
+    return out
+
+
+def _run_sizes_pt(body: etree._Element, inherited) -> list[float]:
+    """The size every text run is drawn at: its own sz, or the inherited
+    size resolved for it."""
+    sizes = []
+    for p in body.findall(qn("a:p")):
+        for child in p:
+            if child.tag not in (qn("a:r"), qn("a:fld")):
+                continue
+            rpr = child.find(qn("a:rPr"))
+            if rpr is not None and rpr.get("sz") is not None:
+                try:
+                    sizes.append(int(rpr.get("sz")) / 100.0)
+                except ValueError:
+                    continue
+    sizes.extend(size for _run, _rpr, size in inherited or ())
+    return sizes
+
+
+def _floor_pct(sizes: list[float], min_size: float,
+               fallback_pt: float) -> float:
+    """The smallest uniform scale that keeps every run at min_size or above,
+    measured against the smallest run that is not already at or below it
+    (small print the caller chose does not hold the fit back)."""
+    eligible = [size for size in sizes if size > min_size]
+    if eligible:
+        base = min(eligible)
+    elif sizes:
+        return 100.0
+    else:
+        base = fallback_pt
+    return max(1.0, min(100.0, min_size / base * 100.0))
+
+
+def _floored_pt(size_pt: float, scale_pct: float, min_size: float) -> float:
+    """A run's size after a uniform scale: never below min_size, and never
+    larger than it was (a run already at or below min_size keeps its
+    size; min_size is a floor for shrinking, not a size to grow to)."""
+    if size_pt <= min_size:
+        return size_pt
+    return max(min_size, size_pt * scale_pct / 100.0)
+
+
+def _largest_fitting_scale(fits, floor_pct: float) -> tuple[float, bool]:
+    """(the largest uniform scale in [floor, 100] that fits, found to about
+    1% and rounded down to 0.1, and whether even the floor fits)."""
+    if not fits(floor_pct):
+        return floor_pct, False
+    lo, hi = floor_pct, 100.0
+    for _ in range(12):
+        mid = (lo + hi) / 2.0
+        if fits(mid):
+            lo = mid
+        else:
+            hi = mid
+        if hi - lo < 1.0:
+            break
+    return max(floor_pct, math.floor(lo * 10) / 10), True
+
+
 def _fit_one_shape(elem: etree._Element, min_size: float, pkg=None,
-                   part: str | None = None) -> dict | None:
-    """Estimate and apply the largest uniform font scale that fits one
-    shape's text in its frame. Returns a report dict, or None when the
-    shape is not an estimable overflow case."""
+                   part: str | None = None) -> tuple[dict | None, str | None]:
+    """Fit one shape's text with ONE mechanism, keeping its autofit setting.
+
+    Returns (report, None) when it changed the shape, or (None, reason)
+    when it left it alone; a None reason means the estimate sees no
+    overflow it can measure.
+
+    - Shrink text on overflow (normAutofit, the shape's own or inherited):
+      the fit is written as that setting's fontScale, on the shape, and no
+      run size changes. Rewriting the sizes as well left the shrink on, so
+      PowerPoint shrank the text a second time when it drew the slide.
+    - Resize shape to fit text (spAutoFit): the box grows with its text, so
+      the text is measured against the room from the box's top to the
+      slide's bottom edge (and to the right edge when it does not wrap).
+      Text that fits there needs nothing; text that does not has its run
+      sizes scaled, and the box's stored height is set to the estimate.
+    - No autofit: the run sizes are rewritten.
+    Inherited sizes are written out at the size they are drawn, then scaled.
+    """
     body = elem.find(qn("p:txBody"))
     if body is None:
-        return None
+        return None, None
     bodypr = body.find(qn("a:bodyPr"))
-    est0 = _overflow_heuristic(elem, body, bodypr, 100.0, 0.0,
-                               pkg=pkg, part=part)
+    mode, where = _effective_autofit(elem, pkg, part)
+    box = _frame_box(elem, pkg, part)
+    if box is None:
+        return None, None
+    x, y, cx, cy, own_box, grouped = box
+    frame = (cx, cy)
+    fitted_to = "frame"
+    vertical = _ins(bodypr, "tIns", 45720) + _ins(bodypr, "bIns", 45720)
+    if mode == "spAutoFit":
+        slide_w, slide_h = _slide_size(pkg)
+        wrap = (bodypr.get("wrap") if bodypr is not None else None) or "square"
+        room_h = slide_h - y
+        room_w = slide_w - x if wrap == "none" else cx
+        if room_h <= vertical or room_w <= 0:
+            return None, _FIT_OFF_SLIDE
+        frame = (room_w, room_h)
+        fitted_to = "slide"
+    inherited = _inherited_run_sizes(elem, body, pkg, part)
+    first = _first_run_size(body)
+    if first is not None:
+        size_hint = first / 100.0
+    elif inherited:
+        size_hint = inherited[0][2]
+    else:
+        size_hint = None
+
+    def estimate(scale_pct: float) -> dict | None:
+        return _overflow_heuristic(
+            elem, body, bodypr, scale_pct, 0.0, size_pt=size_hint,
+            pkg=pkg, part=part, frame=frame,
+        )
+
+    est0 = estimate(100.0)
     if not est0 or est0.get("likely_overflow") is not True:
-        return None
-    sized = _explicit_size_elements(body)
-    base_pt = (_first_run_size(body) or 1800) / 100.0
+        if mode == "spAutoFit" and est0 and est0.get("likely_overflow") is False:
+            return None, _FIT_GROWS_ON_SLIDE
+        return None, None
 
-    def fits(scale_pct: float) -> tuple[bool, float | None]:
-        est = _overflow_heuristic(elem, body, bodypr, scale_pct, 0.0,
-                                  pkg=pkg, part=part)
+    def fits(scale_pct: float) -> bool:
+        est = estimate(scale_pct)
         if not est or est.get("likely_overflow") is None:
-            return True, None
-        return not est["likely_overflow"], est.get("fill_ratio")
+            return True
+        return not est["likely_overflow"]
 
-    floor_pct = max(1.0, min(100.0, min_size / base_pt * 100.0))
-    lo, hi = floor_pct, 100.0
-    fits_floor, _r = fits(floor_pct)
-    if fits_floor:
-        # Largest fitting scale by binary search (1% resolution).
-        for _ in range(12):
-            mid = (lo + hi) / 2.0
-            ok, _r = fits(mid)
-            if ok:
-                lo = mid
-            else:
-                hi = mid
-            if hi - lo < 1.0:
-                break
-        scale_pct = lo
-        still_overflowing = False
-    else:
-        scale_pct = floor_pct
-        still_overflowing = True
-
-    before_sizes = sorted({int(el.get("sz")) / 100.0 for el in sized})
-    if sized:
-        # Explicit sizes exist: rewrite them to the fitted values (floored
-        # at min_size) and leave normAutofit at scale 100 so PowerPoint
-        # renders exactly the sizes now in the XML.
-        for el in sized:
-            new_pt = max(min_size, int(el.get("sz")) / 100.0 * scale_pct / 100.0)
-            el.set("sz", str(int(round(new_pt * 100))))
-        applied = "run_sizes"
-        written_scale = None
-    else:
-        # Every run inherits its size: nothing to rewrite, so use
-        # PowerPoint's own mechanism and write the fontScale.
+    if mode != "normAutofit" and inherited is None:
+        return None, _FIT_SIZE_UNKNOWN
+    sizes = _run_sizes_pt(body, inherited)
+    floor_pct = _floor_pct(sizes, min_size, size_hint or 18.0)
+    scale_pct, fits_floor = _largest_fitting_scale(fits, floor_pct)
+    before: dict = {
+        "sizes_pt": sorted(set(sizes)) or "inherited",
+        "fill_ratio": est0.get("fill_ratio"),
+    }
+    after: dict = {}
+    if mode == "normAutofit":
+        # PowerPoint's own shrink stays the one mechanism: the fit becomes
+        # its fontScale, replacing a cache drawn for older text, and the
+        # run sizes stay as they are.
+        own = bodypr.find(qn("a:normAutofit")) if bodypr is not None else None
+        before["font_scale_pct"] = (
+            _pct_value(own.get("fontScale"), 100.0) if own is not None
+            else 100.0)
+        if bodypr is None:
+            bodypr = etree.Element(qn("a:bodyPr"))
+            body.insert(0, bodypr)
+        _set_normautofit(bodypr, scale_pct)
         applied = "normAutofit_scale"
-        written_scale = scale_pct
-    if bodypr is None:
-        bodypr = etree.Element(qn("a:bodyPr"))
-        body.insert(0, bodypr)
-    _set_normautofit(bodypr, written_scale)
-    after_sizes = sorted({
-        int(el.get("sz")) / 100.0 for el in _explicit_size_elements(body)
-    })
-    est_after = _overflow_heuristic(
-        elem, body, bodypr, written_scale or 100.0, 0.0, pkg=pkg, part=part
-    )
-    return {
+        est_after = estimate(scale_pct)
+        after["sizes_pt"] = before["sizes_pt"]
+        after["font_scale_pct"] = scale_pct if scale_pct < 100 else None
+    else:
+        for el in _explicit_size_elements(body):
+            old = int(el.get("sz")) / 100.0
+            new = _floored_pt(old, scale_pct, min_size)
+            el.set("sz", str(int(round(new * 100))))
+        for run, rpr, size in inherited:
+            if rpr is None:
+                rpr = etree.Element(qn("a:rPr"))
+                run.insert(0, rpr)
+            new = _floored_pt(size, scale_pct, min_size)
+            rpr.set("sz", str(int(round(new * 100))))
+        applied = "run_sizes"
+        est_after = estimate(100.0)
+        after["sizes_pt"] = sorted(set(_run_sizes_pt(body, ()))) or "inherited"
+        after["font_scale_pct"] = None
+        if mode == "spAutoFit" and own_box and not grouped and est_after:
+            ratio = est_after.get("height_ratio", est_after.get("fill_ratio"))
+            ext = elem.find(f"{qn('p:spPr')}/{qn('a:xfrm')}/{qn('a:ext')}")
+            if ratio is not None and ext is not None:
+                needed = int(math.ceil(ratio * (frame[1] - vertical))) + vertical
+                new_cy = max(1, min(frame[1], needed))
+                old_cy = int(ext.get("cy"))
+                if new_cy != old_cy:
+                    ext.set("cy", str(new_cy))
+                    before["box_h_in"] = _emu_to_in(old_cy)
+                    after["box_h_in"] = _emu_to_in(new_cy)
+    after["fill_ratio"] = (est_after or {}).get("fill_ratio")
+    report = {
         "shape_id": _shape_id(elem),
         "name": _shape_name(elem),
         "applied": applied,
+        "autofit": mode,
+        "autofit_from": where,
+        "autofit_changed": False,
+        "fitted_to": fitted_to,
         "method": est0.get("method"),
         "method_reason": est0.get("method_reason"),
         "font_file": est0.get("font_file"),
         "scale_pct": round(scale_pct, 1),
-        "before": {
-            "sizes_pt": before_sizes or "inherited",
-            "fill_ratio": est0.get("fill_ratio"),
-        },
-        "after": {
-            "sizes_pt": after_sizes or "inherited",
-            "font_scale_pct": written_scale,
-            "fill_ratio": (est_after or {}).get("fill_ratio"),
-        },
-        "still_overflowing": still_overflowing,
+        "before": before,
+        "after": after,
+        "still_overflowing": (not fits_floor) or bool(
+            est_after and est_after.get("likely_overflow") is True),
     }
+    return report, None
 
 
 def fit_text(
     pkg: PptxPackage, slide, shape=None, *, min_size: float = 10.0
 ) -> dict:
     """Approximate text-fit: estimate the largest uniform font scale
-    (floored at min_size pt) at which a shape's text fits its frame, using
-    the same average-glyph-width overflow HEURISTIC as get_autofit_state
-    (no real font metrics), then apply it. Shapes with explicit run sizes
-    get those sizes rewritten; shapes inheriting every size get a
-    normAutofit fontScale instead, PowerPoint's own shrink mechanism.
-    normAutofit is enabled on every touched shape either way so PowerPoint
-    re-fits on the next in-app edit. shape=None treats every text shape on
-    the slide that the heuristic flags as overflowing; a shape that still
-    cannot fit at min_size is applied at the floor and reported with
-    still_overflowing=true. This is an ESTIMATE: verify visually with
-    export_slide_images before presenting."""
+    (floored at min_size pt) at which a shape's text fits, using the same
+    overflow estimate as get_autofit_state (measured against the installed
+    font when the metrics extra can, an average-glyph-width HEURISTIC
+    otherwise), then apply it through ONE mechanism, keeping the shape's
+    autofit setting (its own, or inherited from the layout or master):
+    shrink text on overflow (normAutofit) gets the scale as its fontScale
+    and its run sizes stay; resize shape to fit text (spAutoFit) is fitted
+    to the room it can grow into on the slide, by its run sizes; no autofit
+    gets its run sizes rewritten. Inherited sizes are written out first. A
+    run already at or below min_size keeps its size. shape=None treats
+    every text shape on the slide that the estimate flags as overflowing; a
+    shape that still cannot fit at min_size is applied at the floor and
+    reported with still_overflowing=true. This is an ESTIMATE: verify
+    visually with export_slide_image before presenting."""
     if not isinstance(min_size, (int, float)) or isinstance(min_size, bool):
         raise PptMcpError(f"min_size must be a number in points, got {min_size!r}")
     if not 1 <= float(min_size) <= 400:
@@ -2090,21 +2696,17 @@ def fit_text(
     skipped: list[dict] = []
     if shape is not None:
         elem, kind = _resolve_shape(pkg, rec, shape)
-        body = _require_txbody(elem, kind, rec)
+        _require_txbody(elem, kind, rec)
         if not shape_text(elem).strip():
             raise PptMcpError(
                 f"shape {_shape_id(elem)} on slide {rec['index']} has no "
                 "text to fit"
             )
-        report = _fit_one_shape(elem, min_size, pkg, rec["part"])
+        report, reason = _fit_one_shape(elem, min_size, pkg, rec["part"])
         if report is None:
             skipped.append({
                 "shape_id": _shape_id(elem),
-                "reason": (
-                    "the heuristic does not estimate this shape as "
-                    "overflowing (or its geometry is inherited); nothing "
-                    "was changed"
-                ),
+                "reason": reason or _FIT_NOT_OVERFLOWING,
             })
         else:
             fitted.append(report)
@@ -2118,13 +2720,26 @@ def fit_text(
                     continue
                 if not shape_text(elem).strip():
                     continue
-                report = _fit_one_shape(elem, min_size, pkg, rec["part"])
+                report, _reason = _fit_one_shape(
+                    elem, min_size, pkg, rec["part"])
                 if report is not None:
                     fitted.append(report)
     if fitted:
         pkg.mark_dirty(rec["part"])
     methods = {r.get("method") for r in fitted if r.get("method")}
     measured = methods == {"font-metrics"}
+    if measured:
+        how = (
+            "measured against the installed font's own advance widths "
+            "(no kerning); the fit is still an estimate, so "
+            "render-to-verify with export_slide_image before presenting. "
+        )
+    else:
+        how = (
+            "average-glyph-width heuristic, no real font metrics; the "
+            "fit is an estimate, so render-to-verify with "
+            "export_slide_image before presenting. "
+        )
     return {
         "slide_index": rec["index"],
         "slide_id": rec["slide_id"],
@@ -2133,19 +2748,5 @@ def fit_text(
         "min_size_pt": min_size,
         "estimate": True,
         "method": "font-metrics" if measured else "estimate",
-        "note": (
-            (
-                "measured against the installed font's own advance widths "
-                "(no kerning); the fit is still an estimate, so "
-                "render-to-verify with export_slide_images "
-                "(assembly-export pack) before presenting"
-            )
-            if measured
-            else (
-                "average-glyph-width heuristic, no real font metrics; the "
-                "fit is an estimate, so render-to-verify with "
-                "export_slide_images (assembly-export pack) before "
-                "presenting"
-            )
-        ),
+        "note": how + _FIT_NOTE_AUTOFIT,
     }

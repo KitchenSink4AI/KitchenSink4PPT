@@ -1,8 +1,8 @@
 """Exploratory sweep: every com / com-live tool, ONE PowerPoint session.
 
-The exploratory half of the COM checks. Where the pytest COM tests
+The field-test half of the v1.1 COM round. Where the pytest COM rounds
 assert known-good behavior, this drives every COM-touching server tool
-once against a deck open in a real PowerPoint and REPORTS what
+once against a real deck open in a real PowerPoint and REPORTS what
 happens, hunting PowerPoint-specific functional bugs the unit suite was
 never pointed at. Nothing here asserts; the output is evidence to read.
 
@@ -52,24 +52,22 @@ def main() -> int:
         print("RESULT " + json.dumps(out))
         return 0
 
-    from kitchensink4ppt import packs, server
+    from kitchensink4ppt import server
     from kitchensink4ppt.core import errors as err
 
     missing_tools: list = []
 
     def tool(name):
-        t = packs.tool_objects().get(name)
+        t = getattr(server, name, None)
         if t is None:
             missing_tools.append(name)
             raise err.PptMcpError(f"no tool registered as {name!r}")
-        return t.fn
+        return t
 
     results: dict = {}
 
     def _envelope_refusal(r):
-        """@_tool() catches refusals and RETURNS a refusal envelope rather
-        than raising, so a caller that only watches for exceptions scores
-        every refusal as a success. Read the envelope."""
+        """Recognize a returned refusal envelope when a helper supplies one."""
         if isinstance(r, dict):
             return r.get("ok") is False
         return getattr(r, "ok", None) is False or (

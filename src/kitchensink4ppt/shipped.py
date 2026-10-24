@@ -3,7 +3,7 @@
 Two rules keep this file honest:
 
 - Anything derivable at runtime is NOT here. get_server_info reads the tool
-  totals straight off the pack registry (``packs.tool_names()``), the same
+  totals straight off the fixed operation registry, the same
   source ``scripts/measure_surface.py`` and ``scripts/check_site.py`` read,
   so no tool count can ever go stale in a running server.
 - The test count CANNOT be derived at runtime: the suite does not ship in
@@ -20,4 +20,4 @@ Re-stamp with::
 from __future__ import annotations
 
 #: Tests collected by ``pytest tests/ --collect-only -q``.
-TESTS = 1640
+TESTS = 3689

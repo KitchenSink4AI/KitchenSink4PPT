@@ -1,10 +1,8 @@
 """Workflow guidance: recommended tool sequences for common multi-step tasks.
 
-Discoverability rule 4 (PLAN section 2): get_workflows ships in lite and every
-recipe NAMES the packs it needs, so a fresh session learns both the sequence
-and the exact enable_tools call before touching a deck. Every tool named in a
-step MUST be a registered tool on the server (tests assert this against the
-live registry), so a workflow can never point at a tool that does not exist.
+Every recipe names the fixed surface tool and operation for each step. Tests
+assert both against the live registry, so a workflow cannot point at an
+operation that does not exist or at the wrong group tool.
 
 The sequences are recommendations, not scripts: steps marked optional can be
 skipped, and the notes carry the judgment calls a caller should know about.
@@ -13,32 +11,47 @@ skipped, and the notes carry the judgment calls a caller should know about.
 from __future__ import annotations
 
 from ..core.errors import PptMcpError
+from ..surface import copy as _copy
 
-# task -> {summary, packs, steps: [{tool, why, optional?}], notes: [...]}
+# task -> {summary, steps: [{tool, op, why, optional?}], notes: [...]}
 WORKFLOWS: dict[str, dict] = {
+    "migrate-from-v1": {
+        "summary": (
+            "Find the 2.0 call for any PowerPoint 1.3.1 tool name: the map "
+            "names the grouped tool each one now runs under."
+        ),
+        "steps": [],
+        "notes": [
+            "Each 1.3.1 tool is now an operation of the grouped tool the map "
+            "names; call it as <tool>(op=<old name>, args={...}). Some "
+            "arguments changed, so check ppt_help for the operation before "
+            "the first call.",
+            "The two 1.3.1 tools that switched tool sets on and off are gone, "
+            "because every operation is present from the start; their map "
+            "rows have no target. To limit what the server offers, use the "
+            "KS4P_READ_ONLY and KS4P_FORBID launch settings.",
+        ],
+        "generated_map": True,
+    },
     "build-a-diagram": {
         "summary": (
             "Turn an SVG (or a from-scratch shape layout) into native, "
             "individually editable PowerPoint shapes with glued connectors, "
             "then verify by rendering."
         ),
-        "packs": ["graphics", "assembly-export"],
         "steps": [
-            {"tool": "enable_tools",
-             "why": "packs=['graphics','assembly-export'] turns on the shape "
-                    "engine and the render-to-verify loop"},
-            {"tool": "get_presentation_view",
+            {"tool": "ppt_read", "op": "get_presentation_view",
              "why": "see the target slide's current shapes and anchors first"},
-            {"tool": "svg_to_shapes",
+            {"tool": "ppt_graphics", "op": "svg_to_shapes",
              "why": "compile the SVG into one grouped tree of native shapes "
                     "(no rasterization); returns every created shape id"},
-            {"tool": "insert_connector", "optional": True,
+            {"tool": "ppt_graphics", "op": "insert_connector", "optional": True,
              "why": "add glued arrows between shapes by id; glued ends follow "
                     "the shape when it moves"},
-            {"tool": "export_slide_image",
+            {"tool": "ppt_deck", "op": "export_slide_image",
              "why": "render the slide to PNG and LOOK at it; layout bugs are "
                     "visual, not structural"},
-            {"tool": "set_shape",
+            {"tool": "ppt_graphics", "op": "set_shape",
              "why": "nudge position, size, fill, or text by shape id and "
                     "re-render until it is right"},
         ],
@@ -54,25 +67,22 @@ WORKFLOWS: dict[str, dict] = {
             "Create or import a data table on a slide, style it, and export "
             "it back out as CSV/JSON."
         ),
-        "packs": ["tables-charts"],
         "steps": [
-            {"tool": "enable_tools",
-             "why": "packs=['tables-charts'] turns on the structural table set"},
-            {"tool": "create_table",
+            {"tool": "ppt_tables", "op": "create_table",
              "why": "new table with optional initial data; import_table "
                     "builds one from an existing CSV/JSON file instead"},
-            {"tool": "set_table_cells",
+            {"tool": "ppt_tables", "op": "set_table_cells",
              "why": "bulk cell edits: text plus per-cell bold/size/fill in "
                     "one call"},
-            {"tool": "merge_cells", "optional": True,
+            {"tool": "ppt_tables", "op": "merge_cells", "optional": True,
              "why": "span header cells; unmerge_cells reverses it"},
-            {"tool": "apply_table_style", "optional": True,
+            {"tool": "ppt_tables", "op": "apply_table_style", "optional": True,
              "why": "one of the 74 built-in PowerPoint table styles by name"},
-            {"tool": "export_table", "optional": True,
+            {"tool": "ppt_deck", "op": "export_table", "optional": True,
              "why": "round-trip the finished table to CSV/JSON for records"},
         ],
         "notes": [
-            "create_chart / update_chart_data live in the same pack for "
+            "create_chart / update_chart_data live in the same tool for "
             "bar, column, line, and pie charts.",
             "Cell addresses are 0-based (row, col) into the full grid; merge "
             "continuations refuse edits and name the origin cell.",
@@ -83,23 +93,19 @@ WORKFLOWS: dict[str, dict] = {
             "Start a new deck FROM a template (theme, layouts, and masters "
             "intact) and shape its skeleton."
         ),
-        "packs": ["design"],
         "steps": [
-            {"tool": "enable_tools",
-             "why": "packs=['design'] turns on create_presentation and "
-                    "slide-size/hide controls"},
-            {"tool": "create_presentation",
+            {"tool": "ppt_deck", "op": "create_presentation",
              "why": "byte-copies the template so theme colors, fonts, "
                     "layouts, and masters all carry over"},
-            {"tool": "list_elements",
+            {"tool": "ppt_read", "op": "list_elements",
              "why": "kind='layouts' shows which layouts the template offers, "
                     "by name and part"},
-            {"tool": "insert_slide",
+            {"tool": "ppt_edit", "op": "insert_slide",
              "why": "add slides by layout name or index; repeat per section"},
-            {"tool": "set_placeholder_text",
+            {"tool": "ppt_edit", "op": "set_placeholder_text",
              "why": "titles and body placeholders inherit the template's "
                     "styling automatically"},
-            {"tool": "move_slide", "optional": True,
+            {"tool": "ppt_edit", "op": "move_slide", "optional": True,
              "why": "adjust running order; set_slide_hidden parks optional "
                     "slides without deleting them"},
         ],
@@ -113,33 +119,29 @@ WORKFLOWS: dict[str, dict] = {
             "The verification loop: render slides to images, inspect, fix, "
             "re-render; finish with a full-deck validation and PDF."
         ),
-        "packs": ["assembly-export", "design", "graphics", "tables-charts"],
         "steps": [
-            {"tool": "enable_tools",
-             "why": "packs=['assembly-export','design','graphics',"
-                    "'tables-charts'] turns on export, validation and the "
-                    "autofit report, plus the shape, text and table tools "
-                    "that fix what the render shows"},
-            {"tool": "get_export_engines",
+            {"tool": "ppt_inspect", "op": "get_export_engines",
              "why": "confirm which render engine exists here (PowerPoint COM "
                     "is ground truth; LibreOffice drifts on themes/fonts)"},
-            {"tool": "export_slide_image",
+            {"tool": "ppt_deck", "op": "export_slide_image",
              "why": "PNG per slide; read the image to catch overflow, "
                     "overlap, and color mistakes"},
-            {"tool": "get_autofit_state", "optional": True,
+            {"tool": "ppt_inspect", "op": "get_autofit_state", "optional": True,
              "why": "flags text boxes that are shrinking or overflowing "
                     "without opening PowerPoint"},
-            {"tool": "validate",
+            {"tool": "ppt_deck", "op": "validate",
              "why": "package payload check plus a real invisible-PowerPoint "
                     "open; repair prompts count as failure"},
-            {"tool": "export_pdf",
+            {"tool": "ppt_deck", "op": "export_pdf",
              "why": "the shareable artifact once the deck passes review"},
         ],
         "notes": [
-            "set_notes (same pack) writes the speaker notes reviewers read "
+            "ppt_edit/set_notes writes the speaker notes reviewers read "
             "alongside the rendered slides.",
-            "set_shape and format_text (graphics) are how you fix what the "
-            "render shows; table repairs need tables-charts.",
+            "ppt_graphics/set_shape and ppt_edit/format_text fix what the "
+            "render shows; table repairs use ppt_tables.",
+            "Exports never replace a file on their own: a re-render into the "
+            "same output_dir sends overwrite=true.",
         ],
     },
     "refresh-an-existing-deck": {
@@ -147,42 +149,37 @@ WORKFLOWS: dict[str, dict] = {
             "Inherit a deck somebody else built and fix it: copy, triage, "
             "render the flagged slides, repair, re-render, validate."
         ),
-        "packs": ["assembly-export", "design", "graphics", "tables-charts"],
         "steps": [
-            {"tool": "enable_tools",
-             "why": "packs=['assembly-export','design','graphics',"
-                    "'tables-charts'] covers the triage battery, the render "
-                    "loop, and every repair tool"},
-            {"tool": "copy_presentation",
+            {"tool": "ppt_deck", "op": "copy_presentation",
              "why": "work on a copy under a new name; the original stays "
                     "recoverable however the pass goes"},
-            {"tool": "get_presentation_view",
+            {"tool": "ppt_read", "op": "get_presentation_view",
              "why": "the cheap read of what is actually there, with the "
                     "anchors apply_edits takes"},
-            {"tool": "check_layout",
+            {"tool": "ppt_inspect", "op": "check_layout",
              "why": "overlap, off-slide, tiny or overflowing text, contrast; "
                     "findings carry shape ids and a fix call"},
-            {"tool": "audit_accessibility", "optional": True,
+            {"tool": "ppt_inspect", "op": "audit_accessibility", "optional": True,
              "why": "alt text, reading order, and title coverage, which the "
                     "layout checks do not cover"},
-            {"tool": "get_autofit_state", "optional": True,
+            {"tool": "ppt_inspect", "op": "get_autofit_state", "optional": True,
              "why": "names the shapes already shrinking their text, the "
                     "classic crowded-slide signal"},
-            {"tool": "export_slide_image",
+            {"tool": "ppt_deck", "op": "export_slide_image",
              "why": "render the FLAGGED slides only and look; a heuristic "
                     "finding is a place to look, not a verdict"},
-            {"tool": "apply_edits",
+            {"tool": "ppt_edit", "op": "apply_edits",
              "why": "batch the repairs in one atomic save; set_shape, "
                     "format_text and set_table_cells all ride here"},
-            {"tool": "validate",
+            {"tool": "ppt_deck", "op": "validate",
              "why": "payload check plus a real invisible-PowerPoint open "
                     "before the deck goes anywhere"},
-            {"tool": "export_pdf", "optional": True,
+            {"tool": "ppt_deck", "op": "export_pdf", "optional": True,
              "why": "the shareable artifact once the deck passes"},
         ],
         "notes": [
-            "Render the slides check_layout flagged, not the whole deck: "
-            "that is the difference between a fast pass and an afternoon.",
+            "Render only the slides check_layout flagged; rendering the "
+            "whole deck takes far longer.",
             "check_layout resolves inherited font size and inherited "
             "placeholder geometry, so findings name the layout or master "
             "when that is where the fix belongs.",
@@ -195,45 +192,40 @@ WORKFLOWS: dict[str, dict] = {
             "Build a timeline, org chart, matrix, cycle, or comparison "
             "diagram from one spec call, then tweak it by role ids."
         ),
-        "packs": ["graphics", "assembly-export"],
         "steps": [
-            {"tool": "enable_tools",
-             "why": "packs=['graphics','assembly-export'] turns on the "
-                    "generators and the render-to-verify loop"},
-            {"tool": "generate_diagram",
+            {"tool": "ppt_graphics", "op": "generate_diagram",
              "why": "kind + spec + inch box in, a grouped tree of native "
                     "shapes with glued connectors out; the result maps "
                     "roles to shape ids"},
-            {"tool": "export_slide_image",
+            {"tool": "ppt_deck", "op": "export_slide_image",
              "why": "render and LOOK; crowding warnings in the result tell "
                     "you where to check first"},
-            {"tool": "set_shape",
+            {"tool": "ppt_graphics", "op": "set_shape",
              "why": "move or restyle any piece by its role's shape id; "
                     "glued connectors follow"},
         ],
         "notes": [
-            "svg_to_shapes covers diagrams outside the five kinds; "
-            "generate_diagram is the fast path, not the ceiling.",
+            "generate_diagram builds five kinds of diagram; svg_to_shapes "
+            "covers any other diagram.",
             "Specs take theme colors by default, so a template change "
             "recolors the whole diagram.",
         ],
     },
     "batch-edit-from-view": {
         "summary": (
-            "The token-cheap editing loop, all in lite: read the anchored "
+            "The token-cheap editing loop on the fixed surface: read the anchored "
             "view once, then apply many edits in one atomic call."
         ),
-        "packs": ["lite"],
         "steps": [
-            {"tool": "get_presentation_view",
+            {"tool": "ppt_read", "op": "get_presentation_view",
              "why": "one anchored markdown projection of the deck: slide "
                     "anchors [s:id], shape anchors [a:hex], table cells "
                     "t:hex:rNcN"},
-            {"tool": "apply_edits",
+            {"tool": "ppt_edit", "op": "apply_edits",
              "why": "batch of {op, anchor, ...} edits; every anchor is "
                     "resolved BEFORE anything mutates, one backup and one "
                     "save for the whole batch"},
-            {"tool": "get_presentation_view", "optional": True,
+            {"tool": "ppt_read", "op": "get_presentation_view", "optional": True,
              "why": "re-read only when anchors went stale (shape deleted or "
                     "re-created); surviving anchors stay valid"},
         ],
@@ -249,25 +241,21 @@ WORKFLOWS: dict[str, dict] = {
             "Give a deck slide transitions and click-by-click entrance "
             "builds, honestly bounded to the verified effect subset."
         ),
-        "packs": ["assembly-export"],
         "steps": [
-            {"tool": "enable_tools",
-             "why": "packs=['assembly-export'] turns on the "
-                    "transition and animation set"},
-            {"tool": "get_transitions",
+            {"tool": "ppt_read", "op": "get_transitions",
              "why": "see what the deck already carries before overwriting "
                     "(morph and friends are reported, not authored)"},
-            {"tool": "set_transition",
+            {"tool": "ppt_design", "op": "set_transition",
              "why": "one call for one slide or the whole deck; kind, "
                     "direction, millisecond duration, auto-advance"},
-            {"tool": "add_entrance_animation",
+            {"tool": "ppt_design", "op": "add_entrance_animation",
              "why": "appear/fade/wipe per shape; trigger='click' builds "
                     "click groups, by_paragraph=True builds bullet lists "
                     "line by line"},
-            {"tool": "list_animations",
+            {"tool": "ppt_read", "op": "list_animations",
              "why": "verify play order, triggers, and targets after "
                     "authoring"},
-            {"tool": "clear_animations", "optional": True,
+            {"tool": "ppt_design", "op": "clear_animations", "optional": True,
              "why": "reset a slide (or one shape) when a build sequence "
                     "should start over"},
         ],
@@ -281,23 +269,19 @@ WORKFLOWS: dict[str, dict] = {
             "Run a comment-driven review pass: read every thread, reply, "
             "resolve what is settled, and report the deck's review state."
         ),
-        "packs": ["review-sweeps"],
         "steps": [
-            {"tool": "enable_tools",
-             "why": "packs=['review-sweeps'] turns on modern threaded "
-                    "comments"},
-            {"tool": "comment_report",
+            {"tool": "ppt_inspect", "op": "comment_report",
              "why": "the whole deck's threads grouped by slide, with a "
                     "markdown rendering for review notes"},
-            {"tool": "add_comment",
+            {"tool": "ppt_review", "op": "add_comment",
              "why": "new feedback anchored to a slide, a position, or a "
                     "shape"},
-            {"tool": "reply_to_comment",
+            {"tool": "ppt_review", "op": "reply_to_comment",
              "why": "answer inside the thread; replies nest under the "
                     "root"},
-            {"tool": "resolve_comment",
+            {"tool": "ppt_review", "op": "resolve_comment",
              "why": "mark settled threads; resolved=False reopens"},
-            {"tool": "delete_comment", "optional": True,
+            {"tool": "ppt_review", "op": "delete_comment", "optional": True,
              "why": "remove a thread (cascade_replies=True) or a single "
                     "reply once it is truly obsolete"},
         ],
@@ -311,29 +295,33 @@ WORKFLOWS: dict[str, dict] = {
             "Edit a deck WHILE the user has it open in PowerPoint: route "
             "edits live, show the user, save only on request."
         ),
-        "packs": ["com"],
         "steps": [
-            {"tool": "enable_tools",
-             "why": "packs=['com'] turns on live_save, "
-                    "live_scroll_to, and live_status"},
-            {"tool": "live_status",
+            {"tool": "ppt_inspect", "op": "live_status",
              "why": "confirm PowerPoint is responsive and the target file "
                     "is open (and not read-only) before editing"},
-            {"tool": "get_text",
+            {"tool": "ppt_read", "op": "get_text",
              "why": "dual-mode reads route to the open copy automatically "
                     "when the file is locked (live='auto', the default)"},
-            {"tool": "set_placeholder_text",
+            {"tool": "ppt_edit", "op": "set_placeholder_text",
              "why": "dual-mode edits land in the OPEN copy and stay "
                     "unsaved; the user sees them immediately"},
-            {"tool": "live_scroll_to",
+            {"tool": "ppt_deck", "op": "live_scroll_to",
              "why": "bring the edited slide into the user's view without "
                     "touching their selection"},
-            {"tool": "live_save",
-             "why": "the explicit save; nothing writes the user's file "
-                    "until this call (or the user's own Ctrl+S)"},
+            {"tool": "ppt_deck", "op": "live_save",
+             "why": "only when the user asks: nothing writes the user's "
+                    "file until this call (or their own Ctrl+S); the "
+                    "result's first key, saved_user_work, says when the "
+                    "save also wrote their own unsaved work; "
+                    "unsaved_before_our_edits says whether the "
+                    "deck had unsaved changes before this server's first "
+                    "edit in this run (true: the save also wrote their "
+                    "own unsaved work; false: it was clean, and typing "
+                    "they did after that is not told apart from the "
+                    "edits; null: not known)"},
         ],
         "notes": [
-            "Eleven file tools are dual-mode (get_text, get_slide_info, "
+            "Eleven operations are dual-mode (get_text, get_slide_info, "
             "search_and_replace, set_placeholder_text, insert_textbox, "
             "format_text, insert_shape, set_shape, insert_slide, "
             "delete_slide, set_notes); live='off' pins them file-only.",
@@ -346,21 +334,17 @@ WORKFLOWS: dict[str, dict] = {
             "Assemble a deck from slides living in other presentations, "
             "keeping either the destination design or the source's."
         ),
-        "packs": ["assembly-export", "design"],
         "steps": [
-            {"tool": "enable_tools",
-             "why": "packs=['assembly-export','design'] turns on the "
-                    "cross-deck copy plus ordering and validation"},
-            {"tool": "get_presentation_info",
+            {"tool": "ppt_read", "op": "get_presentation_info",
              "why": "inventory both decks first: slide ids, sizes, and "
                     "section layout"},
-            {"tool": "copy_slide_between",
+            {"tool": "ppt_deck", "op": "copy_slide_between",
              "why": "pull a source slide in; design='link' restyles onto "
                     "the destination layout with appearance carried, "
                     "'import' keeps the source design family"},
-            {"tool": "move_slide",
+            {"tool": "ppt_edit", "op": "move_slide",
              "why": "place the arrival in the running order"},
-            {"tool": "validate",
+            {"tool": "ppt_deck", "op": "validate",
              "why": "cross-package surgery earns a real opens-clean check "
                     "before anyone presents the result"},
         ],
@@ -376,29 +360,24 @@ WORKFLOWS: dict[str, dict] = {
             "Move a deck onto a new brand COMPLETELY: theme first, then "
             "the literal colors and fonts the theme cannot reach."
         ),
-        "packs": ["design", "review-sweeps"],
         "steps": [
-            {"tool": "enable_tools",
-             "why": "packs=['design','review-sweeps'] turns on brand "
-                    "transfer and "
-                    "the deck-wide sweeps"},
-            {"tool": "extract_brand",
+            {"tool": "ppt_inspect", "op": "extract_brand",
              "why": "read the SOURCE deck's palette: theme slots, fonts, "
                     "and the most-used literal hex fills"},
-            {"tool": "apply_brand",
+            {"tool": "ppt_design", "op": "apply_brand",
              "why": "write the palette onto the target's theme(s); "
                     "theme-linked content re-resolves, literals do not"},
-            {"tool": "font_inventory",
+            {"tool": "ppt_inspect", "op": "font_inventory",
              "why": "census what actually remains: literal typefaces, "
                     "chart fonts, phantom declarations"},
-            {"tool": "replace_colors",
+            {"tool": "ppt_design", "op": "replace_colors",
              "why": "to_theme=True converts leftover literal hex to theme "
                     "references so they follow future edits; plain "
                     "hex-to-hex remaps work too"},
-            {"tool": "replace_fonts",
+            {"tool": "ppt_design", "op": "replace_fonts",
              "why": "swap stray typefaces everywhere, charts and phantom "
                     "declarations included"},
-            {"tool": "check_layout", "optional": True,
+            {"tool": "ppt_inspect", "op": "check_layout", "optional": True,
              "why": "contrast check after recoloring; new brand colors can "
                     "sink text into backgrounds"},
         ],
@@ -413,26 +392,23 @@ WORKFLOWS: dict[str, dict] = {
             "placeholders, decorations, and backgrounds every slide "
             "inherits."
         ),
-        "packs": ["design"],
         "steps": [
-            {"tool": "enable_tools",
-             "why": "packs=['design'] turns on the master/layout editors"},
-            {"tool": "list_master_elements",
+            {"tool": "ppt_inspect", "op": "list_master_elements",
              "why": "the orientation read: placeholders, layouts, slide "
                     "usage, txStyles defaults, background ownership"},
-            {"tool": "set_master_placeholder",
+            {"tool": "ppt_design", "op": "set_master_placeholder",
              "why": "deck-wide text defaults ('all titles 28pt') and "
                     "geometry on the master placeholder"},
-            {"tool": "set_layout_placeholder", "optional": True,
+            {"tool": "ppt_design", "op": "set_layout_placeholder", "optional": True,
              "why": "per-layout overrides sitting between master and "
                     "slides"},
-            {"tool": "insert_master_shape", "optional": True,
+            {"tool": "ppt_design", "op": "insert_master_shape", "optional": True,
              "why": "logo box, footer bar, or rule line rendered by every "
                     "derived slide"},
-            {"tool": "set_master_background", "optional": True,
+            {"tool": "ppt_design", "op": "set_master_background", "optional": True,
              "why": "master- or layout-level background; slides with their "
                     "OWN background are flagged, not overwritten"},
-            {"tool": "check_layout",
+            {"tool": "ppt_inspect", "op": "check_layout",
              "why": "verify the inherited result on real slides before "
                     "calling the restyle done"},
         ],
@@ -448,24 +424,20 @@ WORKFLOWS: dict[str, dict] = {
             "Combine whole presentations into one deck with sections, an "
             "agenda, and a validation gate."
         ),
-        "packs": ["assembly-export"],
         "steps": [
-            {"tool": "enable_tools",
-             "why": "packs=['assembly-export'] turns on merge, agenda, "
-                    "stats, and validation"},
-            {"tool": "get_presentation_info",
+            {"tool": "ppt_read", "op": "get_presentation_info",
              "why": "inventory the destination first: slide count, size, "
                     "existing sections"},
-            {"tool": "merge_decks",
+            {"tool": "ppt_deck", "op": "merge_decks",
              "why": "append each source deck in order; design='link' "
                     "restyles onto the destination, 'import' keeps source "
                     "designs; sections wrap each source"},
-            {"tool": "generate_agenda_slide", "optional": True,
+            {"tool": "ppt_deck", "op": "generate_agenda_slide", "optional": True,
              "why": "a jump-linked agenda built from the sections the "
                     "merge just created"},
-            {"tool": "deck_statistics", "optional": True,
+            {"tool": "ppt_inspect", "op": "deck_statistics", "optional": True,
              "why": "size and speaking-time estimate of the combined deck"},
-            {"tool": "validate",
+            {"tool": "ppt_deck", "op": "validate",
              "why": "cross-package surgery earns a real opens-clean check"},
         ],
         "notes": [
@@ -480,31 +452,27 @@ WORKFLOWS: dict[str, dict] = {
             "Audit a deck for screen-reader readiness and repair what the "
             "audit finds, with named fixes."
         ),
-        "packs": ["design", "assembly-export"],
         "steps": [
-            {"tool": "enable_tools",
-             "why": "packs=['design','assembly-export'] turns on the audit, "
-                    "the repair tools, and rendering"},
-            {"tool": "audit_accessibility",
+            {"tool": "ppt_inspect", "op": "audit_accessibility",
              "why": "one read: missing alt text, headerless tables, "
                     "reading-order mismatches, missing titles, contrast; "
                     "each finding names its repairing call"},
-            {"tool": "export_slide_image", "optional": True,
+            {"tool": "ppt_deck", "op": "export_slide_image", "optional": True,
              "why": "LOOK at flagged slides before describing images; alt "
                     "text written blind is worse than none"},
-            {"tool": "set_alt_text",
+            {"tool": "ppt_graphics", "op": "set_alt_text",
              "why": "describe each flagged shape (empty string clears a "
                     "stale description)"},
-            {"tool": "set_reading_order", "optional": True,
+            {"tool": "ppt_graphics", "op": "set_reading_order", "optional": True,
              "why": "rewrite a slide's shape order for screen readers; "
                     "z-order changes are reported for review"},
-            {"tool": "audit_accessibility",
+            {"tool": "ppt_inspect", "op": "audit_accessibility",
              "why": "re-run to confirm the findings list is empty or "
                     "consciously accepted"},
         ],
         "notes": [
             "Table header semantics come from create_table/apply_table_"
-            "style first_row flags (tables-charts pack).",
+            "style first_row flags (ppt_tables).",
             "Reading order IS z-order in PowerPoint; reordering can change "
             "overlaps, which the result reports.",
         ],
@@ -514,21 +482,19 @@ WORKFLOWS: dict[str, dict] = {
             "Put real, editable math on slides from LaTeX, then verify it "
             "reads back and renders."
         ),
-        "packs": ["graphics", "assembly-export"],
         "steps": [
-            {"tool": "enable_tools",
-             "why": "packs=['graphics','assembly-export'] turns on the "
-                    "equation tools and the render loop"},
-            {"tool": "insert_equation",
+            {"tool": "ppt_graphics", "op": "insert_equation",
              "why": "LaTeX in, native PowerPoint math out (editable in the "
                     "equation editor, not an image), in a new box"},
-            {"tool": "add_equation_to_shape", "optional": True,
+            {"tool": "ppt_graphics", "op": "add_equation_to_shape", "optional": True,
              "why": "append a math paragraph inside an existing text "
                     "shape at a chosen position"},
-            {"tool": "list_equations",
-             "why": "THE read path for math: equations never appear in "
-                    "get_text/find_text output"},
-            {"tool": "export_slide_image",
+            {"tool": "ppt_read", "op": "list_equations",
+             "why": "each equation in a shape's text, a table cell or the speaker "
+                    "notes, with its location and its characters, which get_text and "
+                    "find_text show too, also in a text box PowerPoint saved with its "
+                    "equation"},
+            {"tool": "ppt_deck", "op": "export_slide_image",
              "why": "render and LOOK; spacing and symbol fidelity are "
                     "visual judgments"},
         ],
@@ -545,21 +511,48 @@ WORKFLOWS: dict[str, dict] = {
 def get_workflows(task: str | None = None) -> dict:
     """Serve one workflow by name, or the index of all of them."""
     if task is None:
-        from .. import packs as _packs
-
         return {
             "workflows": {
-                name: {"summary": wf["summary"], "packs": wf["packs"]}
+                name: {
+                    "summary": wf["summary"],
+                    "tools": sorted({step["tool"] for step in wf["steps"]}),
+                }
                 for name, wf in WORKFLOWS.items()
             },
-            "note": (
-                "call get_workflows(task=<name>) for the full step sequence; "
-                "enable_tools lists every pack with token costs. "
-                + _packs.WORKER_PACK_SENTENCE
-            ),
+            "note": _copy.WORKFLOW_INDEX_NOTE,
         }
     if task not in WORKFLOWS:
         raise PptMcpError(
-            f"unknown workflow {task!r}; available: {sorted(WORKFLOWS)}"
+            f"{_copy.WORKFLOW_UNKNOWN_TASK} Requested: {task!r}. "
+            f"Available: {sorted(WORKFLOWS)}"
         )
-    return {"task": task, **WORKFLOWS[task]}
+    result = {"task": task, **WORKFLOWS[task]}
+    if result.get("generated_map"):
+        result["map"] = migration_map_v1()
+    return result
+
+
+REMOVED_IN_V2 = ("enable_tools", "disable_tools")
+
+
+#: Operations added after 1.3.1; they have no 1.3.1 name to route.
+NEW_IN_V2 = frozenset({
+    "set_shape_adjustments",
+    "copy_shape_between",
+    "export_shape_image",
+    "update_now",
+    "update_notices",
+})
+
+
+def migration_map_v1() -> list[dict]:
+    """Generate the released 1.3.1 -> grouped-surface routing map."""
+    from .. import registry
+
+    rows = [
+        {"old": name, "tool": spec.group, "op": name}
+        for name, spec in sorted(registry.public_ops().items())
+        if name not in NEW_IN_V2
+    ]
+    rows.extend({"old": name, "tool": None, "op": None} for name in REMOVED_IN_V2)
+    return rows

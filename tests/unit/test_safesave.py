@@ -1,4 +1,5 @@
-"""Slot-based backups (.ks4p-backups/) and per-file write serialization. Covers: slot rotation (exactly
+"""Slot-based backups (.ks4p-backups/) and per-file write serialization.
+Covers: slot rotation (exactly
 2 slots ever), anchor idle-gap rotation, hardlink fallback, unicode/Korean
 and very long file names, the never-absent-target invariant, lockfile
 stale-break and live-holder refusal, re-entrancy, and backup=False semantics.
@@ -11,6 +12,8 @@ later tool machinery.
 from __future__ import annotations
 
 import os
+import shutil
+import sys
 import time
 import zipfile
 from pathlib import Path
@@ -123,7 +126,7 @@ def test_hardlink_failure_falls_back_to_copy(make_deck, monkeypatch):
 
 
 def test_korean_unicode_doc_name(make_deck):
-    doc = make_deck("제4장 발표 (최종).pptx")
+    doc = make_deck("분기 보고 발표 (최종).pptx")
     _mutate(doc, "한글 제목")
     _mutate(doc, "더 많은 내용")
     d = safesave.slot_dir(doc)
@@ -143,49 +146,116 @@ def test_very_long_doc_name_gets_hash_suffix_and_breadcrumb(make_deck):
     assert safesave.source_doc_for(d) == doc
 
 
-# -------------------------------------------------- never-absent invariant
+# ------------------------------------------- what touches the deck's path
 
 
-def test_target_never_absent_during_save(make_deck, monkeypatch):
-    doc = make_deck()
-    _mutate(doc, "seed")  # anchor set
+def _norm(p) -> str:
+    """A path as the trace compares it: absolute, case-folded where the file
+    system folds case, and without the extended-length prefix the native
+    Windows calls take."""
+    s = os.fspath(p)
+    unc, local = "\\\\?\\UNC\\", "\\\\?\\"
+    if s.startswith(unc):
+        s = "\\\\" + s[len(unc):]
+    elif s.startswith(local):
+        s = s[len(local):]
+    return os.path.normcase(os.path.abspath(s))
 
-    target = os.path.normcase(str(doc.resolve()))
+
+#: The events that put a new version at the deck's path: a replace made
+#: inside promote (off Windows, and where a file system has no ReplaceFile)
+#: and a ReplaceFileW call that went through (Windows).
+_SWAPS = ("swap", "native")
+
+
+def _trace_one_mutation(doc: Path, monkeypatch, *, inner=None):
+    """Run one mutation of ``doc`` with every operation that can touch a
+    path traced. ``inner`` wraps the real promote (a mutant for the test
+    that the check catches it). Returns (events, target, prev slot)."""
+    target = _norm(doc.resolve())
     events: list[tuple[str, str, str]] = []
     real_link, real_replace = os.link, os.replace
     real_unlink, real_remove = os.unlink, os.remove
 
-    def norm(p):
-        return os.path.normcase(os.path.abspath(os.fspath(p)))
-
     monkeypatch.setattr(
         os, "link",
-        lambda s, dst, **kw: (events.append(("link", norm(s), norm(dst))),
+        lambda s, dst, **kw: (events.append(("link", _norm(s), _norm(dst))),
                               real_link(s, dst, **kw))[1],
     )
-    monkeypatch.setattr(
-        os, "replace",
-        lambda s, dst: (events.append(("replace", norm(s), norm(dst))),
-                        real_replace(s, dst))[1],
-    )
+    in_promote = []
+
+    def traced_replace(s, dst):
+        swap = bool(in_promote) and _norm(dst) == target
+        events.append(("swap" if swap else "replace", _norm(s), _norm(dst)))
+        return real_replace(s, dst)
+
+    monkeypatch.setattr(os, "replace", traced_replace)
     monkeypatch.setattr(
         os, "unlink",
-        lambda p, *a, **kw: (events.append(("unlink", norm(p), "")),
+        lambda p, *a, **kw: (events.append(("unlink", _norm(p), "")),
                              real_unlink(p, *a, **kw))[1],
     )
     monkeypatch.setattr(
         os, "remove",
-        lambda p, *a, **kw: (events.append(("unlink", norm(p), "")),
+        lambda p, *a, **kw: (events.append(("unlink", _norm(p), "")),
                              real_remove(p, *a, **kw))[1],
     )
+    if sys.platform == "win32":
+        real_native = safesave._replace_file
 
+        def traced_native():
+            fn, move, last_error, error_text = real_native()
+
+            def replace_file(dst, src, *rest):
+                made = fn(dst, src, *rest)
+                if made:
+                    events.append(("native", _norm(src), _norm(dst)))
+                return made
+
+            def move_file(src, dst, *rest):
+                made = move(src, dst, *rest)
+                if made:
+                    events.append(("move", _norm(src), _norm(dst)))
+                return made
+
+            return replace_file, move_file, last_error, error_text
+
+        monkeypatch.setattr(safesave, "_replace_file", traced_native)
+    real_promote = safesave.promote if inner is None else inner(safesave.promote)
+
+    def traced_promote(s, dst, **kw):
+        events.append(("promote", _norm(s), _norm(dst)))
+        in_promote.append(1)
+        try:
+            return real_promote(s, dst, **kw)
+        finally:
+            in_promote.pop()
+
+    monkeypatch.setattr(safesave, "promote", traced_promote)
     _mutate(doc, "mutation")
+    return events, target, _norm(safesave.slot_dir(doc) / PREV_SLOT)
 
+
+def _target_swaps(events, target) -> list[tuple[str, str, str]]:
+    return [e for e in events if e[0] in _SWAPS and e[2] == target]
+
+
+def _assert_the_one_swap(events, target, prev_slot) -> None:
     # The presentation itself is never unlinked/removed at any point.
     assert all(not (op == "unlink" and src == target) for op, src, _ in events)
-    # Required sequence: capture current target (link), rotate it onto prev,
-    # THEN (and only then) replace the target with the validated temp.
-    prev_slot = norm(safesave.slot_dir(doc) / PREV_SLOT)
+    touches = [e for e in events if e[1] == target or e[2] == target]
+    kinds = [e[0] for e in touches]
+    # One promote, and inside it exactly one swap: ReplaceFileW on Windows,
+    # the plain replace elsewhere. No replace or move outside it lands on
+    # the deck.
+    assert kinds.count("promote") == 1, touches
+    assert kinds.count("replace") == 0, touches
+    assert kinds.count("move") == 0, touches
+    swaps = _target_swaps(events, target)
+    expected = "native" if sys.platform == "win32" else "swap"
+    assert [e[0] for e in swaps] == [expected], touches
+    # Required sequence: stage the current target (link), swap the validated
+    # temp in for the target, and only THEN land the staged link on prev.
     i_link = next(
         i for i, (op, src, _) in enumerate(events)
         if op == "link" and src == target
@@ -194,14 +264,47 @@ def test_target_never_absent_during_save(make_deck, monkeypatch):
         i for i, (op, _, dst) in enumerate(events)
         if op == "replace" and dst == prev_slot
     )
-    i_target = next(
+    i_promote = next(
         i for i, (op, _, dst) in enumerate(events)
-        if op == "replace" and dst == target
+        if op == "promote" and dst == target
     )
-    assert i_link < i_prev < i_target
-    # The replace onto the target is the ONLY operation that touches its path.
-    touches = [e for e in events if e[1] == target or e[2] == target]
-    assert [e[0] for e in touches].count("replace") == 1
+    i_swap = events.index(swaps[0])
+    assert i_link < i_promote < i_swap < i_prev
+
+
+def test_the_deck_is_only_touched_by_the_one_swap_after_the_slot_capture(make_deck, monkeypatch):
+    """The deck is never unlinked or removed. The slot capture is staged
+    first (a link of the deck), then one swap, safesave.promote, is the only
+    operation that puts anything at the deck's path, and only after it went
+    through does the staged link replace prev. The link keeps the old bytes
+    alive across the swap, so they end up under prev. Inside promote the
+    deck takes exactly one new version: ReplaceFileW on Windows, one plain
+    replace elsewhere."""
+    doc = make_deck()
+    _mutate(doc, "seed")  # anchor set
+    events, target, prev_slot = _trace_one_mutation(doc, monkeypatch)
+    _assert_the_one_swap(events, target, prev_slot)
+
+
+def test_the_swap_check_fails_a_promote_that_writes_the_deck_twice(make_deck, monkeypatch):
+    """A promote that puts two versions at the deck's path inside the one
+    call fails the check above, on every platform: here a plain replace of a
+    copy onto the deck before the real swap."""
+    doc = make_deck()
+    _mutate(doc, "seed")
+
+    def twice(real_promote):
+        def promote(s, dst, **kw):
+            twin = os.fspath(s) + ".twin"
+            shutil.copyfile(s, twin)
+            os.replace(twin, dst)
+            return real_promote(s, dst, **kw)
+        return promote
+
+    events, target, prev_slot = _trace_one_mutation(doc, monkeypatch, inner=twice)
+    assert len(_target_swaps(events, target)) == 2, events
+    with pytest.raises(AssertionError):
+        _assert_the_one_swap(events, target, prev_slot)
 
 
 # ------------------------------------------------------------------ locking

@@ -1,15 +1,13 @@
 """Source-wide em-dash guard.
 
-This repo checks tool
+Web checks the strings a session actually serves. This repo checks tool
 descriptions (test_server_envelope) and the published surfaces (the pre-ship
-grep gate in test_ship_gate), and both stopped at the edge of src/, where
+grep gate in test_ship_gate), and both stop at the edge of src/, where
 the refusal hints live. A hint only reaches a user on the failure path it
-belongs to, so no surface test ever reads most of them; a sweep
-found em dashes sitting there since v1. This guard reads
-the SOURCE instead of the surface, so a string is covered whether or not a
-test triggers it. No em dash belongs in
-any served text, which retires the src/ carve-out the ship gate used to
-name.
+belongs to, so no surface test ever reads most of them, and an em dash can
+sit in one unnoticed. This guard reads the SOURCE instead of the surface, so
+a string is covered whether or not a test triggers it. No em dash belongs in
+any served text, which is why the ship gate no longer carves out src/.
 
 SCOPE, stated so the gap is deliberate rather than forgotten:
 
@@ -21,9 +19,9 @@ SCOPE, stated so the gap is deliberate rather than forgotten:
 - OUT: comments and the docstrings of internal modules under ops/ and com/.
   Those are developer text; no user or model reads them.
 
-The allowlist below is the mapping's functional-exclusion ruling, entry for
-entry. Each entry is the exact literal, so a NEW em dash in one of these
-files still fails; only the listed strings pass.
+The allowlist below holds the functional exclusions, entry for entry. Each
+entry is the exact literal, so a NEW em dash in one of these files still
+fails; only the listed strings pass.
 """
 
 from __future__ import annotations
@@ -36,11 +34,7 @@ EM_DASH = "—"
 SCAN_DIRS = ("src", "scripts")
 
 #: relative posix path -> the exact literals allowed to carry an em dash.
-ALLOWLIST: dict[str, tuple[str, ...]] = {
-    # The site checker's own needle: this is the character it hunts for on
-    # the published pages, so the guard would be deleting the guard.
-    "scripts/check_site.py": (EM_DASH,),
-}
+ALLOWLIST: dict[str, tuple[str, ...]] = {}
 
 
 def _docstring_nodes(tree: ast.AST) -> set[int]:

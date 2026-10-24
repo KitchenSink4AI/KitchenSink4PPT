@@ -181,14 +181,19 @@ def test_add_equation_to_shape_appends_and_positions(make_deck):
 # ------------------------------------------------------- read-side contract
 
 
-def test_equations_invisible_to_text_index_by_design(make_deck):
+def test_equations_are_read_as_text_and_never_rewritten(make_deck):
     path = make_deck("eq_invisible.pptx", extra_slides=0)
     pkg = PptxPackage(path)
     eq.insert_equation(pkg, 0, r"E = mc^2", 1.0, 1.0)
 
-    # get_text and find_text never see math (m:t is outside the a:r index),
-    # which also means search_and_replace can never corrupt an equation.
-    assert "E=mc2" not in rd.get_text(pkg, scope=0)["slides"][0]["text"]
-    assert rd.find_text(pkg, "mc2")["count"] == 0
-    # list_equations is the read story.
+    # get_text and find_text show the equation as PowerPoint does (its math
+    # characters), and search_and_replace goes around it, so it can never
+    # corrupt an equation.
+    assert "E=mc2" in rd.get_text(pkg, scope=0)["slides"][0]["text"]
+    assert rd.find_text(pkg, "mc2")["count"] == 1
+    from kitchensink4ppt.ops import text as tx
+
+    out = tx.search_and_replace(pkg, "mc2", "mass")
+    assert out["total"] == 0 and out["wrapped_matches_skipped"] == 1
     assert eq.list_equations(pkg)["equation_count"] == 1
+    assert eq.list_equations(pkg)["equations"][0]["text"] == "E=mc2"

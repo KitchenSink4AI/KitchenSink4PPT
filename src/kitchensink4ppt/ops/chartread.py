@@ -30,14 +30,12 @@ from __future__ import annotations
 
 from lxml import etree
 
-from ..core.errors import PptMcpError, TargetNotFound, UnsupportedStructure
+from ..core.errors import UnsupportedStructure
 from ..core.package import NSMAP, PptxPackage, qn
-from .read import _cnvpr, iter_shapes, resolve_slide
+from ..core.xmlbool import attr_bool
+from .chart_select import chart_data_source, resolve_chart
 
 _C = NSMAP["c"]
-
-_URI_CHART = "http://schemas.openxmlformats.org/drawingml/2006/chart"
-_URI_CHARTEX = "http://schemas.microsoft.com/office/drawing/2014/chartex"
 
 #: c:plotArea children that are plot groups (ECMA-376 CT_PlotArea).
 _PLOT_GROUPS = {
@@ -241,52 +239,13 @@ def _parse_axes(plot_area: etree._Element) -> list[dict]:
                 entry["position"] = pos.get("val")
             entry["title"] = _rich_text(ax.find(_qc("title")))
             deleted = ax.find(_qc("delete"))
-            if deleted is not None and deleted.get("val") in ("1", "true"):
+            if deleted is not None and attr_bool(deleted, "val", True):
                 entry["hidden"] = True
             axes.append(entry)
     return axes
 
 
 # ------------------------------------------------------------ chart locating
-
-
-def _charts_on_slide(pkg: PptxPackage, part: str) -> list[dict]:
-    """Chart graphicFrames on one slide, classic (c:) and chartex (cx:)."""
-    sp_tree = pkg.root(part).find(f"{qn('p:cSld')}/{qn('p:spTree')}")
-    out: list[dict] = []
-    if sp_tree is None:
-        return out
-    for elem, kind, _z, _parent in iter_shapes(sp_tree):
-        if elem.tag != qn("p:graphicFrame"):
-            continue
-        data = elem.find(f"{qn('a:graphic')}/{qn('a:graphicData')}")
-        if data is None:
-            continue
-        uri = data.get("uri")
-        if uri not in (_URI_CHART, _URI_CHARTEX):
-            continue
-        cnvpr = _cnvpr(elem)
-        rid = None
-        for child in data.iter():
-            r = child.get(qn("r:id"))
-            if r:
-                rid = r
-                break
-        chart_part = None
-        if rid:
-            try:
-                chart_part = pkg.relationship_target(part, rid)
-            except (KeyError, PptMcpError):
-                chart_part = None
-        out.append(
-            {
-                "shape_id": int(cnvpr.get("id")) if cnvpr is not None else None,
-                "name": cnvpr.get("name", "") if cnvpr is not None else "",
-                "chart_part": chart_part,
-                "chartex": uri == _URI_CHARTEX,
-            }
-        )
-    return out
 
 
 # =============================================================== public API
@@ -297,43 +256,18 @@ def get_chart_data(pkg: PptxPackage, slide, chart=None) -> dict:
     and grouping, per-series name / categories / values (x/y for scatter,
     bubble sizes for bubble), value formulas, and axis titles/positions.
 
-    `chart`: a shape id (int) of a chart graphicFrame on the slide, or None
-    when the slide has exactly one chart. Values come from the chart XML's
+    `chart`: {"index": N}, {"shape_id": N}, or None when the slide has
+    exactly one chart. Values come from the chart XML's
     caches (what PowerPoint renders); the embedded workbook is not opened,
     and a cache-less series says so instead of guessing. Works on charts
     made by this server, PowerPoint, python-pptx, or any other c:chartSpace
     producer; modern chartex charts (waterfall/treemap/...) are reported as
     unsupported by name. Read-only."""
-    rec = resolve_slide(pkg, slide)
-    part = rec["part"]
-    charts = _charts_on_slide(pkg, part)
-    if not charts:
-        raise TargetNotFound(
-            f"slide {rec['index']} has no charts (list_elements "
-            'kind="charts" shows every chart in the deck)'
-        )
-    if chart is None:
-        if len(charts) > 1:
-            raise PptMcpError(
-                f"slide {rec['index']} has {len(charts)} charts (shape ids "
-                f"{[c['shape_id'] for c in charts]}); pass `chart` to pick one"
-            )
-        target = charts[0]
-    else:
-        if isinstance(chart, bool) or not isinstance(chart, int):
-            raise PptMcpError(
-                f"chart must be a shape id (int) or None, got {chart!r}"
-            )
-        target = next((c for c in charts if c["shape_id"] == chart), None)
-        if target is None:
-            raise TargetNotFound(
-                f"no chart with shape id {chart} on slide {rec['index']}; "
-                f"chart shape ids there: {[c['shape_id'] for c in charts]}"
-            )
+    target = resolve_chart(pkg, slide, chart)
 
     base = {
-        "slide_index": rec["index"],
-        "slide_id": rec["slide_id"],
+        "slide_index": target["slide_index"],
+        "slide_id": target["slide_id"],
         "shape_id": target["shape_id"],
         "name": target["name"],
         "chart_part": target["chart_part"],
@@ -377,32 +311,22 @@ def get_chart_data(pkg: PptxPackage, slide, chart=None) -> dict:
         raise UnsupportedStructure(
             "chart has no recognized plot group in c:plotArea"
         )
-    embedded = None
-    try:
-        rels = pkg.rels_for(target["chart_part"])
-        for rel in rels.getroot():
-            t = rel.get("Type", "")
-            if t.endswith("/package") or t.endswith("/oleObject"):
-                from ..core.package import resolve_target
-
-                embedded = resolve_target(
-                    target["chart_part"], rel.get("Target", "")
-                )
-                break
-    except KeyError:
-        pass
+    source = chart_data_source(pkg, target["chart_part"])
+    embedded = source.get("part") if source["kind"] == "embedded" else None
     return {
         **base,
         "supported": True,
         "title": title,
         "auto_title_deleted": bool(
-            auto_deleted is not None and auto_deleted.get("val") in ("1", "true")
+            auto_deleted is not None and attr_bool(auto_deleted, "val", True)
         ),
         "groups": groups,
         "group_count": len(groups),
         "series_count": sum(len(g["series"]) for g in groups),
         "axes": _parse_axes(plot_area) if plot_area is not None else [],
+        "data_source": source["kind"],
         "embedded_workbook": embedded,
+        "linked_workbook": source.get("target"),
         "caveat": (
             "values read from the chart XML's caches (numCache/strCache), "
             "the numbers PowerPoint renders; the embedded workbook is not "

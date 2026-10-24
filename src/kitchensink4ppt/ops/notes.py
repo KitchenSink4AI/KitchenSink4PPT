@@ -1,16 +1,18 @@
-"""Speaker notes: get, set, delete. Plain text in and out (paragraphs by \\n).
+"""Speaker notes: get, set, delete (``\\n`` paragraphs, ``\\v`` soft breaks).
 
-The notes machinery is the classic bidirectional-rels trap (research Part I):
+The notes machinery is the classic bidirectional-rels trap:
 a notesSlide part carries rels BACK to its slide AND to the notesMaster, the
 slide carries a rel to the notesSlide, and the notesMaster (with its own
 theme) must be registered in p:notesMasterIdLst. set_notes builds every
 missing piece atomically in package terms:
 
 - Deck has no notesMaster (a deck that never had notes, e.g. a freshly
-  authored one): a minimal notesMaster part is created, its theme is a
-  byte-copy of the first slide master's theme (a valid standalone theme
-  part; PowerPoint does the same duplication when it first adds notes), the
-  presentation gains the notesMasterIdLst entry, and p:notesSz is ensured.
+  authored one): a minimal notesMaster part is created, its theme starts
+  from the first slide master's complete theme structure but receives a
+  neutral light colour and font scheme. This keeps branded dark slide
+  themes from producing unreadable notes pages while retaining the source
+  theme's valid format/effect lists. The presentation gains the
+  notesMasterIdLst entry, and p:notesSz is ensured.
 - Slide has no notesSlide: a new part with the slide-image and body
   placeholders, both back-rels, the content-type override, and the
   slide-side rel.
@@ -45,6 +47,7 @@ import posixpath
 
 from lxml import etree
 
+from ..core import xmlsafe
 from ..core.errors import PptMcpError, TargetNotFound, UnsupportedStructure
 from ..core.package import (
     PRESENTATION_PART,
@@ -53,7 +56,9 @@ from ..core.package import (
     rels_name,
     resolve_target,
 )
+from ..core.xmlbool import xml_bool
 from .read import notes_part_for, notes_text, resolve_slide
+from ._textcontent import append_text as _append_paragraph_text
 
 _RT_NOTES_SLIDE = (
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide"
@@ -74,6 +79,21 @@ _CT_NOTES_MASTER = (
     "application/vnd.openxmlformats-officedocument.presentationml.notesMaster+xml"
 )
 _CT_THEME = "application/vnd.openxmlformats-officedocument.theme+xml"
+
+_NEUTRAL_NOTES_COLORS = {
+    "dk1": "000000",
+    "lt1": "FFFFFF",
+    "dk2": "44546A",
+    "lt2": "E7E6E6",
+    "accent1": "4472C4",
+    "accent2": "ED7D31",
+    "accent3": "A5A5A5",
+    "accent4": "FFC000",
+    "accent5": "5B9BD5",
+    "accent6": "70AD47",
+    "hlink": "0563C1",
+    "folHlink": "954F72",
+}
 
 
 # ------------------------------------------------------------------ helpers
@@ -99,12 +119,11 @@ def _plain_txbody(text: str) -> etree._Element:
     for line in str(text).split("\n"):
         p = etree.SubElement(body, qn("a:p"))
         if line:
-            r = etree.SubElement(p, qn("a:r"))
-            rpr = etree.SubElement(r, qn("a:rPr"))
-            rpr.set("lang", "en-US")
-            rpr.set("dirty", "0")
-            t = etree.SubElement(r, qn("a:t"))
-            t.text = line
+            def configure(rpr):
+                rpr.set("lang", "en-US")
+                rpr.set("dirty", "0")
+
+            _append_paragraph_text(p, line, configure)
         else:
             endpr = etree.SubElement(p, qn("a:endParaRPr"))
             endpr.set("lang", "en-US")
@@ -129,9 +148,9 @@ def _run_props(r: etree._Element) -> dict:
     if rpr is None:
         return out
     if rpr.get("b") is not None:
-        out["bold"] = rpr.get("b") in ("1", "true")
+        out["bold"] = xml_bool(rpr.get("b"))
     if rpr.get("i") is not None:
-        out["italic"] = rpr.get("i") in ("1", "true")
+        out["italic"] = xml_bool(rpr.get("i"))
     if rpr.get("u") is not None:
         u = rpr.get("u")
         out["underline"] = True if u == "sng" else (False if u == "none" else u)
@@ -155,11 +174,37 @@ def _run_props(r: etree._Element) -> dict:
 
 
 def _read_paragraph(p: etree._Element) -> dict:
+    """One notes paragraph: its runs (what set_notes edits) and its text.
+    The text also holds what PowerPoint shows of an equation or other
+    content in a compatibility wrapper; such content is no run, and
+    `wrapped` counts it."""
+    from ._wrapped import A14_M_TAG, AC_TAG, wrapped_text
+
     ppr = p.find(qn("a:pPr"))
     runs = []
-    for r in p.findall(qn("a:r")):
-        t = r.find(qn("a:t"))
-        runs.append({"text": t.text or "" if t is not None else "", **_run_props(r)})
+    pieces = []
+    wrapped = 0
+    math = 0
+    for child in p:
+        if child.tag == AC_TAG:
+            wrapped += 1
+            pieces.append(wrapped_text(child))
+            continue
+        if child.tag == A14_M_TAG:
+            math += 1
+            pieces.append(wrapped_text(child))
+            continue
+        local = etree.QName(child).localname
+        if local == "r":
+            t = child.find(qn("a:t"))
+            runs.append({
+                "text": t.text or "" if t is not None else "",
+                **_run_props(child),
+            })
+            pieces.append(runs[-1]["text"])
+        elif local == "br":
+            runs.append({"text": "\v", **_run_props(child)})
+            pieces.append("\v")
     level = 0
     bullet = False
     if ppr is not None:
@@ -171,12 +216,17 @@ def _read_paragraph(p: etree._Element) -> dict:
             ppr.find(qn("a:buChar")) is not None
             or ppr.find(qn("a:buAutoNum")) is not None
         )
-    return {
-        "text": "".join(r["text"] for r in runs),
+    out = {
+        "text": "".join(pieces),
         "level": level,
         "bullet": bullet,
         "runs": runs,
     }
+    if wrapped:
+        out["wrapped"] = wrapped
+    if math:
+        out["math"] = math
+    return out
 
 
 def read_paragraphs(pkg: PptxPackage, notes_part: str) -> list[dict]:
@@ -188,7 +238,9 @@ def read_paragraphs(pkg: PptxPackage, notes_part: str) -> list[dict]:
 
 def _inventory(paragraphs: list[dict]) -> dict:
     runs = [r for p in paragraphs for r in p["runs"]]
-    return {
+    wrapped = sum(p.get("wrapped", 0) for p in paragraphs)
+    math = sum(p.get("math", 0) for p in paragraphs)
+    out = {
         "paragraphs": len(paragraphs),
         "runs": len(runs),
         "multi_run_paragraphs": sum(1 for p in paragraphs if len(p["runs"]) > 1),
@@ -203,10 +255,54 @@ def _inventory(paragraphs: list[dict]) -> dict:
             if any(k != "text" and k != "hyperlink" for k in r)
         ),
     }
+    if wrapped:
+        out["wrapped"] = wrapped
+    if math:
+        out["math"] = math
+    return out
 
 
-def _would_flatten(inv: dict) -> list[str]:
-    """What a plain-text write would destroy, in words a user can check."""
+#: rPr attributes that are bookkeeping, not formatting: a run carrying only
+#: these looks, prints and reads the same as one with no rPr at all.
+_RPR_NOISE = frozenset({
+    "lang", "altLang", "dirty", "err", "smtClean", "smtId", "noProof", "bmk",
+})
+
+
+def _carries_formatting(run: etree._Element) -> bool:
+    """True when a run or soft break has a character property of its own:
+    any rPr attribute or child beyond the bookkeeping ones. Runs without
+    one render identically whether they are one run or many, so a plain
+    write loses nothing from them."""
+    rpr = run.find(qn("a:rPr"))
+    if rpr is None:
+        return False
+    if len(rpr):
+        return True
+    return any(
+        etree.QName(name).localname not in _RPR_NOISE for name in rpr.attrib
+    )
+
+
+def _formatted_runs(paragraphs: list[etree._Element]) -> int:
+    """How many runs (soft breaks included) carry a character property
+    of their own."""
+    return sum(
+        1
+        for p in paragraphs
+        for child in p
+        if etree.QName(child).localname in ("r", "br")
+        and _carries_formatting(child)
+    )
+
+
+def _would_flatten(inv: dict, formatted_runs: int | None = None) -> list[str]:
+    """What a plain-text write would destroy, in words a user can check.
+
+    ``formatted_runs`` (from the notes' own XML) is the number of runs that
+    carry a character property; the mixed-formatting loss counts only
+    those. Without it the old, coarser test applies (any paragraph of
+    several runs)."""
     losses = []
     for key, noun in (
         ("bold", "bold run"),
@@ -218,10 +314,28 @@ def _would_flatten(inv: dict) -> list[str]:
         n = inv.get(key, 0)
         if n:
             losses.append(f"{n} {noun}{'s' if n != 1 else ''}")
-    styled = inv.get("styled_runs", 0) - inv.get("bold", 0)
-    if not losses and (inv.get("multi_run_paragraphs") or styled > 0):
+    if formatted_runs is None:
+        styled = inv.get("styled_runs", 0) - inv.get("bold", 0)
+        if not losses and (inv.get("multi_run_paragraphs") or styled > 0):
+            losses.append(
+                f"{inv['runs']} runs of mixed character formatting"
+            )
+    elif not losses and formatted_runs:
         losses.append(
-            f"{inv['runs']} runs of mixed character formatting"
+            f"{formatted_runs} run{'s' if formatted_runs != 1 else ''} "
+            "of mixed character formatting"
+        )
+    wrapped = inv.get("wrapped", 0)
+    if wrapped:
+        losses.append(
+            f"{wrapped} equation{'s' if wrapped != 1 else ''} or other content "
+            "in a compatibility wrapper"
+        )
+    math = inv.get("math", 0)
+    if math:
+        losses.append(
+            f"{math} equation{'s' if math != 1 else ''} written straight "
+            "into a paragraph"
         )
     return losses
 
@@ -280,13 +394,15 @@ def _apply_run_diff(r: etree._Element, spec: dict, current: dict) -> bool:
     from .text import _apply_run_props  # local: text imports read, not notes
 
     changed = False
-    t = r.find(qn("a:t"))
-    if t is None:
-        t = etree.SubElement(r, qn("a:t"))
-        changed = True
-    if (t.text or "") != spec["text"]:
-        t.text = spec["text"]
-        changed = True
+    is_break = r.tag == qn("a:br")
+    if not is_break:
+        t = r.find(qn("a:t"))
+        if t is None:
+            t = etree.SubElement(r, qn("a:t"))
+            changed = True
+        if (t.text or "") != spec["text"]:
+            t.text = spec["text"]
+            changed = True
     diff = {k: spec[k] for k in _RUN_KEYS if k in spec and spec[k] != current.get(k)}
     if diff:
         rpr = r.find(qn("a:rPr"))
@@ -299,29 +415,46 @@ def _apply_run_diff(r: etree._Element, spec: dict, current: dict) -> bool:
     return changed
 
 
-def _build_run(spec: dict, template: etree._Element | None) -> etree._Element:
-    """One a:r. `template` is the run this one replaces positionally; its rPr
-    is carried verbatim (hyperlinks, languages, spacing included) before the
-    spec's own properties land on top."""
+def _build_run_elements(
+    spec: dict, template: etree._Element | None
+) -> list[etree._Element]:
+    """Run-family elements for one structured run specification.
+
+    ``\v`` becomes ``a:br``. ``template`` is the run or break this spec
+    replaces positionally; its rPr is carried verbatim before the spec's
+    properties land on top.
+    """
     from .text import _apply_run_props
 
-    r = etree.Element(qn("a:r"))
-    rpr = None
+    template_rpr = None
     if template is not None:
         old = template.find(qn("a:rPr"))
         if old is not None:
-            rpr = copy.deepcopy(old)
+            template_rpr = old
     props = {k: spec[k] for k in _RUN_KEYS if k in spec}
-    if rpr is None and props:
-        rpr = etree.Element(qn("a:rPr"))
-        rpr.set("lang", "en-US")
-    if rpr is not None:
-        r.append(rpr)
-        if props:
-            _apply_run_props(rpr, **props)
-    t = etree.SubElement(r, qn("a:t"))
-    t.text = spec["text"]
-    return r
+
+    def element(tag: str) -> etree._Element:
+        holder = etree.Element(qn(tag))
+        rpr = copy.deepcopy(template_rpr) if template_rpr is not None else None
+        if rpr is None and props:
+            rpr = etree.Element(qn("a:rPr"))
+            rpr.set("lang", "en-US")
+        if rpr is not None:
+            holder.append(rpr)
+            if props:
+                _apply_run_props(rpr, **props)
+        return holder
+
+    chunks = spec["text"].split("\v")
+    out: list[etree._Element] = []
+    for index, chunk in enumerate(chunks):
+        if chunk or len(chunks) == 1:
+            run = element("a:r")
+            etree.SubElement(run, qn("a:t")).text = chunk
+            out.append(run)
+        if index < len(chunks) - 1:
+            out.append(element("a:br"))
+    return out
 
 
 def _rebuild_body(
@@ -348,18 +481,25 @@ def _rebuild_body(
                 ppr = p.find(qn("a:pPr"))
                 if ppr is not None:
                     ppr.attrib.pop("lvl", None)
-        old_runs = old.findall(qn("a:r")) if old is not None else []
+        old_runs = (
+            [
+                child for child in old
+                if etree.QName(child).localname in ("r", "br")
+            ]
+            if old is not None else []
+        )
         for j, run_spec in enumerate(spec["runs"]):
-            p.append(
-                _build_run(run_spec, old_runs[j] if j < len(old_runs) else None)
-            )
+            for element in _build_run_elements(
+                run_spec, old_runs[j] if j < len(old_runs) else None
+            ):
+                p.append(element)
         if not spec["runs"]:
             endpr = etree.SubElement(p, qn("a:endParaRPr"))
             endpr.set("lang", "en-US")
     if not specs:
-        # A text body with zero a:p makes PowerPoint refuse the whole deck
-        # . An empty note is ONE empty
-        # paragraph, the way ops/masters.py builds a cleared body.
+        # A text body with zero a:p makes PowerPoint refuse the whole deck.
+        # An empty note is ONE empty paragraph, the way ops/masters.py
+        # builds a cleared body.
         p = etree.SubElement(body, qn("a:p"))
         etree.SubElement(p, qn("a:endParaRPr")).set("lang", "en-US")
 
@@ -425,7 +565,7 @@ def _first_master_theme(pkg: PptxPackage) -> str | None:
 def _build_notes_master_xml(notes_cx: int, notes_cy: int) -> bytes:
     """Minimal notesMaster: slide-image placeholder over the top half, notes
     body over the bottom half, clrMap, and a basic notesStyle. Modeled on
-    PowerPoint's own default notesMaster (matching what PowerPoint writes)."""
+    PowerPoint's own default notesMaster (verified against a real deck)."""
     img_w = round(notes_cx * 0.8)
     img_h = round(img_w * 3 / 4)
     img_x = (notes_cx - img_w) // 2
@@ -435,6 +575,56 @@ def _build_notes_master_xml(notes_cx: int, notes_cy: int) -> bytes:
     xml = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <p:notesMaster xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld><p:bg><p:bgRef idx="1001"><a:schemeClr val="bg1"/></p:bgRef></p:bg><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr><p:sp><p:nvSpPr><p:cNvPr id="2" name="Slide Image Placeholder 1"/><p:cNvSpPr><a:spLocks noGrp="1" noRot="1" noChangeAspect="1"/></p:cNvSpPr><p:nvPr><p:ph type="sldImg"/></p:nvPr></p:nvSpPr><p:spPr><a:xfrm><a:off x="{img_x}" y="{img_y}"/><a:ext cx="{img_w}" cy="{img_h}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/><a:ln w="12700"><a:solidFill><a:prstClr val="black"/></a:solidFill></a:ln></p:spPr><p:txBody><a:bodyPr vert="horz" lIns="91440" tIns="45720" rIns="91440" bIns="45720" rtlCol="0" anchor="ctr"/><a:lstStyle/><a:p><a:endParaRPr lang="en-US"/></a:p></p:txBody></p:sp><p:sp><p:nvSpPr><p:cNvPr id="3" name="Notes Placeholder 2"/><p:cNvSpPr><a:spLocks noGrp="1"/></p:cNvSpPr><p:nvPr><p:ph type="body" idx="1"/></p:nvPr></p:nvSpPr><p:spPr><a:xfrm><a:off x="{img_x}" y="{body_y}"/><a:ext cx="{img_w}" cy="{body_h}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr><p:txBody><a:bodyPr vert="horz" lIns="91440" tIns="45720" rIns="91440" bIns="45720" rtlCol="0"/><a:lstStyle/><a:p><a:pPr lvl="0"/><a:r><a:rPr lang="en-US"/><a:t>Click to edit Master text styles</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld><p:clrMap bg1="lt1" tx1="dk1" bg2="lt2" tx2="dk2" accent1="accent1" accent2="accent2" accent3="accent3" accent4="accent4" accent5="accent5" accent6="accent6" hlink="hlink" folHlink="folHlink"/><p:notesStyle><a:lvl1pPr marL="0" algn="l" defTabSz="914400" rtl="0" eaLnBrk="1" latinLnBrk="0" hangingPunct="1"><a:defRPr sz="1200" kern="1200"><a:solidFill><a:schemeClr val="tx1"/></a:solidFill><a:latin typeface="+mn-lt"/><a:ea typeface="+mn-ea"/><a:cs typeface="+mn-cs"/></a:defRPr></a:lvl1pPr></p:notesStyle></p:notesMaster>"""
     return xml.encode("utf-8")
+
+
+def _build_neutral_notes_theme(source: bytes) -> bytes:
+    """Keep a valid source theme's non-colour machinery but make notes light.
+
+    A notes master has its own theme. Copying a dark slide theme there makes
+    the generated notes page inherit the presentation's dark background and
+    light text. Notes are a print/read surface, so use an ordinary black-on-
+    white scheme and neutral Office fonts regardless of the slide brand.
+    """
+    root = xmlsafe.fromstring(source, part="the first slide master's theme")
+    elements = root.find(qn("a:themeElements"))
+    scheme = elements.find(qn("a:clrScheme")) if elements is not None else None
+    fonts = elements.find(qn("a:fontScheme")) if elements is not None else None
+    if scheme is None or fonts is None:
+        raise UnsupportedStructure(
+            "the first slide master theme has no complete colour/font scheme "
+            "from which to derive a neutral notes theme"
+        )
+
+    root.set("name", "Office Notes Theme")
+    scheme.set("name", "Office Notes")
+    for slot, value in _NEUTRAL_NOTES_COLORS.items():
+        slot_el = scheme.find(qn(f"a:{slot}"))
+        if slot_el is None:
+            raise UnsupportedStructure(
+                f"the first slide master theme has no {slot} colour slot"
+            )
+        for child in list(slot_el):
+            slot_el.remove(child)
+        etree.SubElement(slot_el, qn("a:srgbClr")).set("val", value)
+
+    fonts.set("name", "Office Notes")
+    for family, latin in (
+        ("a:majorFont", "Aptos Display"),
+        ("a:minorFont", "Aptos"),
+    ):
+        family_el = fonts.find(qn(family))
+        if family_el is None:
+            raise UnsupportedStructure(
+                f"the first slide master theme has no {family} definition"
+            )
+        for script in ("a:latin", "a:ea", "a:cs"):
+            script_el = family_el.find(qn(script))
+            if script_el is None:
+                script_el = etree.SubElement(family_el, qn(script))
+            script_el.set("typeface", latin if script == "a:latin" else "")
+    return etree.tostring(
+        root, xml_declaration=True, encoding="UTF-8", standalone=True
+    )
 
 
 def _adopt_unregistered_notes_master(pkg: PptxPackage) -> str | None:
@@ -466,7 +656,8 @@ def _adopt_unregistered_notes_master(pkg: PptxPackage) -> str | None:
 
 def _ensure_notes_master(pkg: PptxPackage) -> tuple[str, bool]:
     """(notesMaster part name, created?). Creates the part, its theme (a
-    copy of the first slide master's theme), the rels, the content types,
+    neutral notes-specific derivative of the first slide master's theme),
+    the rels, the content types,
     and the presentation registration when the deck has none."""
     existing = _notes_master_part(pkg)
     if existing is not None:
@@ -482,7 +673,11 @@ def _ensure_notes_master(pkg: PptxPackage) -> tuple[str, bool]:
         )
     notes_cx, notes_cy = _notes_size(pkg)
     theme_part = pkg.next_partname("ppt/theme/theme{}.xml")
-    pkg.add_part_with_content_type(theme_part, pkg.part_bytes(src_theme), _CT_THEME)
+    pkg.add_part_with_content_type(
+        theme_part,
+        _build_neutral_notes_theme(pkg.part_bytes(src_theme)),
+        _CT_THEME,
+    )
     nm_part = pkg.next_partname("ppt/notesMasters/notesMaster{}.xml")
     pkg.add_part_with_content_type(
         nm_part, _build_notes_master_xml(notes_cx, notes_cy), _CT_NOTES_MASTER
@@ -574,6 +769,61 @@ def _build_notes_slide_xml(text: str) -> bytes:
 # =============================================================== public API
 
 
+def _unwrap_body_shape(
+    body_sp: etree._Element, flatten: bool, apply: bool = False
+) -> str | None:
+    """A notes body that PowerPoint keeps in a compatibility wrapper (two
+    copies of the shape: one it shows, one for older readers) cannot be
+    written without leaving the two apart, or losing what only the shown
+    copy holds (an equation). Without flatten=True the write is refused;
+    with it the wrapper is replaced by the single shape being written, and
+    the answer says so. Returns that sentence, or None for an ordinary body."""
+    from ._wrapped import AC_TAG
+
+    wrappers = [a for a in body_sp.iterancestors() if a.tag == AC_TAG]
+    if not wrappers:
+        return None
+    wrapper = wrappers[-1]
+    holds = _would_flatten(_inventory([
+        _read_paragraph(p) for p in body_sp.iter(qn("a:p"))
+    ]))
+    only = [
+        e for e in wrapper.iterdescendants(qn("p:sp"))
+        if e is not body_sp
+    ]
+    nested = len(wrappers) > 1
+    branch = body_sp.getparent()
+    clean = (
+        not nested
+        and branch is not None
+        and branch.getparent() is wrapper
+        and len(branch) == 1
+        and len(only) <= 1
+    )
+    detail = (
+        "the notes body is stored twice in a compatibility wrapper, a copy "
+        "PowerPoint shows and a copy for older readers"
+        + (" (the shown copy holds " + ", ".join(holds) + ")" if holds else "")
+    )
+    if not flatten:
+        raise UnsupportedStructure(
+            detail + ", and a write would change only one of them; nothing "
+            "was changed. Pass flatten=True to replace the two copies with "
+            "the one body you write."
+        )
+    if not clean:
+        raise UnsupportedStructure(
+            detail + " inside other content, so it cannot be replaced "
+            "safely; nothing was changed."
+        )
+    if apply:
+        wrapper.getparent().replace(wrapper, body_sp)
+    return (
+        "the notes body's compatibility wrapper (two copies) was replaced by "
+        "the one body written"
+    )
+
+
 def _write_existing(
     pkg: PptxPackage,
     rec: dict,
@@ -591,6 +841,7 @@ def _write_existing(
             f"{existing} has no notes body placeholder; the notes part "
             "is malformed, refusing to guess where the text goes"
         )
+    wrapper_note = _unwrap_body_shape(body_sp, flatten)  # refuses here
     body = body_sp.find(qn("p:txBody"))
     old_paras = body.findall(qn("a:p")) if body is not None else []
     current = [_read_paragraph(p) for p in old_paras]
@@ -615,7 +866,7 @@ def _write_existing(
                     "written, so their formatting is untouched"
                 ),
             }
-        losses = _would_flatten(inv)
+        losses = _would_flatten(inv, _formatted_runs(old_paras))
         if losses and not flatten:
             raise UnsupportedStructure(
                 "a plain-text write would flatten these existing notes: "
@@ -624,6 +875,8 @@ def _write_existing(
                 "edit the words and keep the formatting, or flatten=True to "
                 "accept the loss."
             )
+        if wrapper_note:
+            _unwrap_body_shape(body_sp, flatten, apply=True)
         new_body = _plain_txbody(text)
         if body is not None:
             body_sp.replace(body, new_body)
@@ -636,6 +889,8 @@ def _write_existing(
             "mode": "plain",
             "paragraphs": len(text.split("\n")),
         }
+        if wrapper_note:
+            losses.append(wrapper_note)
         if losses:
             out["flattened"] = {
                 "bold_runs": inv["bold"],
@@ -643,6 +898,7 @@ def _write_existing(
                 "underlined_runs": inv["underline"],
                 "bullets": inv["bullets"],
                 "hyperlinks": inv["hyperlinks"],
+                "equations": inv.get("wrapped", 0) + inv.get("math", 0),
                 "described": losses,
             }
         return out
@@ -653,15 +909,29 @@ def _write_existing(
         old_paras = []
         current = []
 
+    old_run_elements = [
+        [
+            child for child in paragraph
+            if etree.QName(child).localname in ("r", "br")
+        ]
+        for paragraph in old_paras
+    ]
     shape_matches = len(specs) == len(current) and all(
-        len(spec["runs"]) == len(cur["runs"])
-        for spec, cur in zip(specs, current)
+        len(spec["runs"]) == len(cur["runs"]) == len(elements)
+        and all(
+            (run_spec["text"] == "\v") == (element.tag == qn("a:br"))
+            and ("\v" not in run_spec["text"] or run_spec["text"] == "\v")
+            for run_spec, element in zip(spec["runs"], elements)
+        )
+        for spec, cur, elements in zip(specs, current, old_run_elements)
     )
     changed = False
     if shape_matches:
-        for spec, cur, p in zip(specs, current, old_paras):
+        for spec, cur, p, elements in zip(
+            specs, current, old_paras, old_run_elements
+        ):
             for run_spec, run_cur, r in zip(
-                spec["runs"], cur["runs"], p.findall(qn("a:r"))
+                spec["runs"], cur["runs"], elements
             ):
                 if _apply_run_diff(r, run_spec, run_cur):
                     changed = True
@@ -677,10 +947,25 @@ def _write_existing(
                 changed = True
         mode = "in_place"
     else:
+        if (inv.get("wrapped") or inv.get("math")) and not flatten:
+            lost = _would_flatten({
+                "wrapped": inv.get("wrapped", 0),
+                "math": inv.get("math", 0),
+            })
+            raise UnsupportedStructure(
+                "the paragraph count changed, so these notes would be rebuilt, "
+                "which loses " + " and ".join(lost)
+                + "; nothing was changed. Send the same number of paragraphs "
+                "to edit them in place, or flatten=True to accept the loss."
+            )
         _rebuild_body(body, specs, list(old_paras))
         changed = True
         mode = "rebuilt"
 
+    if wrapper_note and not changed:
+        wrapper_note = None
+    if wrapper_note:
+        _unwrap_body_shape(body_sp, flatten, apply=True)
     if changed:
         pkg.mark_dirty(existing)
     after = _inventory(read_paragraphs(pkg, existing))
@@ -696,6 +981,18 @@ def _write_existing(
             "the structure written back matches the file exactly; nothing "
             "was written"
         )
+    if wrapper_note:
+        out["warnings"] = out.get("warnings", []) + [
+            "flatten=True: " + wrapper_note
+        ]
+    if mode == "rebuilt" and flatten and (inv.get("wrapped") or inv.get("math")):
+        out["flattened"] = {
+            "equations": inv.get("wrapped", 0) + inv.get("math", 0),
+            "described": _would_flatten({
+                "wrapped": inv.get("wrapped", 0),
+                "math": inv.get("math", 0),
+            }),
+        }
     if mode == "rebuilt":
         dropped = [
             key

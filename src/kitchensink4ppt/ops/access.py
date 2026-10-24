@@ -1,6 +1,6 @@
 """Accessibility: audit_accessibility, set_alt_text, set_reading_order.
 
-Sibling parity with word-mcp's ops/accessibility.py (audit + honest-skip
+Parity with the Word editor's accessibility audit (audit + honest-skip
 philosophy) expressed in THIS server's finding format: every finding follows
 check_layout's shape (check / severity / slide_index / slide_id / message /
 fix / shape_ids), so an agent that already consumes check_layout output can
@@ -36,7 +36,9 @@ from lxml import etree
 
 from ..core import budget as _budget
 from ..core.errors import PptMcpError, TargetNotFound, UnsupportedStructure
+from ..core.messages import TITLE_READ_AFTER_BODY
 from ..core.package import PptxPackage, qn
+from ..core.xmlbool import attr_bool
 from .design_check import CHECKS as _DC_CHECKS
 from .design_check import _gentle_box, check_layout
 from .read import (
@@ -46,13 +48,16 @@ from .read import (
     resolve_slide,
     shape_text,
     slides_in_scope,
+    stack_members,
+    wrapped_shape_id,
 )
+from .read import cnvpr_id
 from .shapes import _SHAPE_TAGS, _find_shape, _sp_tree
 
 EMU_PER_INCH = 914400
 
 #: Shape kinds a screen reader cannot derive text from: these need descr.
-_GRAPHICAL_KINDS = ("picture", "chart", "diagram", "ole", "graphicFrame")
+_GRAPHICAL_KINDS = ("picture", "media", "chart", "diagram", "ole", "graphicFrame")
 
 #: The audit's own checks (implemented here) and the delegated ones.
 _OWN_CHECKS = ("alt_text", "table_headers", "reading_order")
@@ -61,7 +66,7 @@ ALL_CHECKS = _OWN_CHECKS + _DELEGATED_CHECKS
 
 _CAVEATS = {
     "alt_text": (
-        "flags pictures, charts, diagrams, OLE objects, and unknown "
+        "flags pictures, video and audio, charts, diagrams, OLE objects, and unknown "
         "graphicFrames whose cNvPr carries no (or an empty) descr; "
         "autoshapes/text boxes are not flagged because screen readers read "
         "their text, and untexted autoshapes are treated as decorative"
@@ -76,7 +81,7 @@ _CAVEATS = {
         "follow) against a top-left visual band sort over CONTENT shapes "
         "only (text-bearing shapes, pictures, tables, charts, groups; "
         "untexted decorative autoshapes are ignored - counting them cried "
-        "wolf on decks); only gross mismatches are flagged, and "
+        "wolf on real decks); only gross mismatches are flagged, and "
         "multi-column layouts that legitimately read column-first can "
         "still trip it - review before reordering"
     ),
@@ -101,9 +106,9 @@ def _top_level_records(pkg: PptxPackage, part: str) -> list[dict]:
             {
                 "elem": elem,
                 "kind": kind,
-                "id": int(cnvpr.get("id")) if cnvpr is not None else None,
+                "id": cnvpr_id(cnvpr),
                 "name": cnvpr.get("name", "") if cnvpr is not None else "",
-                "hidden": bool(cnvpr is not None and cnvpr.get("hidden") == "1"),
+                "hidden": attr_bool(cnvpr, "hidden"),
                 # Reading order wants the box a placeholder RENDERS with,
                 # so the inherited one counts here too.
                 "box": _gentle_box(elem, [], pkg, part)[0],
@@ -129,7 +134,9 @@ def _check_alt_text(pkg: PptxPackage, srec: dict) -> list[dict]:
         cnvpr = _cnvpr(elem)
         if cnvpr is None:
             continue  # no cNvPr to carry descr; nothing to judge
-        if cnvpr.get("hidden") == "1":
+        if attr_bool(cnvpr, "hidden"):
+            continue
+        if _is_office_decorative({"elem": elem}):
             continue
         if (cnvpr.get("descr") or "").strip():
             continue
@@ -176,10 +183,10 @@ def _check_table_headers(pkg: PptxPackage, srec: dict) -> list[dict]:
         if len(rows) <= 1:
             continue  # single-row table: header judgment is human territory
         tblpr = tbl.find(qn("a:tblPr"))
-        if tblpr is not None and tblpr.get("firstRow") == "1":
+        if attr_bool(tblpr, "firstRow"):
             continue
         cnvpr = _cnvpr(elem)
-        sid = int(cnvpr.get("id")) if cnvpr is not None else None
+        sid = cnvpr_id(cnvpr)
         findings.append(
             {
                 "check": "table_headers",
@@ -233,6 +240,17 @@ def _visual_order(records: list[dict]) -> list[dict]:
 #: Furniture placeholder types whose corner positions are conventional;
 #: their spTree position says nothing about content reading order.
 _FURNITURE_PH = ("sldNum", "dt", "ftr")
+_DECORATIVE_NS = "http://schemas.microsoft.com/office/drawing/2017/decorative"
+_DECORATIVE_EXT_URI = "{C183D7F6-B498-43B3-948B-1728B52AA6E4}"
+
+
+def _is_office_decorative(rec: dict) -> bool:
+    """Whether Office marked this shape to be skipped by screen readers."""
+    cnvpr = _cnvpr(rec["elem"])
+    if cnvpr is None:
+        return False
+    marker = cnvpr.find(f".//{{{_DECORATIVE_NS}}}decorative")
+    return marker is not None and attr_bool(marker, "val", True)
 
 
 def _is_content_shape(rec: dict) -> bool:
@@ -242,6 +260,8 @@ def _is_content_shape(rec: dict) -> bool:
     and furniture placeholders (slide number/date/footer) sit in
     conventional corners; counting either made the heuristic noisier on a
     real 131-slide deck."""
+    if _is_office_decorative(rec):
+        return False
     if rec["kind"] == "placeholder":
         ph = _ph(rec["elem"])
         if ph is not None and ph.get("type") in _FURNITURE_PH:
@@ -251,12 +271,130 @@ def _is_content_shape(rec: dict) -> bool:
     return bool(shape_text(rec["elem"]).strip())
 
 
+def _document_order_records(pkg: PptxPackage, part: str) -> list[dict]:
+    """Visible shape records in XML preorder, including members of groups.
+
+    The ordinary inversion heuristic deliberately works only at the top
+    level because ``set_reading_order`` can only reorder top-level shapes.
+    The title rule needs the complete XML sequence: a title inside a group
+    can still follow body content inside that group. The parent id is kept so
+    the resulting finding can state that the automatic top-level repair is
+    unavailable rather than pretending a group member is directly movable.
+    """
+    sp_tree = pkg.root(part).find(f"{qn('p:cSld')}/{qn('p:spTree')}")
+    if sp_tree is None:
+        return []
+    records: list[dict] = []
+    for elem, kind, _z, parent in iter_shapes(sp_tree):
+        cnvpr = _cnvpr(elem)
+        sid = cnvpr_id(cnvpr)
+        records.append(
+            {
+                "elem": elem,
+                "kind": kind,
+                "id": sid,
+                "parent_id": parent,
+                "hidden": attr_bool(cnvpr, "hidden"),
+            }
+        )
+    return records
+
+
+def _title_placeholder_type(rec: dict) -> str | None:
+    if rec["kind"] != "placeholder":
+        return None
+    ph = _ph(rec["elem"])
+    if ph is None:
+        return None
+    ph_type = ph.get("type")
+    return ph_type if ph_type in ("title", "ctrTitle") else None
+
+
+def _check_title_before_body(
+    pkg: PptxPackage,
+    srec: dict,
+    top_level_records: list[dict],
+) -> list[dict]:
+    """Flag every non-empty title placeholder that follows body content.
+
+    This is a direct XML-order fact rather than the visual-order heuristic.
+    Grouped members are reported too, but labeled heuristic because assistive
+    technologies differ in how they announce a group and the top-level
+    reorder operation cannot move an individual member.
+    """
+    ordered = [
+        rec
+        for rec in _document_order_records(pkg, srec["part"])
+        if rec["id"] is not None
+        and not rec["hidden"]
+        and rec["kind"] != "connector"
+        and rec["kind"] != "group"
+        and _is_content_shape(rec)
+    ]
+    document_order = [rec["id"] for rec in ordered]
+    top_level_order = [
+        rec["id"] for rec in top_level_records if rec["id"] is not None
+    ]
+    findings: list[dict] = []
+    for position, title in enumerate(ordered):
+        title_type = _title_placeholder_type(title)
+        if title_type is None or not shape_text(title["elem"]).strip():
+            continue
+        preceding = [
+            rec
+            for rec in ordered[:position]
+            if _title_placeholder_type(rec) is None
+        ]
+        if not preceding:
+            continue
+        title_id = title["id"]
+        preceding_ids = [rec["id"] for rec in preceding]
+        group_id = title["parent_id"]
+        grouped = group_id is not None
+        if grouped:
+            suggested = None
+            fix = (
+                "call ppt_graphics with op='ungroup_shapes' and args="
+                f"{{'slide': {srec['index']}, 'group': {group_id}}}"
+            )
+        else:
+            suggested = [title_id] + [
+                sid for sid in top_level_order if sid != title_id
+            ]
+            fix = (
+                "call ppt_graphics with op='set_reading_order' and args="
+                f"{{'slide': {srec['index']}, 'order': {suggested}}}"
+            )
+        findings.append(
+            {
+                "check": "reading_order",
+                "severity": "warning",
+                "slide_index": srec["index"],
+                "slide_id": srec["slide_id"],
+                "message": TITLE_READ_AFTER_BODY,
+                "fix": fix,
+                "shape_ids": preceding_ids + [title_id],
+                "reason": "title_read_after_body",
+                "title_shape_id": title_id,
+                "title_placeholder_type": title_type,
+                "body_before_title_ids": preceding_ids,
+                "document_order": document_order,
+                "suggested_order": suggested,
+                "title_group_id": group_id,
+                "grouped_title": grouped,
+                "heuristic": grouped,
+            }
+        )
+    return findings
+
+
 def _check_reading_order(pkg: PptxPackage, srec: dict) -> list[dict]:
     all_records = [
         r
         for r in _top_level_records(pkg, srec["part"])
         if r["id"] is not None
     ]
+    findings = _check_title_before_body(pkg, srec, all_records)
     records = [
         r
         for r in all_records
@@ -266,7 +404,7 @@ def _check_reading_order(pkg: PptxPackage, srec: dict) -> list[dict]:
         and _is_content_shape(r)
     ]
     if len(records) < 3:
-        return []  # too few shapes for order to be judged meaningfully
+        return findings  # title order is meaningful even with two shapes
     doc_order = [r["id"] for r in records]
     visual = [r["id"] for r in _visual_order(records)]
     rank = {sid: i for i, sid in enumerate(visual)}
@@ -278,10 +416,10 @@ def _check_reading_order(pkg: PptxPackage, srec: dict) -> list[dict]:
             if rank[doc_order[i]] > rank[doc_order[j]]:
                 inversions += 1
     if pairs == 0:
-        return []
+        return findings
     frac = inversions / pairs
     if inversions < _MIN_INVERSIONS or frac < _INVERSION_FRACTION:
-        return []
+        return findings
     # set_reading_order needs a COMPLETE permutation, so the suggestion
     # keeps non-content shapes (decorations, connectors, hidden) at their
     # current relative positions ahead of the reordered content: earliest
@@ -289,7 +427,7 @@ def _check_reading_order(pkg: PptxPackage, srec: dict) -> list[dict]:
     content = set(doc_order)
     suggested = [r["id"] for r in all_records if r["id"] not in content]
     suggested.extend(visual)
-    return [
+    findings.append(
         {
             "check": "reading_order",
             "severity": "info",
@@ -303,10 +441,10 @@ def _check_reading_order(pkg: PptxPackage, srec: dict) -> list[dict]:
                 "legitimately read this way - review before reordering"
             ),
             "fix": (
-                f"set_reading_order(slide={srec['index']}, "
-                f"order={suggested}) rewrites spTree order (decorative "
-                "shapes kept first/behind; note: spTree order is also "
-                "z-order)"
+                "call ppt_graphics with op='set_reading_order' and args="
+                f"{{'slide': {srec['index']}, 'order': {suggested}}} to "
+                "rewrite spTree order (decorative shapes kept first/behind; "
+                "note: spTree order is also z-order)"
             ),
             "shape_ids": doc_order,
             "document_order": doc_order,
@@ -316,7 +454,8 @@ def _check_reading_order(pkg: PptxPackage, srec: dict) -> list[dict]:
             "pair_count": pairs,
             "heuristic": True,
         }
-    ]
+    )
+    return findings
 
 
 # =============================================================== public API
@@ -394,7 +533,42 @@ def audit_accessibility(pkg: PptxPackage, scope=None, *,
     return result
 
 
-def set_alt_text(pkg: PptxPackage, slide, shape: int, text: str) -> dict:
+def _set_office_decorative(cnvpr: etree._Element, enabled: bool) -> None:
+    ext_lst = cnvpr.find(qn("a:extLst"))
+    markers = (
+        [] if ext_lst is None
+        else ext_lst.findall(f".//{{{_DECORATIVE_NS}}}decorative")
+    )
+    if enabled:
+        if markers:
+            markers[0].set("val", "1")
+            for marker in markers[1:]:
+                marker.getparent().remove(marker)
+            return
+        if ext_lst is None:
+            ext_lst = etree.SubElement(cnvpr, qn("a:extLst"))
+        ext = etree.SubElement(ext_lst, qn("a:ext"), uri=_DECORATIVE_EXT_URI)
+        etree.SubElement(
+            ext, f"{{{_DECORATIVE_NS}}}decorative",
+            nsmap={"adec": _DECORATIVE_NS},
+        ).set("val", "1")
+        return
+    for marker in markers:
+        ext = marker.getparent()
+        ext.remove(marker)
+        if len(ext) == 0:
+            ext.getparent().remove(ext)
+    if ext_lst is not None and len(ext_lst) == 0:
+        cnvpr.remove(ext_lst)
+
+
+def set_alt_text(
+    pkg: PptxPackage,
+    slide,
+    shape: int,
+    text: str,
+    decorative: bool | None = None,
+) -> dict:
     """Set (or clear, with an empty string) the alt text of ANY shape by id:
     autoshapes, text boxes, pictures, tables, charts, diagrams, groups,
     connectors. Writes cNvPr/@descr on the shape's own nv*Pr family element
@@ -402,6 +576,12 @@ def set_alt_text(pkg: PptxPackage, slide, shape: int, text: str) -> dict:
     checker read). media.set_image covers pictures; this covers everything."""
     if not isinstance(text, str):
         raise PptMcpError(f"alt text must be a string, got {text!r}")
+    if decorative is not None and not isinstance(decorative, bool):
+        raise PptMcpError(f"decorative must be true or false, got {decorative!r}")
+    if decorative is True and text.strip():
+        raise PptMcpError(
+            "a decorative shape cannot also carry alt text; pass text=''"
+        )
     rec = resolve_slide(pkg, slide)
     part = rec["part"]
     elem, _chain = _find_shape(pkg, part, shape)
@@ -411,6 +591,16 @@ def set_alt_text(pkg: PptxPackage, slide, shape: int, text: str) -> dict:
             f"shape {shape} has no cNvPr element to carry alt text"
         )
     previous = cnvpr.get("descr")
+    previous_decorative = _is_office_decorative({"elem": elem})
+    if decorative is True:
+        cnvpr.attrib.pop("descr", None)
+        _set_office_decorative(cnvpr, True)
+    elif decorative is False:
+        _set_office_decorative(cnvpr, False)
+    elif text.strip() and previous_decorative:
+        # Describing an object makes it content again; do not leave mutually
+        # contradictory Office accessibility state behind.
+        _set_office_decorative(cnvpr, False)
     if text.strip():
         cnvpr.set("descr", text)
         action = "set"
@@ -424,6 +614,8 @@ def set_alt_text(pkg: PptxPackage, slide, shape: int, text: str) -> dict:
         "action": action,
         "alt_text": text if text.strip() else None,
         "previous": previous,
+        "decorative": _is_office_decorative({"elem": elem}),
+        "previous_decorative": previous_decorative,
         "kind": etree.QName(elem).localname,
         "slide_index": rec["index"],
         "slide_id": rec["slide_id"],
@@ -444,12 +636,19 @@ def set_reading_order(pkg: PptxPackage, slide, order: list[int]) -> dict:
     rec = resolve_slide(pkg, slide)
     part = rec["part"]
     sp_tree = _sp_tree(pkg, part)
-    shape_elems = [c for c in sp_tree if c.tag in _SHAPE_TAGS]
+    # Shapes, and the mc:AlternateContent wrappers PowerPoint stores an
+    # equation text box or ink in: each holds one place in the order.
+    shape_elems = stack_members(sp_tree)
     id_map: dict[int, etree._Element] = {}
     old_order: list[int] = []
+    wrapped_ids: set[int] = set()
     for el in shape_elems:
-        cnvpr = _cnvpr(el)
-        sid = int(cnvpr.get("id")) if cnvpr is not None else None
+        if el.tag in _SHAPE_TAGS:
+            cnvpr = _cnvpr(el)
+            sid = cnvpr_id(cnvpr)
+        else:
+            sid = wrapped_shape_id(el)
+            wrapped_ids.add(sid)
         if sid is None:
             raise UnsupportedStructure(
                 "a top-level shape has no cNvPr id; cannot reorder this "
@@ -469,6 +668,13 @@ def set_reading_order(pkg: PptxPackage, slide, order: list[int]) -> dict:
         detail = []
         if missing:
             detail.append(f"missing ids {missing}")
+            held = sorted(set(missing) & wrapped_ids)
+            if held:
+                detail.append(
+                    f"{held} {'is a shape' if len(held) == 1 else 'are shapes'} PowerPoint "
+                    "stores in a compatibility wrapper (an equation text box or ink); "
+                    "include it where it should be read"
+                )
         if unknown:
             detail.append(f"unknown ids {unknown}")
         raise TargetNotFound(
@@ -485,9 +691,13 @@ def set_reading_order(pkg: PptxPackage, slide, order: list[int]) -> dict:
         }
     # Re-append in the new order: appending MOVES each element to the end,
     # and non-shape spTree children (nvGrpSpPr, grpSpPr) stay ahead of all
-    # shapes exactly as the schema wants.
+    # shapes exactly as the schema wants. A trailing p:extLst stays last.
+    tail = sp_tree.find(qn("p:extLst"))
     for sid in order:
-        sp_tree.append(id_map[sid])
+        if tail is not None:
+            tail.addprevious(id_map[sid])
+        else:
+            sp_tree.append(id_map[sid])
     old_rank = {sid: i for i, sid in enumerate(old_order)}
     new_rank = {sid: i for i, sid in enumerate(order)}
     z_changes = [
@@ -505,7 +715,8 @@ def set_reading_order(pkg: PptxPackage, slide, order: list[int]) -> dict:
         "warning": (
             "spTree order is also z-order: shapes later in the list now "
             "paint ON TOP of earlier ones; verify overlapping regions "
-            "visually (check_layout overlap, or export_slide_images)"
+            "visually with ppt_inspect op='check_layout' (overlap), or "
+            "ppt_deck op='export_slide_image'"
         ),
         "slide_index": rec["index"],
         "slide_id": rec["slide_id"],

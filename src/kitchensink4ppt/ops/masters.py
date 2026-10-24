@@ -1,7 +1,6 @@
 """File-based slide master and layout editing.
 
-No file-based server in the ecosystem edits masters or layouts; this module
-is that gap. Everything here operates on the master/layout parts directly
+Everything here operates on the master/layout parts directly
 with lxml, honoring the contract shared by all ops modules: every function
 takes the open PptxPackage first, mutates only the in-memory package, calls
 pkg.mark_dirty() on every part it touches, and returns a summary dict.
@@ -12,7 +11,7 @@ Safety model: a master edit changes EVERY derived slide, so every mutation
 here reports affected_slides ({"count", "slide_ids"}) computed from actual
 layout usage (each slide's slideLayout relationship), never estimated.
 
-Inheritance rules baked in (the 4-layer chain, research doc 1.5 item 6):
+Inheritance rules baked in (the 4-layer chain):
 - Master text defaults live in p:txStyles (p:titleStyle for the title
   family, p:bodyStyle for body/subTitle/obj, p:otherStyle for the rest),
   keyed by placeholder type, NOT in the master placeholder's own txBody.
@@ -29,7 +28,7 @@ Inheritance rules baked in (the 4-layer chain, research doc 1.5 item 6):
 
 ID spaces: new layout ids live in the >= 2147483648 space and must be
 unique across the UNION of all sldMasterId and sldLayoutId values in the
-deck (research doc 1.3). Shape ids are per part (pkg.next_shape_id).
+deck. Shape ids are per part (pkg.next_shape_id).
 """
 
 from __future__ import annotations
@@ -51,12 +50,21 @@ from ..core.package import (
     qn,
     rels_name,
     resolve_target,
+    seat_ahead_of_extlst,
 )
+from ..core.xmlbool import attr_bool, xml_bool
 from . import geometry as g
 from .design import _resolve_master, _theme_part_of
 from .read import _cSld_name, _layouts_of_master, _master_parts, slide_table
+from .read import cnvpr_id
 from .shapes import _nv_pr, _resolve_preset
-from .slides import _PH_BASENAMES, _ph_key, _regenerate_creation_ids, _rel_target
+from .slides import (
+    _PH_BASENAMES,
+    _ph_key,
+    _regenerate_creation_ids,
+    _rel_target,
+    creation_vals,
+)
 
 RT_SLIDE_MASTER = (
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
@@ -164,7 +172,7 @@ def _ph_records(pkg: PptxPackage, part: str) -> list[dict]:
             {
                 "sp": sp,
                 "ph": ph,
-                "shape_id": int(cnvpr.get("id")) if cnvpr is not None else None,
+                "shape_id": cnvpr_id(cnvpr),
                 "name": cnvpr.get("name", "") if cnvpr is not None else "",
                 "type": ph.get("type", "obj"),
                 "idx": int(ph.get("idx", "0")),
@@ -179,29 +187,39 @@ def _ph_label(rec: dict) -> str:
 
 def _resolve_ph(pkg: PptxPackage, part: str, ph) -> dict:
     """Resolve a placeholder selector on one master/layout part. Accepts a
-    type token (str; "title" also matches ctrTitle), a shape id (int), or a
-    dict with any of {"type", "idx"}. Ambiguity refuses with candidates."""
+    type token (str; "title" also matches ctrTitle), a placeholder idx
+    (int), or a dict with any of {"type", "idx", "shape_id"}. Bare integer
+    selectors deliberately mean placeholder idx, matching
+    set_placeholder_text; shape ids must be explicit. Ambiguity refuses
+    with candidates."""
     records = _ph_records(pkg, part)
     if not records:
         raise TargetNotFound(f"{part} has no placeholders")
     if isinstance(ph, bool):
         raise PptMcpError(f"invalid placeholder selector {ph!r}")
     if isinstance(ph, int):
-        for rec in records:
-            if rec["shape_id"] == ph:
-                return rec
+        hits = [rec for rec in records if rec["idx"] == ph]
+        if len(hits) == 1:
+            return hits[0]
+        if len(hits) > 1:
+            raise AmbiguousTarget(
+                f"{len(hits)} placeholders have idx {ph} on {part}: "
+                + ", ".join(_ph_label(r) for r in hits)
+                + '; disambiguate with {"type": ..., "idx": ...}'
+            )
         raise TargetNotFound(
-            f"no placeholder with shape id {ph} on {part}; present: "
+            f"no placeholder with idx {ph} on {part}; present: "
             + ", ".join(_ph_label(r) for r in records)
         )
     if isinstance(ph, str):
         wanted = {"title", "ctrTitle"} if ph in _TITLE_TYPES else {ph}
         hits = [r for r in records if r["type"] in wanted]
     elif isinstance(ph, dict):
-        unknown = set(ph) - {"type", "idx"}
+        unknown = set(ph) - {"type", "idx", "shape_id"}
         if unknown or not ph:
             raise PptMcpError(
-                'placeholder dict selector takes {"type": ..., "idx": ...}; '
+                'placeholder dict selector takes "type", "idx", and/or '
+                '"shape_id"; '
                 f"got {ph!r}"
             )
         hits = records
@@ -214,10 +232,12 @@ def _resolve_ph(pkg: PptxPackage, part: str, ph) -> dict:
             hits = [r for r in hits if r["type"] in wanted]
         if "idx" in ph:
             hits = [r for r in hits if r["idx"] == int(ph["idx"])]
+        if "shape_id" in ph:
+            hits = [r for r in hits if r["shape_id"] == int(ph["shape_id"])]
     else:
         raise PptMcpError(
-            "placeholder must be a type token (str), a shape id (int), or "
-            'a {"type"/"idx"} dict; got ' + repr(ph)
+            "placeholder must be a type token (str), a placeholder idx "
+            '(int), or a {"type"/"idx"/"shape_id"} dict; got ' + repr(ph)
         )
     if len(hits) == 1:
         return hits[0]
@@ -225,7 +245,8 @@ def _resolve_ph(pkg: PptxPackage, part: str, ph) -> dict:
         raise AmbiguousTarget(
             f"{len(hits)} placeholders match {ph!r} on {part}: "
             + ", ".join(_ph_label(r) for r in hits)
-            + '; disambiguate with {"type": ..., "idx": ...} or a shape id'
+            + '; disambiguate with {"type": ..., "idx": ...} or '
+            '{"shape_id": ...}'
         )
     raise TargetNotFound(
         f"no placeholder matching {ph!r} on {part}; present: "
@@ -294,7 +315,12 @@ def _insert_ordered(parent: etree._Element, el: etree._Element, order) -> None:
 
 
 def _box_in(sp: etree._Element) -> dict | None:
+    """Explicit geometry for any top-level master/layout shape family."""
     xfrm = sp.find(f"{qn('p:spPr')}/{qn('a:xfrm')}")
+    if xfrm is None:
+        xfrm = sp.find(f"{qn('p:grpSpPr')}/{qn('a:xfrm')}")
+    if xfrm is None:
+        xfrm = sp.find(qn("p:xfrm"))
     if xfrm is None:
         return None
     off = xfrm.find(qn("a:off"))
@@ -397,6 +423,7 @@ def _apply_defrpr(
     color: str | None = None,
     bold: bool | None = None,
     italic: bool | None = None,
+    caps: str | None = None,
 ) -> dict:
     """Write character defaults onto one a:defRPr, in schema order."""
     written: dict = {}
@@ -412,6 +439,9 @@ def _apply_defrpr(
     if italic is not None:
         rpr.set("i", "1" if italic else "0")
         written["italic"] = bool(italic)
+    if caps is not None:
+        rpr.set("cap", caps)
+        written["caps"] = caps
     if color is not None:
         for tag in _FILL_TAGS:
             existing = rpr.find(qn(tag))
@@ -470,6 +500,47 @@ def _levels_for(list_style: etree._Element, level) -> list[int]:
     raise PptMcpError(f'level must be 1..9 or "all", got {level!r}')
 
 
+_ALIGN_TO_XML = {
+    "left": "l",
+    "center": "ctr",
+    "right": "r",
+    "justify": "just",
+    "distribute": "dist",
+}
+_ALIGN_FROM_XML = {value: key for key, value in _ALIGN_TO_XML.items()}
+_CAPS = {"none", "small", "all"}
+
+
+def _norm_align(value) -> str | None:
+    if value is None:
+        return None
+    key = str(value).strip().lower().replace("-", "_").replace(" ", "_")
+    if key not in _ALIGN_TO_XML:
+        raise PptMcpError(
+            "align must be left, center, right, justify, or distribute; "
+            f"got {value!r}"
+        )
+    return key
+
+
+def _norm_caps(value) -> str | None:
+    if value is None:
+        return None
+    key = str(value).strip().lower()
+    if key not in _CAPS:
+        raise PptMcpError(f"caps must be none, small, or all; got {value!r}")
+    return key
+
+
+def _ppr_summary(ppr: etree._Element | None) -> dict:
+    if ppr is None:
+        return {}
+    out = _rpr_summary(ppr.find(qn("a:defRPr")))
+    if ppr.get("algn"):
+        out["align"] = _ALIGN_FROM_XML.get(ppr.get("algn"), ppr.get("algn"))
+    return out
+
+
 def _tx_styles(pkg: PptxPackage, master_part: str) -> etree._Element:
     root = pkg.root(master_part)
     styles = root.find(qn("p:txStyles"))
@@ -506,6 +577,96 @@ def _own_lst_style(sp: etree._Element) -> etree._Element:
         else:
             tx.insert(0, lst)
     return lst
+
+
+def _existing_lst_style(sp: etree._Element) -> etree._Element | None:
+    tx = sp.find(qn("p:txBody"))
+    return tx.find(qn("a:lstStyle")) if tx is not None else None
+
+
+def _same_placeholder_family(left: str, right: str) -> bool:
+    if left in _TITLE_TYPES:
+        return right in _TITLE_TYPES
+    if left in _BODY_TYPES:
+        return right in _BODY_TYPES
+    return left == right
+
+
+def _layout_override_report(
+    pkg: PptxPackage,
+    master_part: str,
+    master_rec: dict,
+    levels: list[int],
+    requested: set[str],
+    font_keys: set[str],
+    *,
+    clear: bool,
+) -> list[dict]:
+    """Report, and optionally remove, child-layout declarations that win
+    over the master properties written by the current call. Only requested
+    properties are considered, so intentional unrelated layout styling is
+    preserved."""
+    findings: list[dict] = []
+    for layout_part in _layouts_of_master(pkg, master_part):
+        layout_changed = False
+        for rec in _ph_records(pkg, layout_part):
+            if not _same_placeholder_family(master_rec["type"], rec["type"]):
+                continue
+            lst = _existing_lst_style(rec["sp"])
+            if lst is None:
+                continue
+            for level in levels:
+                ppr = lst.find(qn(f"a:lvl{level}pPr"))
+                if ppr is None:
+                    continue
+                declared: list[str] = []
+                if "align" in requested and ppr.get("algn") is not None:
+                    declared.append("align")
+                    if clear:
+                        ppr.attrib.pop("algn", None)
+                        layout_changed = True
+                rpr = ppr.find(qn("a:defRPr"))
+                if rpr is not None:
+                    for key, attr in (
+                        ("size", "sz"), ("bold", "b"),
+                        ("italic", "i"), ("caps", "cap"),
+                    ):
+                        if key in requested and rpr.get(attr) is not None:
+                            declared.append(key)
+                            if clear:
+                                rpr.attrib.pop(attr, None)
+                                layout_changed = True
+                    if "color" in requested:
+                        fills = [rpr.find(qn(tag)) for tag in _FILL_TAGS]
+                        fills = [node for node in fills if node is not None]
+                        if fills:
+                            declared.append("color")
+                            if clear:
+                                for node in fills:
+                                    rpr.remove(node)
+                                layout_changed = True
+                    for key, tag in (
+                        ("latin", "a:latin"), ("ea", "a:ea"), ("cs", "a:cs")
+                    ):
+                        node = rpr.find(qn(tag))
+                        if key in font_keys and node is not None:
+                            declared.append(f"font.{key}")
+                            if clear:
+                                rpr.remove(node)
+                                layout_changed = True
+                if declared:
+                    findings.append(
+                        {
+                            "layout": layout_part,
+                            "layout_name": _cSld_name(pkg, layout_part) or "",
+                            "placeholder": _ph_label(rec),
+                            "level": level,
+                            "properties": declared,
+                        }
+                    )
+        if layout_changed:
+            pkg.mark_dirty(layout_part)
+    return findings
 
 
 # ------------------------------------------------------ format summarization
@@ -552,9 +713,11 @@ def _rpr_summary(rpr: etree._Element | None) -> dict:
         except ValueError:
             pass
     if rpr.get("b") is not None:
-        out["bold"] = rpr.get("b") in ("1", "true")
+        out["bold"] = xml_bool(rpr.get("b"))
     if rpr.get("i") is not None:
-        out["italic"] = rpr.get("i") in ("1", "true")
+        out["italic"] = xml_bool(rpr.get("i"))
+    if rpr.get("cap") is not None:
+        out["caps"] = rpr.get("cap")
     solid = rpr.find(qn("a:solidFill"))
     if solid is not None:
         srgb = solid.find(qn("a:srgbClr"))
@@ -608,7 +771,7 @@ def _hf_info(root: etree._Element) -> dict:
     def flag(name: str) -> bool:
         if hf is None:
             return True
-        return (hf.get(name) or "1") not in ("0", "false")
+        return attr_bool(hf, name, True)
 
     return {k: flag(k) for k in ("dt", "ftr", "hdr", "sldNum")}
 
@@ -695,11 +858,11 @@ def list_master_elements(pkg: PptxPackage, master=None) -> dict:
             shapes.append(
                 {
                     "shape_id": (
-                        int(cnvpr.get("id")) if cnvpr is not None else None
+                        cnvpr_id(cnvpr)
                     ),
                     "name": cnvpr.get("name", "") if cnvpr is not None else "",
                     "kind": _SHAPE_KINDS[local],
-                    "box_in": _box_in(child) if local == "sp" else None,
+                    "box_in": _box_in(child),
                 }
             )
 
@@ -716,18 +879,40 @@ def list_master_elements(pkg: PptxPackage, master=None) -> dict:
         layouts = []
         for lpart in _layouts_of_master(pkg, part):
             lroot = pkg.root(lpart)
-            sig = [
-                {"type": r["type"], "idx": r["idx"]}
-                for r in _ph_records(pkg, lpart)
-            ]
-            deco = sum(
-                1
-                for c in _sp_tree(pkg, lpart)
-                if etree.QName(c).localname in _SHAPE_KINDS
-                and not (
-                    etree.QName(c).localname == "sp" and _ph_of(c) is not None
+            sig = []
+            for r in _ph_records(pkg, lpart):
+                tx = r["sp"].find(qn("p:txBody"))
+                lst = tx.find(qn("a:lstStyle")) if tx is not None else None
+                lvl1 = lst.find(qn("a:lvl1pPr")) if lst is not None else None
+                sig.append(
+                    {
+                        "shape_id": r["shape_id"],
+                        "name": r["name"],
+                        "type": r["type"],
+                        "idx": r["idx"],
+                        "text_overrides_lvl1": _ppr_summary(lvl1),
+                    }
                 )
-            )
+            layout_shapes = []
+            for child in _sp_tree(pkg, lpart):
+                local = etree.QName(child).localname
+                if local not in _SHAPE_KINDS:
+                    continue
+                if local == "sp" and _ph_of(child) is not None:
+                    continue
+                cnvpr = child.find(f".//{qn('p:cNvPr')}")
+                layout_shapes.append(
+                    {
+                        "shape_id": (
+                            cnvpr_id(cnvpr)
+                        ),
+                        "name": (
+                            cnvpr.get("name", "") if cnvpr is not None else ""
+                        ),
+                        "kind": _SHAPE_KINDS[local],
+                        "box_in": _box_in(child),
+                    }
+                )
             csld = lroot.find(qn("p:cSld"))
             layouts.append(
                 {
@@ -737,9 +922,10 @@ def list_master_elements(pkg: PptxPackage, master=None) -> dict:
                     "type": lroot.get("type", ""),
                     "index": global_index.get(lpart),
                     "placeholders": sig,
-                    "decoration_shapes": deco,
+                    "decoration_shapes": len(layout_shapes),
+                    "shapes": layout_shapes,
                     "shows_master_shapes": (
-                        (lroot.get("showMasterSp") or "1") not in ("0", "false")
+                        attr_bool(lroot, "showMasterSp", True)
                     ),
                     "has_own_background": (
                         csld is not None and csld.find(qn("p:bg")) is not None
@@ -785,7 +971,10 @@ def set_master_placeholder(
     color=None,
     bold=None,
     italic=None,
+    align=None,
+    caps=None,
     level=1,
+    clear_layout_overrides=False,
 ) -> dict:
     """Edit a MASTER placeholder: geometry (inches) on its a:xfrm, and text
     defaults (size pt, font, color, bold, italic) on the level(s) every
@@ -795,14 +984,16 @@ def set_master_placeholder(
     placeholder's own lstStyle. Slides with explicit run formatting keep
     it; everything else re-renders with the new defaults."""
     font_spec = _norm_font(font)
+    align = _norm_align(align)
+    caps = _norm_caps(caps)
     geometry_given = any(v is not None for v in (x, y, w, h))
     text_given = any(
-        v is not None for v in (size, color, bold, italic)
+        v is not None for v in (size, color, bold, italic, align, caps)
     ) or bool(font_spec)
     if not geometry_given and not text_given:
         raise PptMcpError(
             "nothing to do: pass geometry (x/y/w/h inches) and/or text "
-            "defaults (size, font, color, bold, italic)"
+            "defaults (size, font, color, bold, italic, align, caps)"
         )
     master_part = _resolve_master(pkg, master)[0]
     rec = _resolve_ph(pkg, master_part, ph)
@@ -828,11 +1019,16 @@ def set_master_placeholder(
         levels = _levels_for(target, level)
         written = {}
         for lvl in levels:
+            ppr = _lvl_ppr(target, lvl)
+            if align is not None:
+                ppr.set("algn", _ALIGN_TO_XML[align])
             written = _apply_defrpr(
-                _defrpr_of(_lvl_ppr(target, lvl)),
+                _defrpr_of(ppr),
                 size=size, font=font_spec or None, color=color,
-                bold=bold, italic=italic,
+                bold=bold, italic=italic, caps=caps,
             )
+            if align is not None:
+                written["align"] = align
         result["text_defaults_set"] = {
             "target": target_label,
             "levels": levels,
@@ -844,6 +1040,30 @@ def set_master_placeholder(
                 "placeholder under this master, not only this shape; "
                 "slides carrying explicit run formatting do not move"
             )
+        requested = {
+            key for key, value in (
+                ("size", size), ("color", color), ("bold", bold),
+                ("italic", italic), ("align", align), ("caps", caps),
+            ) if value is not None
+        }
+        font_keys = set(font_spec)
+        overrides = _layout_override_report(
+            pkg, master_part, rec, levels, requested, font_keys,
+            clear=bool(clear_layout_overrides),
+        )
+        if overrides:
+            result[
+                "layout_overrides_cleared"
+                if clear_layout_overrides
+                else "layout_overrides_preserved"
+            ] = overrides
+            if not clear_layout_overrides:
+                result.setdefault("warnings", []).append(
+                    "Some child layouts declare the same text properties "
+                    "and continue to override this master change. Review "
+                    "layout_overrides_preserved or explicitly pass "
+                    "clear_layout_overrides=true."
+                )
     pkg.mark_dirty(master_part)
     result["affected_slides"] = _affected(pkg, "master", master_part)
     return result
@@ -863,6 +1083,8 @@ def set_layout_placeholder(
     color=None,
     bold=None,
     italic=None,
+    align=None,
+    caps=None,
     level=1,
 ) -> dict:
     """Edit a LAYOUT placeholder: geometry (inches) and/or text-default
@@ -873,14 +1095,16 @@ def set_layout_placeholder(
     from .slides import _resolve_layout
 
     font_spec = _norm_font(font)
+    align = _norm_align(align)
+    caps = _norm_caps(caps)
     geometry_given = any(v is not None for v in (x, y, w, h))
     text_given = any(
-        v is not None for v in (size, color, bold, italic)
+        v is not None for v in (size, color, bold, italic, align, caps)
     ) or bool(font_spec)
     if not geometry_given and not text_given:
         raise PptMcpError(
             "nothing to do: pass geometry (x/y/w/h inches) and/or text "
-            "defaults (size, font, color, bold, italic)"
+            "defaults (size, font, color, bold, italic, align, caps)"
         )
     layout_part = _resolve_layout(pkg, layout)
     rec = _resolve_ph(pkg, layout_part, ph)
@@ -899,11 +1123,16 @@ def set_layout_placeholder(
         levels = _levels_for(target, level)
         written = {}
         for lvl in levels:
+            ppr = _lvl_ppr(target, lvl)
+            if align is not None:
+                ppr.set("algn", _ALIGN_TO_XML[align])
             written = _apply_defrpr(
-                _defrpr_of(_lvl_ppr(target, lvl)),
+                _defrpr_of(ppr),
                 size=size, font=font_spec or None, color=color,
-                bold=bold, italic=italic,
+                bold=bold, italic=italic, caps=caps,
             )
+            if align is not None:
+                written["align"] = align
         result["text_defaults_set"] = {
             "target": "layout placeholder lstStyle",
             "levels": levels,
@@ -1171,7 +1400,7 @@ def insert_master_shape(
     cx_emu, cy_emu = g.in_to_emu(w), g.in_to_emu(h)
     g.check_emu_box(x_emu, y_emu, cx_emu, cy_emu, what="master shape")
 
-    sp = etree.SubElement(sp_tree, qn("p:sp"))
+    sp = seat_ahead_of_extlst(sp_tree, etree.SubElement(sp_tree, qn("p:sp")))
     display = name or f"{shape_type.replace('prst:', '')} {shape_id}"
     nv = _nv_pr(sp, "p:nvSpPr", shape_id, display)
     etree.SubElement(nv, qn("p:cNvSpPr"))
@@ -1203,7 +1432,7 @@ def insert_master_shape(
         hiding = [
             lp
             for lp in _layouts_of_master(pkg, part)
-            if (pkg.root(lp).get("showMasterSp") or "1") in ("0", "false")
+            if not attr_bool(pkg.root(lp), "showMasterSp", True)
         ]
         if hiding:
             result["layouts_hiding_master_shapes"] = hiding
@@ -1377,7 +1606,7 @@ def create_layout(pkg: PptxPackage, master, name: str, based_on=None) -> dict:
     new_part = pkg.next_partname("ppt/slideLayouts/slideLayout{}.xml")
     if based_part is not None:
         root = copy.deepcopy(pkg.root(based_part))
-        _regenerate_creation_ids(root)
+        _regenerate_creation_ids(root, creation_vals(pkg))
         root.attrib.pop("matchingName", None)
         root.attrib.pop("type", None)
         root.set("userDrawn", "1")

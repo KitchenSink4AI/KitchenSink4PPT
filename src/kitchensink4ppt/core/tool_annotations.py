@@ -15,12 +15,13 @@ core/readonly.py and is not repeated here. The other three live here:
 
 * **destructiveHint** -- whether the tool may perform a destructive
   update. ONE rule decides it, and docs/TOOL_ANNOTATIONS.md states the
-  rule alongside a per-tool reason so a reviewer can dispute any single
+  rule alongside a per-tool reason so a reader can dispute any single
   row:
 
       false only when every code path either (a) adds new content or a new
       file without replacing anything that was already there, creation
-      refusing an existing target, or (b) changes no user data at all
+      refusing an existing target unless the caller sends overwrite=true for
+      that call, or (b) changes no user data at all
       (this session's tool surface, the viewport, a read performed through
       a hidden or already-running Office instance, a read taken through a
       temporary copy).
@@ -38,9 +39,8 @@ core/readonly.py and is not repeated here. The other three live here:
   when readOnlyHint is false, and a value there would be noise.
 
 * **idempotentHint** -- true only where repeating the identical call
-  obviously lands the same state: the pack switches, whose own docstrings
-  say idempotent, and the whole-value setters that take an address and a
-  value and carry no action selector. Everything else is left unset rather
+  obviously lands the same state: whole-value setters that take an address
+  and a value and carry no action selector. Everything else is left unset rather
   than guessed.
 
 * **openWorldHint** -- false on every tool. Nothing here reaches a remote
@@ -76,6 +76,7 @@ TITLES: dict[str, str] = {
     "copy_format":               "Copy Format",
     "copy_position":             "Copy Position",
     "copy_presentation":         "Copy Presentation",
+    "copy_shape_between":        "Copy Shape Between Decks",
     "copy_slide_between":        "Copy Slide Between Decks",
     "create_chart":              "Create Chart",
     "create_layout":             "Create Layout",
@@ -91,12 +92,11 @@ TITLES: dict[str, str] = {
     "delete_table_cols":         "Delete Table Columns",
     "delete_table_rows":         "Delete Table Rows",
     "diagnose":                  "Diagnose Presentation",
-    "disable_tools":             "Disable Tools",
     "distribute_shapes":         "Distribute Shapes",
     "duplicate_slide":           "Duplicate Slide",
-    "enable_tools":              "Enable Tools",
     "export_handout":            "Export Handout",
     "export_pdf":                "Export PDF",
+    "export_shape_image":        "Export Shape Image",
     "export_slide_image":        "Export Slide Image",
     "export_table":              "Export Table",
     "extract_brand":             "Extract Brand",
@@ -183,6 +183,7 @@ TITLES: dict[str, str] = {
     "set_reading_order":         "Set Reading Order",
     "set_row_heights":           "Set Row Heights",
     "set_shape":                 "Set Shape",
+    "set_shape_adjustments":     "Set Shape Adjustments",
     "set_show_properties":       "Set Show Properties",
     "set_slide_background":      "Set Slide Background",
     "set_slide_hidden":          "Set Slide Hidden",
@@ -197,6 +198,8 @@ TITLES: dict[str, str] = {
     "ungroup_shapes":            "Ungroup Shapes",
     "unmerge_cells":             "Unmerge Cells",
     "update_chart_data":         "Update Chart Data",
+    "update_notices":            "Update Notices",
+    "update_now":                "Update Now",
     "validate":                  "Validate Presentation",
     "zombie_check":              "Zombie Process Check",
 }
@@ -212,8 +215,7 @@ DESTRUCTIVE: frozenset[str] = frozenset({
     "compress_deck", "copy_format", "copy_position", "delete_comment",
     "delete_master_shape", "delete_notes", "delete_shape",
     "delete_slide", "delete_table_cols", "delete_table_rows",
-    "distribute_shapes", "export_handout", "export_pdf",
-    "export_slide_image", "export_table", "fit_text", "format_chart",
+    "distribute_shapes", "fit_text", "format_chart",
     "format_table_cells", "format_text", "group_shapes",
     "import_table", "live_save", "manage_backups",
     "manage_custom_show", "manage_section", "merge_cells",
@@ -227,10 +229,10 @@ DESTRUCTIVE: frozenset[str] = frozenset({
     "set_layout_placeholder", "set_master_background",
     "set_master_placeholder", "set_media_playback", "set_notes",
     "set_placeholder_text", "set_reading_order", "set_row_heights",
-    "set_shape", "set_show_properties", "set_slide_background",
-    "set_slide_hidden", "set_slide_size", "set_table_cells",
-    "set_theme_colors", "set_theme_fonts", "set_transition",
-    "set_z_order", "ungroup_shapes", "unmerge_cells",
+    "set_shape", "set_shape_adjustments", "set_show_properties",
+    "set_slide_background", "set_slide_hidden", "set_slide_size",
+    "set_table_cells", "set_theme_colors", "set_theme_fonts",
+    "set_transition", "set_z_order", "ungroup_shapes", "unmerge_cells",
     "update_chart_data", "validate"
 })
 
@@ -240,29 +242,32 @@ DESTRUCTIVE: frozenset[str] = frozenset({
 NON_DESTRUCTIVE: frozenset[str] = frozenset({
     "add_comment", "add_entrance_animation", "add_equation_to_shape",
     "add_layout_placeholder", "copy_presentation",
-    "copy_slide_between", "create_chart", "create_layout",
+    "copy_shape_between", "copy_slide_between", "create_chart",
+    "create_layout",
     "create_presentation", "create_snapshot", "create_table",
-    "disable_tools", "duplicate_slide", "enable_tools",
+    "duplicate_slide", "export_handout", "export_pdf",
+    "export_shape_image", "export_slide_image", "export_table",
     "generate_agenda_slide", "generate_diagram", "insert_audio",
     "insert_connector", "insert_equation", "insert_image",
     "insert_master_shape", "insert_shape", "insert_slide",
     "insert_table_cols", "insert_table_rows", "insert_textbox",
     "insert_video", "live_scroll_to", "merge_decks", "split_deck",
-    "svg_to_shapes"
+    "svg_to_shapes", "update_notices", "update_now"
 })
 
 #: idempotentHint: true. Repeating the identical call lands the same
 #: state. Anything absent here is left UNSET rather than guessed.
 IDEMPOTENT: frozenset[str] = frozenset({
-    "disable_tools", "enable_tools", "set_alt_text", "set_bullets",
+    "set_alt_text", "set_bullets",
     "set_column_widths", "set_diagram_text", "set_document_properties",
     "set_footer", "set_hyperlink", "set_image", "set_language",
     "set_layout_placeholder", "set_master_background",
     "set_master_placeholder", "set_media_playback", "set_notes",
     "set_placeholder_text", "set_reading_order", "set_row_heights",
-    "set_shape", "set_show_properties", "set_slide_background",
-    "set_slide_hidden", "set_slide_size", "set_table_cells",
-    "set_theme_colors", "set_theme_fonts", "set_transition"
+    "set_shape", "set_shape_adjustments", "set_show_properties",
+    "set_slide_background", "set_slide_hidden", "set_slide_size",
+    "set_table_cells", "set_theme_colors", "set_theme_fonts",
+    "set_transition"
 })
 
 
@@ -275,7 +280,7 @@ def title(name: str) -> str:
     except KeyError:
         raise RuntimeError(
             f"tool {name!r} has no title in this module. Every registered "
-            f"tool needs one: MCP directories require a title on "
+            f"tool needs one: the Anthropic directory requires a title on "
             f"every tool, and a generated fallback would pass the check "
             f"while shipping 'Com Export Pdf' to a user."
         ) from None

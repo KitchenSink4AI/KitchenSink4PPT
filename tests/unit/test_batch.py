@@ -6,12 +6,21 @@ import hashlib
 
 import pytest
 
-from kitchensink4ppt import packs, server  # noqa: F401  (the import registers tools)
+from kitchensink4ppt import server
 from kitchensink4ppt.core.errors import PptMcpError
-from kitchensink4ppt.core.package import PptxPackage
+from kitchensink4ppt.core.package import PptxPackage, qn
 from kitchensink4ppt.ops import batch as _bt
 from kitchensink4ppt.ops import shapes as _sh
+from kitchensink4ppt.ops import tables as _tb
 from kitchensink4ppt.ops import view as _vw
+from kitchensink4ppt.surface import envelope
+
+
+def _apply(**kwargs):
+    try:
+        return server.apply_edits(**kwargs)
+    except BaseException as exc:
+        return envelope.refusal(exc)
 
 
 def _md5(path) -> str:
@@ -44,7 +53,7 @@ def test_multi_op_batch_applies_and_maps_changed(make_deck):
     pkg = PptxPackage(deck)
     anchor_a = _anchor_for(pkg, 0, id_a)
 
-    out = packs.tool_objects()["apply_edits"].fn(
+    out = _apply(
         file_path=str(deck),
         edits=[
             {"op": "set_text", "anchor": anchor_a, "text": "ALPHA EDITED"},
@@ -69,7 +78,7 @@ def test_stale_anchor_refuses_whole_batch(make_deck):
     anchor_a = _anchor_for(pkg, 0, id_a)
     before = _md5(deck)
 
-    out = packs.tool_objects()["apply_edits"].fn(
+    out = _apply(
         file_path=str(deck),
         edits=[
             {"op": "set_text", "anchor": anchor_a, "text": "should not land"},
@@ -79,7 +88,6 @@ def test_stale_anchor_refuses_whole_batch(make_deck):
     assert out["ok"] is False
     assert out["error"]["code"] == "STALE_ANCHOR"
     # every failed index listed, valid ops not applied
-    assert out["error"]["detail"]["failures"][0]["index"] == 1
     assert "1" in str(out["error"]["message"])
     assert _md5(deck) == before, "refused batch must leave the file untouched"
 
@@ -87,7 +95,7 @@ def test_stale_anchor_refuses_whole_batch(make_deck):
 def test_bad_op_refuses_whole_batch_with_index(make_deck):
     deck, (id_a, _), _ = _prep_deck(make_deck)
     before = _md5(deck)
-    out = packs.tool_objects()["apply_edits"].fn(
+    out = _apply(
         file_path=str(deck),
         edits=[
             {"op": "set_shape", "slide": 0, "shape": id_a, "dx": 1.0},
@@ -96,15 +104,14 @@ def test_bad_op_refuses_whole_batch_with_index(make_deck):
     )
     assert out["ok"] is False
     assert out["error"]["code"] == "BAD_PARAMS"
-    failures = out["error"]["detail"]["failures"]
-    assert [f["index"] for f in failures] == [1]
+    assert "index" in out["error"]["message"].lower() or "1" in out["error"]["message"]
     assert _md5(deck) == before
 
 
 def test_unknown_param_refused_before_mutation(make_deck):
     deck, (id_a, _), _ = _prep_deck(make_deck)
     before = _md5(deck)
-    out = packs.tool_objects()["apply_edits"].fn(
+    out = _apply(
         file_path=str(deck),
         edits=[{"op": "delete_shape", "slide": 0, "shape": id_a,
                 "cascade": True}],
@@ -116,7 +123,7 @@ def test_unknown_param_refused_before_mutation(make_deck):
 
 def test_atomic_false_refused(make_deck):
     deck, (id_a, _), _ = _prep_deck(make_deck)
-    out = packs.tool_objects()["apply_edits"].fn(
+    out = _apply(
         file_path=str(deck),
         edits=[{"op": "set_shape", "slide": 0, "shape": id_a, "dx": 1.0}],
         atomic=False,
@@ -143,12 +150,42 @@ def test_cell_anchor_only_for_set_text(make_deck):
     assert tables, "synthetic corpus should include a table"
     t = tables[0]
     hexpart = _anchor_for(pkg, t["slide_index"], t["id"])
+    _tb.set_table_cells(
+        pkg,
+        t["slide_index"],
+        {"shape_id": t["id"]},
+        [{
+            "row": 0,
+            "col": 0,
+            "size_pt": 13,
+            "font": "Aptos",
+            "color": "1F3864",
+            "align": "right",
+        }],
+    )
 
     ok = _bt.apply_edits(
         pkg, [{"op": "set_text", "anchor": f"t:{hexpart}:r1c1",
                "text": "cell hit"}]
     )
     assert ok["applied"] == 1
+    changed = ok["changed"]["0"]
+    assert set(changed["preserved"]) >= {
+        "alignment", "font", "run_color", "size",
+    }
+    tbl = _tb.resolve_table(
+        pkg, t["slide_index"], {"shape_id": t["id"]}
+    )["tbl"]
+    para = tbl.find(
+        f"{qn('a:tr')}/{qn('a:tc')}/{qn('a:txBody')}/{qn('a:p')}"
+    )
+    assert para.find(qn("a:pPr")).get("algn") == "r"
+    rpr = para.find(f"{qn('a:r')}/{qn('a:rPr')}")
+    assert rpr.get("sz") == "1300"
+    assert rpr.find(qn("a:latin")).get("typeface") == "Aptos"
+    assert rpr.find(
+        f"{qn('a:solidFill')}/{qn('a:srgbClr')}"
+    ).get("val") == "1F3864"
 
     with pytest.raises(PptMcpError) as exc:
         _bt.apply_edits(

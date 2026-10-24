@@ -118,7 +118,7 @@ def test_merge_three_corpus_decks_with_sections(tmp_path):
     names = [s["name"] for s in _sections(reopened)]
     for wanted in res["sections_created"]:
         assert wanted in names
-    # Section membership covers every slide exactly once (Section invariant).
+    # Section membership covers every slide exactly once.
     all_ids = [r["slide_id"] for r in slide_table(reopened)]
     in_sections = [
         sid for s in _sections(reopened) for sid in s["slide_ids"]
@@ -582,8 +582,10 @@ def test_anonymize_both_author_systems_consistently(make_deck):
     assert "core.creator" in where and "app.company" in where
     assert any(w.startswith("modern author") for w in where)
     assert any(w.startswith("classic author") for w in where)
-    assert any("IRREVERSIBLE" in w for w in res["warnings"])
-    assert any("create_snapshot" in w for w in res["warnings"])
+    assert any("cannot be undone" in w for w in res["warnings"])
+    assert any(
+        "snapshot" in w and "manage_backups" in w for w in res["warnings"]
+    )
 
 
 def test_anonymize_empty_deck_reports_nothing_to_do(make_deck):

@@ -1,24 +1,27 @@
-"""Regression tests for text paging, layout checks, shape styling and tables.
+"""Regressions found while building and checking a long deck.
 
-Covered behaviors:
+One test (or more) per defect:
 
-- extract_text pages a large deck with the `page` block first and takes an
-  offset, so the continuation hint names a call that can be made.
-- check_layout's tiny_text check resolves inherited run sizes instead of
-  skipping every run with no explicit sz.
-- A contrast audit runs against the backdrop beneath a shape, and the
-  overlap audit sees in-group siblings and placeholders whose geometry is
-  inherited.
-- create_presentation with no template builds the 16:9 deck its docstring
-  states, and reports the size it built.
-- line={"type":"none"} removes a themed outline, and insert_connector no
-  longer drops end_arrow/start_arrow in silence.
-- set_shape seeds geometry on a layout-inheriting placeholder, and vertical
-  anchor has a route that does not replace the shape's whole text.
-- A text replacement keeps explicit run colour, paragraph alignment and
-  bullets, and writes the right font slots.
-- delete_table_cols accepts the widths value it documents, and
-  get_workflows has a recipe for inheriting a deck and fixing it.
+- extract_text paged a 43-slide deck but put the `page` block last, behind
+  the whole joined "text", where a client-side truncation ate it; and the
+  tool took no offset, so the block's own continuation hint named a call
+  that could not be made.
+- check_layout's tiny_text check skipped every run with no explicit sz,
+  which is every ordinary body run on a templated deck.
+- There was no contrast audit against the backdrop beneath a shape, and the
+  overlap audit saw neither in-group siblings nor placeholders whose
+  geometry is inherited.
+- create_presentation with no template built a 4:3 deck while its
+  docstring promised 16:9, and never stated the size it built.
+- line={"type":"none"} left a themed outline painted, and insert_connector
+  dropped end_arrow/start_arrow in silence.
+- set_shape refused to seed geometry on a layout-inheriting placeholder,
+  and vertical anchor had no route that did not replace the shape's whole
+  text.
+- A text replacement dropped explicit run colour, reset paragraph
+  alignment and bullets, and wrote only <a:latin> for a font.
+- delete_table_cols documented a widths value it rejects, and get_workflows
+  had no recipe for inheriting a deck and fixing it.
 """
 
 from __future__ import annotations
@@ -35,6 +38,7 @@ from kitchensink4ppt.core.package import PptxPackage
 from kitchensink4ppt.ops import read as rd
 
 
+# ------------------------------------ extract_text paging keeps the page block
 
 
 def _wordy_deck(path, slides: int = 12):
@@ -84,8 +88,8 @@ def test_paged_text_leads_with_the_page_block_not_trails_it(
 def test_extract_text_can_act_on_its_own_continuation_hint(
     tmp_path, monkeypatch
 ):
-    """The page block said "call again with offset=N" at a tool
-    that had no offset parameter."""
+    """The page block said "call again with offset=N" at a tool that had no
+    offset parameter."""
     from kitchensink4ppt import server
 
     monkeypatch.setenv(budget.ENV_MAX_CHARS, "6000")
@@ -104,12 +108,13 @@ def test_extract_text_can_act_on_its_own_continuation_hint(
 
 
 def test_a_deck_that_fits_keeps_its_historical_get_text_shape(tmp_path):
-    """The reorder is invisible below the ceiling."""
+    """Guard: the reorder is invisible below the ceiling."""
     pkg = PptxPackage(str(_wordy_deck(tmp_path / "small.pptx", slides=2)))
     result = rd.get_text(pkg)
     assert list(result) == ["slide_count", "slides", "text"]
 
 
+# ---------------------------- line none, connector arrowheads and unknown keys
 
 
 @pytest.fixture()
@@ -132,7 +137,7 @@ def _ln_of(pkg, slide, shape_id):
 
 
 def test_line_type_none_suppresses_the_outline_like_fill_type_none(drawable):
-    """Line={"type":"none"} emitted a bare <a:ln/>, which suppresses
+    """line={"type":"none"} emitted a bare <a:ln/>, which suppresses
     nothing; the p:style lnRef still painted a themed border. Its sibling
     fill={"type":"none"} got this right, so the two disagreed."""
     from kitchensink4ppt.core.package import qn
@@ -150,7 +155,7 @@ def test_line_type_none_suppresses_the_outline_like_fill_type_none(drawable):
 
 
 def test_connector_writes_the_arrowhead_the_caller_named(drawable):
-    """End_arrow / start_arrow were dropped in silence, and an
+    """end_arrow / start_arrow were dropped in silence, and an
     unarrowed line looks like a designed line, so a render review passes."""
     from kitchensink4ppt.core.package import qn
     from kitchensink4ppt.ops import shapes as shp
@@ -229,6 +234,7 @@ def test_unknown_fill_keys_refuse_instead_of_dropping():
                              "alpha": 0.5}) is not None
 
 
+# ------------------------------------------- text replacement keeps formatting
 
 
 def _styled_body(pkg, slide, shape_id):
@@ -282,10 +288,10 @@ def _first_rpr(pkg, slide, shape_id, para: int = 0):
 
 
 def test_retext_keeps_run_colour_alignment_bullets_and_anchor(drawable):
-    """A plain text replacement re-centred paragraphs,
-    put bullets back where set_bullets(style="none") had removed them,
-    reset the vertical anchor, and dropped explicit run colour, all with
-    nothing but changed: ["text"] to show for it."""
+    """A plain text replacement re-centred paragraphs, put bullets back
+    where set_bullets(style="none") had removed them, reset the vertical
+    anchor, and dropped explicit run colour, all with nothing but
+    changed: ["text"] to show for it."""
     from kitchensink4ppt.core.package import qn as _qn
     from kitchensink4ppt.ops import shapes as shp
 
@@ -309,7 +315,7 @@ def test_retext_keeps_run_colour_alignment_bullets_and_anchor(drawable):
 
 
 def test_retext_still_applies_what_the_caller_did_name(drawable):
-    """Preservation is not stickiness. A named key wins."""
+    """Guard: preservation is not stickiness. A named key wins."""
     from kitchensink4ppt.core.package import qn as _qn
     from kitchensink4ppt.ops import shapes as shp
 
@@ -334,9 +340,9 @@ def test_retext_still_applies_what_the_caller_did_name(drawable):
 
 
 def test_apply_edits_set_text_preserves_the_same_properties(drawable, tmp_path):
-    """The same preservation applies through apply_edits' set_text op, the
-    route that could put bullet glyphs back on a slide after they had been
-    explicitly removed."""
+    """The same loss reached the deck through apply_edits' set_text op, which
+    is the route that put bullet glyphs back on a long deck's closing
+    slide after they had been explicitly removed."""
     from kitchensink4ppt.core.package import qn as _qn
     from kitchensink4ppt.ops import batch, shapes as shp
 
@@ -356,8 +362,8 @@ def test_apply_edits_set_text_preserves_the_same_properties(drawable, tmp_path):
 
 
 def test_text_style_font_writes_ea_and_cs_not_only_latin(drawable):
-    """A latin-only write hands CJK and complex-script runs to
-    the theme's minor font while reporting the typeface as set."""
+    """A latin-only write hands CJK and complex-script runs to the theme's
+    minor font while reporting the typeface as set."""
     from kitchensink4ppt.core.package import qn as _qn
     from kitchensink4ppt.ops import shapes as shp
 
@@ -373,6 +379,7 @@ def test_text_style_font_writes_ea_and_cs_not_only_latin(drawable):
         assert el.get("typeface") == "Georgia"
 
 
+# ----------------------------- inheriting placeholders and the vertical anchor
 
 
 @pytest.fixture()
@@ -502,6 +509,7 @@ def test_apply_edits_reaches_the_anchor_as_text_anchor(drawable):
     assert body.find(_qn("a:bodyPr")).get("anchor") == "b"
 
 
+# ------------------------------------------ tiny_text resolves inherited sizes
 
 
 def _master_body_size(pkg, slide_part, pt: float) -> None:
@@ -568,7 +576,7 @@ def test_tiny_text_resolves_a_size_inherited_from_the_master(
 
 
 def test_an_explicit_size_still_reports_as_its_own(drawable):
-    """Resolution does not relabel what the slide states."""
+    """Guard: resolution does not relabel what the slide states."""
     from kitchensink4ppt.ops import design_check as dc
     from kitchensink4ppt.ops import shapes as shp
 
@@ -589,9 +597,9 @@ def test_an_explicit_size_still_reports_as_its_own(drawable):
 def test_overflow_can_estimate_a_placeholder_that_inherits_its_box(
     inheriting_placeholder
 ):
-    """The estimate dead-ended twice on the same
-    shape, once for the missing xfrm and once on a flat 18pt guess. The
-    v1 build got zero findings on slides whose body ran off the bottom."""
+    """The overflow estimate dead-ended twice on the same shape, once for the
+    missing xfrm and once on a flat 18pt guess. It got zero findings on
+    slides whose body ran off the bottom."""
     from kitchensink4ppt.core.package import qn as _qn
     from kitchensink4ppt.ops import design_check as dc
     from kitchensink4ppt.ops.read import get_slide_info
@@ -628,6 +636,7 @@ def test_overflow_can_estimate_a_placeholder_that_inherits_its_box(
     assert [f for f in findings if target in f["shape_ids"]], findings
 
 
+# -------------------------- create_presentation builds 16:9 without a template
 
 
 def test_a_deck_created_with_no_template_is_actually_16_9(tmp_path):
@@ -676,7 +685,7 @@ def test_widening_moves_the_layouts_with_the_canvas(tmp_path):
 
 
 def test_a_templated_deck_keeps_its_own_canvas(tmp_path):
-    """Only the no-template path changes size."""
+    """Guard: only the no-template path changes size."""
     from pptx import Presentation as _Prs
     from kitchensink4ppt.ops import slides as sl
 
@@ -690,6 +699,7 @@ def test_a_templated_deck_keeps_its_own_canvas(tmp_path):
     assert res["slide_size"]["cx"] == 9144000
 
 
+# ------------------------------------- table column tools and workflow recipes
 
 
 @pytest.fixture()
@@ -753,7 +763,7 @@ def test_there_is_a_recipe_for_inheriting_a_deck_and_fixing_it():
     from kitchensink4ppt.ops import workflows as wf
 
     recipe = wf.get_workflows(task="refresh-an-existing-deck")
-    tools = [s["tool"] for s in recipe["steps"]]
+    tools = [s["op"] for s in recipe["steps"]]
     for expected in (
         "copy_presentation", "get_presentation_view", "check_layout",
         "export_slide_image", "apply_edits", "validate",
@@ -761,16 +771,18 @@ def test_there_is_a_recipe_for_inheriting_a_deck_and_fixing_it():
         assert expected in tools, f"{expected} missing from {tools}"
 
 
-def test_render_and_review_names_the_packs_its_fixes_need():
-    """The loop was listed as needing assembly-export and design, and
-    fixing what you saw needs the graphics and table tools."""
+def test_render_and_review_names_its_verification_operations():
+    """The loop must name the operations needed to render and verify."""
     from kitchensink4ppt.ops import workflows as wf
 
-    packs = wf.get_workflows(task="render-and-review")["packs"]
-    assert "graphics" in packs
-    assert "tables-charts" in packs
+    steps = wf.get_workflows(task="render-and-review")["steps"]
+    operations = {step["op"] for step in steps}
+    assert "export_slide_image" in operations
+    assert "get_autofit_state" in operations
+    assert "validate" in operations
 
 
+# ---------------------------- contrast against the backdrop, overlap in groups
 
 
 def _contrast(pkg, slide, **opts):
@@ -829,7 +841,7 @@ def test_dark_on_dark_over_an_overhanging_band_is_not_passed(drawable):
 
 
 def test_a_translucent_band_composites_before_it_is_judged(drawable):
-    """The band in the field case was accent1 at 12% alpha, and the
+    """The band in the original case was accent1 at 12% alpha, and the
     colour the eye sees is the composite, not the full-strength accent."""
     from kitchensink4ppt.ops import shapes as shp
 
@@ -968,7 +980,7 @@ def test_an_inherited_run_colour_is_judged_and_its_source_named(
 
 
 def test_overlap_recurses_into_groups(drawable):
-    """Every real collision in the field deck's timeline
+    """Every real collision in the original deck's timeline
     was between two boxes inside a group, and the check compared only
     top-level shapes. A deck built with this server's own diagram tooling
     is grouped, so it was structurally invisible."""
@@ -1015,7 +1027,7 @@ def test_families_meant_to_touch_are_left_out_of_the_group_pass(drawable):
 
 
 # ===================================================================
-# Rich-text, backdrop and table-style regressions.
+# Edge cases of text replacement, contrast resolution and slide sizing.
 # ===================================================================
 
 
@@ -1035,15 +1047,15 @@ def _rpr(pkg, slide, sid, para=0):
     return p0.find(f"{_qn('a:r')}/{_qn('a:rPr')}"), body
 
 
+# ---------------------------------- explicit false toggles turn attributes off
 
 
 @pytest.mark.parametrize("key,attr", [("bold", "b"), ("italic", "i")])
 def test_an_explicit_false_toggle_turns_the_attribute_off(drawable, key, attr):
-    """_apply_rpr wrote b/i only when the value was TRUTHY, so a
-    False produced no attribute and the carry kept the old run's b="1".
-    The named key lost, which is the exact opposite of the contract round
-    1 claimed. main did not have this: it rebuilt the body from scratch,
-    so False at least meant absent."""
+    """_apply_rpr wrote b/i only when the value was TRUTHY, so a False
+    produced no attribute and the carry kept the old run's b="1". The named
+    key lost, which is the exact opposite of the contract: False must turn
+    the attribute off."""
     from kitchensink4ppt.ops import shapes as shp
 
     pkg, slide = drawable
@@ -1068,7 +1080,7 @@ def test_an_explicit_false_toggle_also_turns_off_an_inherited_one(drawable):
 
 
 def test_an_absent_toggle_still_writes_nothing(drawable):
-    """Absent must stay absent. "Present and false" and
+    """Guard: absent must stay absent. "Present and false" and
     "not mentioned" are different instructions."""
     pkg, slide = drawable
     sid = _mk(pkg, slide, text="X", text_style={"size": 20})
@@ -1077,7 +1089,7 @@ def test_an_absent_toggle_still_writes_nothing(drawable):
 
 
 def test_underline_false_turns_underline_off_across_a_retext(drawable):
-    """The same audit one key over."""
+    """The same rule, one key over."""
     from kitchensink4ppt.ops import shapes as shp
 
     pkg, slide = drawable
@@ -1088,7 +1100,7 @@ def test_underline_false_turns_underline_off_across_a_retext(drawable):
 
 
 def test_wrap_true_states_itself_rather_than_relying_on_absence(drawable):
-    """Wrap=True wrote nothing, so it could only
+    """The same class of defect: wrap=True wrote nothing, so it could only
     mean "on" by luck of what the old body happened to carry."""
     from kitchensink4ppt.core.package import qn as _qn
     from kitchensink4ppt.ops import shapes as shp
@@ -1103,6 +1115,7 @@ def test_wrap_true_states_itself_rather_than_relying_on_absence(drawable):
     assert body.find(_qn("a:bodyPr")).get("wrap") == "square"
 
 
+# ----------------------------------- a stale autofit scale does not ride along
 
 
 def _crowd(pkg, slide, sid, scale="40000", red="20000"):
@@ -1135,8 +1148,8 @@ def test_a_stale_autofit_scale_does_not_ride_onto_the_new_text(drawable):
     assert na is not None, "the autofit MODE was dropped; only the numbers go"
     assert na.get("fontScale") is None, "a stale fontScale rode onto new text"
     assert na.get("lnSpcReduction") is None
-    # the flag carries the COST, because PowerPoint does not
-    # recompute on open and the frame's fit is now genuinely unknown.
+    # The flag carries the COST, because PowerPoint does not recompute on
+    # open and the frame's fit is now genuinely unknown.
     note = res.get("autofit_scale_reset")
     assert isinstance(note, str) and note
     assert "does not recompute" in note
@@ -1161,7 +1174,7 @@ def test_the_autofit_mode_itself_survives_a_retext(drawable):
 
 
 def test_a_frame_with_no_cached_scale_reports_no_reset(drawable):
-    """The flag is a fact, not decoration."""
+    """Guard: the flag is a fact, not decoration."""
     from kitchensink4ppt.ops import shapes as shp
 
     pkg, slide = drawable
@@ -1170,12 +1183,13 @@ def test_a_frame_with_no_cached_scale_reports_no_reset(drawable):
     assert "autofit_scale_reset" not in res
 
 
+# ------------------------------------------- collapsing mixed runs is reported
 
 
 def test_collapsing_mixed_runs_is_reported_not_claimed_as_preserved(drawable):
-    """A paragraph of differently formatted runs collapses to
-    the FIRST run's formatting. main collapsed them too, so the loss is
-    not new, but reporting preserved over the wreckage is."""
+    """A paragraph of differently formatted runs collapses to the FIRST
+    run's formatting. The collapse is expected; reporting "preserved" over
+    the wreckage is the defect."""
     from kitchensink4ppt.core.package import qn as _qn
     from kitchensink4ppt.ops import shapes as shp
 
@@ -1195,7 +1209,7 @@ def test_collapsing_mixed_runs_is_reported_not_claimed_as_preserved(drawable):
 
 
 def test_a_single_run_paragraph_reports_no_collapse(drawable):
-    """The flag must not fire on every edit."""
+    """Guard: the flag must not fire on every edit."""
     from kitchensink4ppt.ops import shapes as shp
 
     pkg, slide = drawable
@@ -1204,6 +1218,7 @@ def test_a_single_run_paragraph_reports_no_collapse(drawable):
     assert "runs_collapsed_to_first" not in res
 
 
+# ------------------------------------ guessed colours are reported, not judged
 
 
 def _dark_header_table(pkg, slide):
@@ -1242,7 +1257,7 @@ def test_a_dark_header_table_produces_no_fabricated_error(drawable):
 
 
 def test_a_guessed_colour_is_reported_as_unresolved_not_judged(drawable):
-    """"cannot know" is a result. It comes back as info with the
+    """'Cannot know' is a result. It comes back as info with the
     reason named, never at gate severity."""
     from kitchensink4ppt.ops import design_check as dc
 
@@ -1257,7 +1272,7 @@ def test_a_guessed_colour_is_reported_as_unresolved_not_judged(drawable):
 
 
 def test_a_real_low_contrast_run_is_still_an_error(drawable):
-    """The downgrade must not blunt the check. A colour the
+    """Guard: the downgrade must not blunt the check. A colour the
     slide STATES is still judged."""
     from kitchensink4ppt.ops import design_check as dc
     from kitchensink4ppt.ops import shapes as shp
@@ -1301,7 +1316,7 @@ def test_an_unresolved_placeholder_colour_is_downgraded_too(drawable):
 
 
 def test_a_deck_local_table_style_resolves_instead_of_guessing(drawable):
-    """A table style DEFINED
+    """The real fix where it is reachable: a table style DEFINED
     in tableStyles.xml is readable, so its cell text colour and fill are
     resolved rather than guessed. PowerPoint's built-in styles are only
     REFERENCED by GUID and their definitions are not in the file at all,
@@ -1350,12 +1365,13 @@ def test_a_deck_local_table_style_resolves_instead_of_guessing(drawable):
     assert resolved.fill(0, 0, 2, 2) == "1F3864"
 
 
+# ------------------------------- other-family placeholders and the master twin
 
 
 def test_an_other_family_placeholder_does_not_inherit_the_date_box(
     inheriting_placeholder
 ):
-    """Layout_twin guards its family fallback with
+    """layout_twin guards its family fallback with
     family != "other"; master_twin did not, and family_of() lumps pic,
     tbl, chart, ftr, dt and sldNum into one "other" bucket. Measured
     against a REAL master that has a date placeholder: a pic placeholder
@@ -1383,7 +1399,7 @@ def test_an_other_family_placeholder_does_not_inherit_the_date_box(
 
 
 def test_master_twin_still_matches_a_real_title_or_body(inheriting_placeholder):
-    """The fix must not blind the families that DO have one
+    """Guard: the fix must not blind the families that DO have one
     master placeholder each."""
     from kitchensink4ppt.ops import inherit as inh
     from kitchensink4ppt.ops.read import get_slide_info
@@ -1397,7 +1413,7 @@ def test_master_twin_still_matches_a_real_title_or_body(inheriting_placeholder):
 
 
 def test_a_pic_placeholder_with_no_twin_gets_no_inherited_box(drawable):
-    """No box beats the wrong box, so set_shape
+    """End to end: no box beats the wrong box, so set_shape
     refuses rather than seeding the footer strip."""
     from kitchensink4ppt.core.errors import UnsupportedStructure
     from kitchensink4ppt.core.package import qn as _qn
@@ -1429,13 +1445,14 @@ def test_a_pic_placeholder_with_no_twin_gets_no_inherited_box(drawable):
         shp.set_shape(pkg, slide, 900, x=1, y=1, w=2, h=2)
 
 
+# ----------------------------------------- line type none refuses sibling keys
 
 
 def test_line_type_none_refuses_siblings_exactly_as_fill_does():
-    """The type=="none" branch returned before reading any other
-    key, so line={"type":"none","width":4} dropped the width in silence.
-    That is the same asymmetry fill already refuses, left in place
-    one branch over."""
+    """The type=="none" branch returned before reading any other key, so
+    line={"type":"none","width":4} dropped the width in silence. That is
+    the same silent key-dropping refused everywhere else, left in place one
+    branch over."""
     from kitchensink4ppt.core.errors import PptMcpError
     from kitchensink4ppt.ops import geometry as geo
 
@@ -1450,6 +1467,7 @@ def test_line_type_none_refuses_siblings_exactly_as_fill_does():
     assert geo.line_element("none") is not None
 
 
+# -------------------------------------------------- the overlap exclusion list
 
 
 def _grouped_pair(pkg, slide, name_a, name_b):
@@ -1462,7 +1480,7 @@ def _grouped_pair(pkg, slide, name_a, name_b):
 
 
 def test_an_empty_exclude_list_means_exclude_nothing(drawable):
-    """Opts.get("exclude_names") or DEFAULT made an empty list
+    """opts.get("exclude_names") or DEFAULT made an empty list
     falsy, so there was no way to ask for an unfiltered in-group pass."""
     from kitchensink4ppt.ops import design_check as dc
 
@@ -1480,9 +1498,9 @@ def test_an_empty_exclude_list_means_exclude_nothing(drawable):
 
 
 def test_the_exclusion_list_matches_whole_words_not_substrings(drawable):
-    """"band" in name.lower() silently exempted "Bandwidth chart"
-    and "Brand box". Any name containing rule, tick, arrow or axis had the
-    same hole."""
+    """The substring test "band" in name.lower() silently exempted
+    "Bandwidth chart" and "Brand box". Any name containing rule, tick,
+    arrow or axis had the same hole."""
     from kitchensink4ppt.ops import design_check as dc
 
     pkg, slide = drawable
@@ -1496,7 +1514,7 @@ def test_the_exclusion_list_matches_whole_words_not_substrings(drawable):
 
 
 def test_a_genuine_band_is_still_exempt(drawable):
-    """Word matching must not break the exclusion itself."""
+    """Guard: word matching must not break the exclusion itself."""
     from kitchensink4ppt.ops import design_check as dc
 
     pkg, slide = drawable
@@ -1521,6 +1539,7 @@ def test_the_overlap_check_says_how_many_pairs_it_suppressed(drawable):
     assert overlap.get("suppressed_by_exclude_names") >= 1
 
 
+# --------------------------------------- tiny_text honours a cached font scale
 
 
 def test_tiny_text_honours_a_cached_font_scale(drawable):
@@ -1547,7 +1566,7 @@ def test_tiny_text_honours_a_cached_font_scale(drawable):
 
 
 def test_an_unscaled_shape_is_unaffected(drawable):
-    """Guard."""
+    """Guard: a shape with no cached font scale is not flagged as tiny."""
     from kitchensink4ppt.ops import design_check as dc
 
     pkg, slide = drawable
@@ -1558,6 +1577,7 @@ def test_an_unscaled_shape_is_unaffected(drawable):
     assert not [f for f in findings if sid in f["shape_ids"]]
 
 
+# ------------------------------------------ format_text anchor and text_anchor
 
 
 def test_a_format_text_edit_using_anchor_is_told_the_key_it_wants(drawable):
@@ -1585,7 +1605,7 @@ def test_apply_edits_documents_text_anchor():
     assert "text_anchor" in (server.apply_edits.__doc__ or "")
 
 
-# ------------------------------- the explicit 4:3 route
+# ------------------------------------------------------ the explicit 4:3 route
 
 
 @pytest.mark.parametrize("preset,cx,cy,sz_type", [
@@ -1599,8 +1619,8 @@ def test_slide_size_names_the_canvas_a_new_deck_gets(
     """The 16:9 default is a breaking change, so there has to be
     a documented way to ask for the old canvas. set_slide_size afterwards
     is not it: it moves p:sldSz and explicitly refuses to rescale content,
-    so it would strand the layouts in a corner, the mirror of the
-    defect the 16:9 default fixed."""
+    so it would strand the layouts in a corner, as a bare canvas stretch
+    would."""
     from kitchensink4ppt.ops import slides as sl
 
     res = sl.create_presentation(tmp_path / f"{preset[0]}.pptx",
@@ -1651,7 +1671,8 @@ def test_asking_4_3_hands_the_bundled_template_through_unscaled(tmp_path):
 
 def test_slide_size_refuses_rather_than_losing_to_a_template(tmp_path):
     """A template carries its own canvas, so silently ignoring
-    slide_size there would be the same silent-drop class as an ignored line key."""
+    slide_size there would be the same silent-drop class as an ignored
+    line or fill key."""
     from pptx import Presentation as _Prs
     from kitchensink4ppt.core.errors import PptMcpError
     from kitchensink4ppt.ops import slides as sl
@@ -1665,7 +1686,7 @@ def test_slide_size_refuses_rather_than_losing_to_a_template(tmp_path):
 
 
 def test_an_unknown_slide_size_refuses_and_names_the_presets(tmp_path):
-    """Guard."""
+    """Guard: an unknown slide_size refuses before writing any file."""
     from kitchensink4ppt.core.errors import PptMcpError
     from kitchensink4ppt.ops import slides as sl
 
@@ -1676,7 +1697,7 @@ def test_an_unknown_slide_size_refuses_and_names_the_presets(tmp_path):
 
 
 # ===================================================================
-# Table style ladder resolution.
+# Table-style precedence in the contrast resolver, and further edge cases.
 # ===================================================================
 
 
@@ -1745,7 +1766,7 @@ def test_an_emphasis_part_beats_wholeTbl(drawable):
     part. Ground truth is a LibreOffice render of exactly this style: the
     header paints #1F3864 from firstRow while the resolver returned
     #FFFFFF from wholeTbl, which then fabricated a white-on-white contrast
-    ERROR, the same class of defect as an unresolved colour."""
+    ERROR, the same class of fabricated error as a guessed colour."""
     pkg, slide = drawable
     sid, tbl = _styled_table(
         pkg, slide, 3, 3, {"firstRow": 1},
@@ -1812,9 +1833,9 @@ def test_a_column_band_beats_a_row_band(drawable):
 ])
 def test_band_parity_counts_from_the_first_BODY_row(drawable, first_row,
                                                     expected):
-    """The verifier could not test parity while
-    everything resolved to wholeTbl. Rendered both ways: with a header on,
-    the first BODY row is band1, not band2."""
+    """Band parity was untestable while everything resolved to wholeTbl.
+    Rendered both ways: with a header on, the first BODY row is band1, not
+    band2."""
     pkg, slide = drawable
     parts = {"wholeTbl": "FFFFFF", "band1H": "FFD700", "band2H": "00CED1",
              "firstRow": "1F3864"}
@@ -1828,7 +1849,7 @@ def test_band_parity_counts_from_the_first_BODY_row(drawable, first_row,
 
 
 def test_column_band_parity_counts_from_the_first_BODY_column(drawable):
-    """The column half."""
+    """The column half of the band-parity rule."""
     pkg, slide = drawable
     parts = {"wholeTbl": "FFFFFF", "band1V": "FF8C00", "band2V": "9ACD32",
              "firstCol": "228B22"}
@@ -1873,7 +1894,7 @@ def test_a_corner_the_flags_do_not_activate_is_declined_not_guessed(drawable):
 
 
 def test_a_corner_both_flags_activate_resolves(drawable):
-    """The decline is for the ambiguous case only."""
+    """Guard: the decline is for the ambiguous case only."""
     pkg, slide = drawable
     parts = {"wholeTbl": "FFFFFF", "firstRow": "1F3864",
              "firstCol": "228B22", "nwCell": "C0C0C0"}
@@ -1884,9 +1905,9 @@ def test_a_corner_both_flags_activate_resolves(drawable):
 
 
 def test_a_dark_header_from_a_deck_local_style_is_not_a_false_error(drawable):
-    """This is the fabricated gate-severity failure
-    the inversion produced, on the exact population the resolver exists to
-    serve (decks carrying deck-local style definitions)."""
+    """End to end: this is the fabricated gate-severity failure the
+    inverted precedence produced, on the exact population the resolver
+    exists to serve (decks carrying deck-local style definitions)."""
     from kitchensink4ppt.ops import design_check as dc
 
     pkg, slide = drawable
@@ -1934,7 +1955,7 @@ def test_an_autofit_scaled_explicit_size_is_not_called_inherited(drawable):
 
 
 def test_an_unscaled_finding_carries_no_autofit_field(drawable):
-    """The field is a fact, present only when it applies."""
+    """Guard: the field is a fact, present only when it applies."""
     from kitchensink4ppt.ops import design_check as dc
 
     pkg, slide = drawable
@@ -1991,6 +2012,7 @@ def test_an_inherited_size_that_is_also_scaled_says_both(drawable,
     assert "shrunk to 50%" in hit[0]["message"]
 
 
+# -------------------- non-ASCII exclusion names, explicit 16:9 with a template
 
 
 @pytest.mark.parametrize("name_a,name_b,word", [
@@ -2030,7 +2052,7 @@ def test_non_ascii_exclusion_is_case_insensitive_where_case_exists(drawable):
 
 
 def test_a_non_ascii_name_outside_the_list_is_still_checked(drawable):
-    """The fix widens what CAN match, not what does."""
+    """Guard: the fix widens what CAN match, not what does."""
     from kitchensink4ppt.ops import design_check as dc
 
     pkg, slide = drawable
@@ -2060,7 +2082,7 @@ def test_an_explicit_16_9_beside_a_template_refuses(tmp_path):
 
 
 def test_a_template_with_no_slide_size_still_works(tmp_path):
-    """Not passing it keeps the template's canvas."""
+    """Guard: not passing it keeps the template's canvas."""
     from pptx import Presentation as _Prs
     from kitchensink4ppt.ops import slides as sl
 
@@ -2084,7 +2106,7 @@ def test_an_unhashable_slide_size_refuses_like_everything_else(tmp_path, bad):
     assert not out.exists()
 
 
-# --------------------------------------------- decomposed names
+# ------------------------------------------------------------ decomposed names
 
 @pytest.mark.parametrize("name_spelling,word_spelling", [
     ("NFD", "NFC"),
@@ -2098,7 +2120,7 @@ def test_a_decomposed_name_matches_its_precomposed_exclusion_word(
     not a word character, so the NFD spelling of "band" (a, U+0308, nd),
     which is what a name authored on macOS routinely carries, tokenized to
     {"ba", "nd"} and could never match the precomposed word a user types.
-    Both sides are normalized to NFC before tokenizing now, so every
+    Both sides are normalized to NFC before tokenizing, so every
     combination of spellings agrees."""
     import unicodedata
 
@@ -2121,7 +2143,7 @@ def test_a_decomposed_name_matches_its_precomposed_exclusion_word(
 
 
 def test_normalizing_does_not_widen_what_matches(drawable):
-    """NFC folds spellings of the SAME text together, it
+    """Guard: NFC folds spellings of the SAME text together, it
     does not make different text equal."""
     from kitchensink4ppt.ops import design_check as dc
 
@@ -2134,7 +2156,7 @@ def test_normalizing_does_not_widen_what_matches(drawable):
     )
 
 
-# ------------------------------------ bad exclude_names entries
+# --------------------------------------------------- bad exclude_names entries
 
 @pytest.mark.parametrize("bad", [123, None, 4.5, ["band"], {"w": "band"}])
 def test_a_non_string_in_exclude_names_refuses_instead_of_crashing(
@@ -2142,9 +2164,8 @@ def test_a_non_string_in_exclude_names_refuses_instead_of_crashing(
 ):
     """The container was validated and the ELEMENTS were not, so
     exclude_names=[123] reached w.casefold() and raised a raw
-    AttributeError: 'int' object has no attribute 'casefold' -- precisely
-    the raw-exception-instead-of-a-refusal that slide_size was just tidied
-    for, one module over."""
+    AttributeError: 'int' object has no attribute 'casefold'. That is a raw
+    exception where every other bad value gets a refusal."""
     from kitchensink4ppt.core.errors import PptMcpError
     from kitchensink4ppt.ops import design_check as dc
 
@@ -2160,9 +2181,9 @@ def test_a_non_string_in_exclude_names_refuses_instead_of_crashing(
 
 
 def test_a_bare_string_exclude_names_is_one_word_not_four_letters(drawable):
-    """Same two lines: list("band") spelled the request out into
-    the four one-letter words b, a, n and d, so a shape named "a" would
-    have been excluded and a shape named "band" would not."""
+    """list("band") spelled the request out into the four one-letter
+    words b, a, n and d, so a shape named "a" would have been excluded and
+    a shape named "band" would not."""
     from kitchensink4ppt.ops import design_check as dc
 
     pkg, slide = drawable
@@ -2177,7 +2198,7 @@ def test_a_bare_string_exclude_names_is_one_word_not_four_letters(drawable):
 def test_a_good_exclude_names_list_is_untouched_by_the_element_check(
     drawable
 ):
-    """The refusal is for the bad entry only."""
+    """Guard: the refusal is for the bad entry only."""
     from kitchensink4ppt.ops import design_check as dc
 
     pkg, slide = drawable
@@ -2187,11 +2208,11 @@ def test_a_good_exclude_names_list_is_untouched_by_the_element_check(
     assert not [f for f in result["findings"] if f.get("group_id") == grp]
 
 
-# ------------------------------- the autofit note, pinned direct
+# ------------------------------------------- the autofit note, pinned directly
 
 def test_the_autofit_note_never_claims_powerpoint_recomputes_on_open():
-    """Was a wrong factual claim in a user-visible result field:
-    the note said the scale would be recomputed when PowerPoint opened the
+    """The note was once a wrong factual claim in a user-visible result
+    field: it said the scale would be recomputed when PowerPoint opened the
     file, and it is not. The behaviour test above reads the note off a
     result; this one pins the string where it lives, so the claim cannot
     come back through an edit to shapes.py alone.
@@ -2223,7 +2244,7 @@ def test_the_result_field_carries_that_exact_note(drawable):
     assert res.get("autofit_scale_reset") == _AUTOFIT_RESET_NOTE
 
 
-# --------------------- NOTE: a declined corner said the wrong thing
+# ------------------------------------ a declined corner reports its own reason
 
 def _unresolved_infos(pkg, slide):
     from kitchensink4ppt.ops import design_check as dc
@@ -2236,7 +2257,7 @@ def _unresolved_infos(pkg, slide):
 
 
 def test_a_declined_corner_reports_the_corner_reason(drawable):
-    """Verifier NOTE: a corner cell the resolver declines and a cell whose
+    """A corner cell the resolver declines and a cell whose
     style part is not in the file went into the SAME counter, so a
     declined corner was reported as "fill comes from the table style
     part, which this check does not resolve". The style part is right
@@ -2258,7 +2279,7 @@ def test_a_declined_corner_reports_the_corner_reason(drawable):
 
 
 def test_the_two_reasons_are_counted_and_reported_separately(drawable):
-    """Verifier NOTE: with nwCell the only part declared, the corner is
+    """With nwCell the only part declared, the corner is
     declined and every other cell has nothing to read, which is the other
     reason. One finding each, each carrying its own count."""
     pkg, slide = drawable
@@ -2275,9 +2296,9 @@ def test_the_two_reasons_are_counted_and_reported_separately(drawable):
 
 
 def test_a_built_in_style_still_reports_the_missing_part(drawable):
-    """Verifier NOTE guard: the message that was already right is
-    unchanged. A built-in style is referenced by GUID and its definition
-    is not in the file, so there is genuinely nothing to read."""
+    """Guard: the message that was already right is unchanged. A built-in
+    style is referenced by GUID and its definition is not in the file, so
+    there is genuinely nothing to read."""
     from kitchensink4ppt.ops import tables as tb
 
     pkg, slide = drawable

@@ -152,6 +152,16 @@ def get_theme(pkg: PptxPackage, master=None) -> dict:
         ),
     }
 
+    color_map_node = pkg.root(master_part).find(qn("p:clrMap"))
+    color_map = (
+        {key: color_map_node.get(key, "") for key in (
+            "bg1", "tx1", "bg2", "tx2", "accent1", "accent2",
+            "accent3", "accent4", "accent5", "accent6", "hlink",
+            "folHlink",
+        )}
+        if color_map_node is not None else {}
+    )
+
     return {
         "master": master_part,
         "master_name": _cSld_name(pkg, master_part) or "",
@@ -162,5 +172,6 @@ def get_theme(pkg: PptxPackage, master=None) -> dict:
             clr_scheme.get("name", "") if clr_scheme is not None else ""
         ),
         "colors": colors,
+        "color_map": color_map,
         "fonts": fonts,
     }

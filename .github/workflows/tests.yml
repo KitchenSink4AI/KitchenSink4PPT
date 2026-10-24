@@ -3,24 +3,219 @@ name: Tests
 on:
   push:
     branches: [main]
+    tags: ["v*rc*"]
   pull_request:
   workflow_dispatch:
+    inputs:
+      full:
+        description: Run Python 3.12, 3.13, and 3.14 on Windows and Linux
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The public repository carries the Community edition only (no Business adapter,
+  # launcher or tests); private staging keeps both editions.
+  KS4_ADAPTER_EDITION: ${{ github.repository == 'KitchenSink4AI/KitchenSink4PPT' && 'community' || 'all' }}
 
 jobs:
   test:
+    if: ${{ !startsWith(github.ref, 'refs/tags/') && !(github.event_name == 'workflow_dispatch' && inputs.full) }}
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        python: ["3.12"]
+        python: ["3.14"]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
+      # Private staging: both adapters from the staging-only export branch.
+      - name: License adapters (pinned content, digest-checked)
+        if: github.repository != 'KitchenSink4AI/KitchenSink4PPT'
+        uses: actions/checkout@v7
+        with:
+          ref: ci/license-adapters-9c7dc45
+          path: _adapters_checkout
+      - name: Move the adapters outside the source tree
+        if: github.repository != 'KitchenSink4AI/KitchenSink4PPT'
+        shell: bash
+        run: |
+          mv _adapters_checkout "$RUNNER_TEMP/ks4-license-adapters"
+          echo "KS4PPT_ADAPTER_SOURCE=$RUNNER_TEMP/ks4-license-adapters" >> "$GITHUB_ENV"
       - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python }}
+      # The Community license adapter is one shared source, read from the reviewed public
+      # KitchenSink4Word release commit that scripts/adapter_source.py pins
+      # (PUBLIC_ADAPTER_COMMIT) and checked against COMMUNITY_DIGEST before any use.
+      # The Business adapter is never part of a public run.
+      - name: Community license adapter pin
+        id: adapter-pin
+        if: github.repository == 'KitchenSink4AI/KitchenSink4PPT'
+        shell: bash
+        run: python scripts/adapter_source.py --public-pin >> "$GITHUB_OUTPUT"
+      - name: Community license adapter (pinned public commit)
+        if: github.repository == 'KitchenSink4AI/KitchenSink4PPT'
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ steps.adapter-pin.outputs.repository }}
+          ref: ${{ steps.adapter-pin.outputs.commit }}
+          path: _adapter_source
+          persist-credentials: false
+      - name: Move the Community adapter outside the source tree
+        if: github.repository == 'KitchenSink4AI/KitchenSink4PPT'
+        shell: bash
+        env:
+          PIN_COMMIT: ${{ steps.adapter-pin.outputs.commit }}
+          PIN_PATH: ${{ steps.adapter-pin.outputs.path }}
+        run: |
+          set -euo pipefail
+          test "$(git -C _adapter_source rev-parse HEAD)" = "$PIN_COMMIT"
+          mkdir "$RUNNER_TEMP/ks4-license-adapters"
+          cp -r "_adapter_source/$PIN_PATH" "$RUNNER_TEMP/ks4-license-adapters/"
+          rm -rf _adapter_source
+          echo "KS4PPT_ADAPTER_SOURCE=$RUNNER_TEMP/ks4-license-adapters" >> "$GITHUB_ENV"
+      - name: Check the Community adapter against its recorded digest
+        if: github.repository == 'KitchenSink4AI/KitchenSink4PPT'
+        shell: bash
+        run: python scripts/adapter_source.py
       - name: Install
-        run: pip install -e ".[dev]"
+        run: pip install -e ".[dev,metrics,optimize]"
       - name: Run test suite (synthetic corpus auto-generated)
         run: python -m pytest tests/unit -q
-      - name: Site guard (published figures must match the code)
-        run: python -X utf8 scripts/check_site.py
+
+  full-matrix:
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.full) || startsWith(github.ref, 'refs/tags/v') }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.12", "3.13", "3.14"]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      # Private staging: both adapters from the staging-only export branch.
+      - name: License adapters (pinned content, digest-checked)
+        if: github.repository != 'KitchenSink4AI/KitchenSink4PPT'
+        uses: actions/checkout@v7
+        with:
+          ref: ci/license-adapters-9c7dc45
+          path: _adapters_checkout
+      - name: Move the adapters outside the source tree
+        if: github.repository != 'KitchenSink4AI/KitchenSink4PPT'
+        shell: bash
+        run: |
+          mv _adapters_checkout "$RUNNER_TEMP/ks4-license-adapters"
+          echo "KS4PPT_ADAPTER_SOURCE=$RUNNER_TEMP/ks4-license-adapters" >> "$GITHUB_ENV"
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+      # The Community license adapter is one shared source, read from the reviewed public
+      # KitchenSink4Word release commit that scripts/adapter_source.py pins
+      # (PUBLIC_ADAPTER_COMMIT) and checked against COMMUNITY_DIGEST before any use.
+      # The Business adapter is never part of a public run.
+      - name: Community license adapter pin
+        id: adapter-pin
+        if: github.repository == 'KitchenSink4AI/KitchenSink4PPT'
+        shell: bash
+        run: python scripts/adapter_source.py --public-pin >> "$GITHUB_OUTPUT"
+      - name: Community license adapter (pinned public commit)
+        if: github.repository == 'KitchenSink4AI/KitchenSink4PPT'
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ steps.adapter-pin.outputs.repository }}
+          ref: ${{ steps.adapter-pin.outputs.commit }}
+          path: _adapter_source
+          persist-credentials: false
+      - name: Move the Community adapter outside the source tree
+        if: github.repository == 'KitchenSink4AI/KitchenSink4PPT'
+        shell: bash
+        env:
+          PIN_COMMIT: ${{ steps.adapter-pin.outputs.commit }}
+          PIN_PATH: ${{ steps.adapter-pin.outputs.path }}
+        run: |
+          set -euo pipefail
+          test "$(git -C _adapter_source rev-parse HEAD)" = "$PIN_COMMIT"
+          mkdir "$RUNNER_TEMP/ks4-license-adapters"
+          cp -r "_adapter_source/$PIN_PATH" "$RUNNER_TEMP/ks4-license-adapters/"
+          rm -rf _adapter_source
+          echo "KS4PPT_ADAPTER_SOURCE=$RUNNER_TEMP/ks4-license-adapters" >> "$GITHUB_ENV"
+      - name: Check the Community adapter against its recorded digest
+        if: github.repository == 'KitchenSink4AI/KitchenSink4PPT'
+        shell: bash
+        run: python scripts/adapter_source.py
+      - name: Install
+        run: pip install -e ".[dev,metrics,optimize]"
+      - name: Run test suite (synthetic corpus auto-generated)
+        run: python -m pytest tests/unit -q
+
+  release-gate:
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.full) || startsWith(github.ref, 'refs/tags/v') }}
+    needs: full-matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      # Private staging: both adapters from the staging-only export branch.
+      - name: License adapters (pinned content, digest-checked)
+        if: github.repository != 'KitchenSink4AI/KitchenSink4PPT'
+        uses: actions/checkout@v7
+        with:
+          ref: ci/license-adapters-9c7dc45
+          path: _adapters_checkout
+      - name: Move the adapters outside the source tree
+        if: github.repository != 'KitchenSink4AI/KitchenSink4PPT'
+        shell: bash
+        run: |
+          mv _adapters_checkout "$RUNNER_TEMP/ks4-license-adapters"
+          echo "KS4PPT_ADAPTER_SOURCE=$RUNNER_TEMP/ks4-license-adapters" >> "$GITHUB_ENV"
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+      # The Community license adapter is one shared source, read from the reviewed public
+      # KitchenSink4Word release commit that scripts/adapter_source.py pins
+      # (PUBLIC_ADAPTER_COMMIT) and checked against COMMUNITY_DIGEST before any use.
+      # The Business adapter is never part of a public run.
+      - name: Community license adapter pin
+        id: adapter-pin
+        if: github.repository == 'KitchenSink4AI/KitchenSink4PPT'
+        shell: bash
+        run: python scripts/adapter_source.py --public-pin >> "$GITHUB_OUTPUT"
+      - name: Community license adapter (pinned public commit)
+        if: github.repository == 'KitchenSink4AI/KitchenSink4PPT'
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ steps.adapter-pin.outputs.repository }}
+          ref: ${{ steps.adapter-pin.outputs.commit }}
+          path: _adapter_source
+          persist-credentials: false
+      - name: Move the Community adapter outside the source tree
+        if: github.repository == 'KitchenSink4AI/KitchenSink4PPT'
+        shell: bash
+        env:
+          PIN_COMMIT: ${{ steps.adapter-pin.outputs.commit }}
+          PIN_PATH: ${{ steps.adapter-pin.outputs.path }}
+        run: |
+          set -euo pipefail
+          test "$(git -C _adapter_source rev-parse HEAD)" = "$PIN_COMMIT"
+          mkdir "$RUNNER_TEMP/ks4-license-adapters"
+          cp -r "_adapter_source/$PIN_PATH" "$RUNNER_TEMP/ks4-license-adapters/"
+          rm -rf _adapter_source
+          echo "KS4PPT_ADAPTER_SOURCE=$RUNNER_TEMP/ks4-license-adapters" >> "$GITHUB_ENV"
+      - name: Check the Community adapter against its recorded digest
+        if: github.repository == 'KitchenSink4AI/KitchenSink4PPT'
+        shell: bash
+        run: python scripts/adapter_source.py
+      - name: Install
+        run: pip install -e ".[dev,metrics,optimize]"
+      - name: Public-copy and site gates
+        env:
+          KS4P_RELEASE_GATE: "1"
+        run: |
+          python -m pytest tests/unit/test_public_copy_gate.py -q
+          python -X utf8 scripts/check_site.py

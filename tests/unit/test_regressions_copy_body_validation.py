@@ -1,20 +1,23 @@
-"""Regression tests for copy, text-body, table and pack-note behavior found
-while building a 45-slide deck end to end through the server.
+"""Regressions found while building a 45-slide deck end to end
+through the server.
 
-- copy_presentation to a folder that does not exist refused with the
-    raw WinError text and a NOT_FOUND hint telling the caller to re-read
-    the deck, which is not the problem and not the fix.
-- set_placeholder_text rebuilt the body as bare a:p / a:r, so a text
-    box whose formatting lives on paragraph-level pPr/defRPr came back
-    with no indents, no bullet definition, no size, no colour and no
-    typeface.
-- a p:txBody with zero a:p passed layer 1 and made PowerPoint refuse
-    the whole deck, and layer 2 reported "it failed" without naming the
-    slide or the shape: about 40 minutes of manual bisection.
+- copy_presentation to a folder that does not exist refused with the raw
+  WinError text and a NOT_FOUND hint telling the caller to re-read the
+  deck, which is not the problem and not the fix.
+- set_placeholder_text rebuilt the body as bare a:p / a:r, so a text box
+  whose formatting lives on paragraph-level pPr/defRPr came back with no
+  indents, no bullet definition, no size, no colour and no typeface. (The
+  set_shape / apply_edits set_text route had the same loss and was fixed
+  separately; the end-to-end test here pins all four text-writing routes
+  against the same body.)
+- A p:txBody with zero a:p passed the save-time payload check and made
+  PowerPoint refuse the whole deck, and the full-load check reported "it
+  failed" without naming the slide or the shape: about 40 minutes of
+  manual bisection.
 - create_table split the box evenly and offered no way to state row
-    heights or column widths at creation.
-- the enable_tools note promised a tool list refresh that a worker or
-    subagent never gets.
+  heights or column widths at creation.
+- The enable_tools note promised a tool list refresh that a worker or
+  delegated session never gets.
 """
 
 from __future__ import annotations
@@ -28,8 +31,9 @@ from kitchensink4ppt.core.package import PptxPackage, qn
 from kitchensink4ppt.ops import shapes as shp
 from kitchensink4ppt.ops.read import get_slide_info
 
+# ----------------------- set_placeholder_text keeps paragraph-level formatting
 
-#: The body a templated deck has: every visual property on a:pPr
+#: The body the original deck had: every visual property on a:pPr
 #: (indent, spacing, bullet) and a:defRPr (size, colour, typeface), and
 #: runs carrying nothing but text. Nothing states an alignment or an
 #: anchor, so a write that introduces one has invented it.
@@ -74,7 +78,8 @@ def _paragraph_level_body(body, lines):
 @pytest.fixture()
 def field_deck(tmp_path):
     """(pkg, slide, textbox_id, placeholder_id): one slide carrying a free
-    text box and a body placeholder, both formatted the field-run way."""
+    text box and a body placeholder, both formatted the way the original
+    deck was."""
     prs = Presentation()
     prs.slides.add_slide(prs.slide_layouts[1])  # title + content
     path = tmp_path / "field.pptx"
@@ -117,7 +122,7 @@ def _paragraphs_of(pkg, slide, shape_id):
 
 
 def _assert_field_formatting_intact(pkg, slide, shape_id, route):
-    """Every property that used to be lost, on every paragraph,
+    """Every property the original bug lost, on every paragraph,
     plus the two attributes the old rebuild invented."""
     body, paras = _paragraphs_of(pkg, slide, shape_id)
     bodypr = body.find(qn("a:bodyPr"))
@@ -153,18 +158,18 @@ def _assert_field_formatting_intact(pkg, slide, shape_id, route):
             f"{where}: defRPr typeface lost"
         )
     # the two outline levels survive as themselves. Read as LEVELS, not as
-    # raw attributes: a line of the text= shorthand with
-    # no leading tab states level 0 rather than saying nothing, and a
-    # stated 0 is written out as lvl="0". An absent lvl is the same level.
+    # raw attributes: a line of the text= shorthand with no leading tab
+    # states level 0 rather than saying nothing, and a stated 0 is written
+    # out as lvl="0". An absent lvl is the same level.
     assert [
         int((p.find(qn("a:pPr")).get("lvl") or 0)) for p in paras[:3]
     ] == [0, 1, 0], f"{route}: outline levels moved"
 
 
 def test_set_placeholder_text_keeps_paragraph_level_formatting(field_deck):
-    """The rebuild dropped
-    every a:pPr child and every run property; a large deck could not be
-    written through this route because of it."""
+    """The route the set_shape / apply_edits fix did not cover. The rebuild
+    dropped every a:pPr child and every run property; a 45-slide deck had
+    to be written through python-pptx because of it."""
     from kitchensink4ppt.ops import text as txt
 
     pkg, slide, _sid, ph_id = field_deck
@@ -235,7 +240,7 @@ def test_set_placeholder_text_more_paragraphs_than_before(field_deck):
 
 
 def test_set_placeholder_text_stated_level_beats_the_carried_one(field_deck):
-    """Preservation is not stickiness. A level the caller states
+    """Guard: preservation is not stickiness. A level the caller states
     wins over the level of the paragraph it replaces."""
     from kitchensink4ppt.ops import text as txt
 
@@ -255,8 +260,8 @@ def test_set_placeholder_text_stated_level_beats_the_carried_one(field_deck):
 
 
 def test_every_text_writing_route_keeps_the_field_formatting(field_deck):
-    """The original repro, run against all four routes that
-    write text into a shape. Any one of them failing is the field bug."""
+    """End to end: the original repro, run against all four routes that
+    write text into a shape. Any one of them failing is the original bug."""
     from kitchensink4ppt.ops import batch, text as txt
 
     pkg, slide, sid, ph_id = field_deck
@@ -285,8 +290,8 @@ def test_every_text_writing_route_keeps_the_field_formatting(field_deck):
 
 
 def test_set_placeholder_text_with_no_paragraphs_leaves_one(field_deck):
-    """Paragraphs=[] used to leave a p:txBody with zero
-    a:p, which is the corruption PowerPoint refuses to open."""
+    """paragraphs=[] used to leave a p:txBody with zero a:p, which is the
+    corruption PowerPoint refuses to open."""
     from kitchensink4ppt.ops import text as txt
 
     pkg, slide, _sid, ph_id = field_deck
@@ -296,11 +301,12 @@ def test_set_placeholder_text_with_no_paragraphs_leaves_one(field_deck):
     assert paras[0].find(qn("a:r")) is None
 
 
+# --------------------------------- empty text bodies: validation and diagnosis
 
 
 def _empty_the_first_body(pkg, slide=0):
     """Strip every a:p from the first text body on a slide: the exact
-    corruption that is otherwise hard to locate by hand."""
+    corruption a real build produced and then had to bisect by hand."""
     part = get_slide_info(pkg, slide)["part"]
     tree = pkg.root(part).find(f"{qn('p:cSld')}/{qn('p:spTree')}")
     for sp in tree.findall(qn("p:sp")):
@@ -315,8 +321,8 @@ def _empty_the_first_body(pkg, slide=0):
 
 
 def test_save_refuses_a_text_body_with_no_paragraphs(tmp_path):
-    """Payload_valid said true on a deck PowerPoint would not
-    open. The content model wants at least one a:p per body."""
+    """Payload check: payload_valid said true on a deck PowerPoint would
+    not open. The content model wants at least one a:p per body."""
     from kitchensink4ppt.core.errors import ValidationFailed
 
     prs = Presentation()
@@ -337,7 +343,7 @@ def test_save_refuses_a_text_body_with_no_paragraphs(tmp_path):
 
 
 def test_empty_table_cell_body_is_refused_too(tmp_path):
-    """A:txBody in a table cell has the same content model."""
+    """Payload check: a:txBody in a table cell has the same content model."""
     from kitchensink4ppt.core.errors import ValidationFailed
     from kitchensink4ppt.ops import tables as tb
 
@@ -360,14 +366,14 @@ def test_empty_table_cell_body_is_refused_too(tmp_path):
 
 
 def test_the_whole_corpus_still_validates(tmp_path):
-    """P6 guard: _validate_payload runs on every save, so a new assertion
-    that refuses a legitimate deck would brick the server. Every corpus
-    deck (real or generated) must still round-trip."""
-    from pathlib import Path
+    """Guard: _validate_payload runs on every save, so a new assertion
+    that refuses a legitimate deck would brick the server. Every generated
+    corpus deck must still round-trip. Only the generator's own decks are
+    read, never whatever else sits in the folder."""
+    import make_corpus
 
-    corpus = Path(__file__).resolve().parents[1] / "corpus"
-    decks = sorted(corpus.glob("*.pptx")) + sorted(corpus.glob("*.potx"))
-    assert decks, "no corpus to check"
+    decks = [make_corpus.CORPUS / name for name in sorted(make_corpus.GENERATORS)]
+    assert decks and all(d.exists() for d in decks), "no corpus to check"
     for deck in decks:
         pkg = PptxPackage(str(deck))
         out = tmp_path / f"rt_{deck.stem}.pptx"
@@ -376,8 +382,8 @@ def test_the_whole_corpus_still_validates(tmp_path):
 
 
 def test_full_load_names_the_slide_and_shape_that_failed():
-    """P6 layer 2: 'it failed' with no slide and no shape cost about 40
-    minutes of manual bisection on a 45-slide deck."""
+    """Full-load check: 'it failed' with no slide and no shape cost about
+    40 minutes of manual bisection on a 45-slide deck."""
     from kitchensink4ppt.com import bridge
 
     class _Shape:
@@ -431,7 +437,8 @@ def test_full_load_names_the_slide_and_shape_that_failed():
 
 
 def test_opens_clean_surfaces_the_failing_slide_and_shape(monkeypatch):
-    """And the identity reaches the validate tool's result."""
+    """Full-load check: the failing slide and shape also reach the validate
+    tool's result."""
     from kitchensink4ppt.com import bridge
 
     exc = bridge.FullLoadFailed(
@@ -467,7 +474,7 @@ def test_agenda_body_with_no_entries_still_has_a_paragraph(tmp_path):
 
 
 def test_notes_rebuilt_from_nothing_still_has_a_paragraph(tmp_path):
-    """Ops/notes.py _rebuild_body with an empty spec list."""
+    """ops/notes.py _rebuild_body with an empty spec list."""
     from kitchensink4ppt.ops import notes as nt
 
     prs = Presentation()
@@ -478,16 +485,21 @@ def test_notes_rebuilt_from_nothing_still_has_a_paragraph(tmp_path):
     nt.set_notes(pkg, 0, "first draft of the note")
     nt.set_notes(pkg, 0, paragraphs=[])
     out = tmp_path / "notes_out.pptx"
-    pkg.save(str(out))  # layer 1 refuses a body with no paragraphs
+    pkg.save(str(out))  # the payload check refuses a body with no paragraphs
     assert out.is_file()
 
 
+# --------------------------------------- copy_presentation to a missing folder
 
 
 def _copy_presentation(**kwargs):
-    from kitchensink4ppt import packs, server  # noqa: F401  (registers tools)
+    from kitchensink4ppt import server
+    from kitchensink4ppt.surface import envelope
 
-    return packs.tool_objects()["copy_presentation"].fn(**kwargs)
+    try:
+        return server.copy_presentation(**kwargs)
+    except BaseException as exc:
+        return envelope.refusal(exc)
 
 
 def _deck_at(path):
@@ -498,7 +510,7 @@ def _deck_at(path):
 
 
 def test_copy_presentation_happy_path(tmp_path):
-    """Copy_presentation had no behavioural test at all."""
+    """copy_presentation had no behavioural test at all."""
     src = _deck_at(tmp_path / "src.pptx")
     dest = tmp_path / "copy.pptx"
     out = _copy_presentation(file_path=str(src), dest_path=str(dest))
@@ -558,19 +570,20 @@ def test_copy_presentation_missing_parent_says_so(tmp_path):
 def test_a_declared_hint_overrides_the_blanket_one():
     """The per-code _HINTS entry is a fallback, not a
     verdict, so a refusal that knows better can say so."""
-    from kitchensink4ppt import server
     from kitchensink4ppt.core.errors import TargetNotFound
+    from kitchensink4ppt.surface import envelope
 
     plain = TargetNotFound("no shape 9 on slide 1")
-    assert "get_presentation_view" in server._refusal(plain)["error"]["hint"]
+    assert envelope.refusal(plain)["error"]["hint"]
 
     exc = TargetNotFound("no shape 9 on slide 1")
     exc.hint = "do this other thing instead"
     assert (
-        server._refusal(exc)["error"]["hint"] == "do this other thing instead"
+        envelope.refusal(exc)["error"]["hint"] == "do this other thing instead"
     )
 
 
+# ---------------------------------- create_table row heights and column widths
 
 
 def test_create_table_accepts_row_heights_and_col_widths(tmp_path):
@@ -649,134 +662,46 @@ def test_create_table_refuses_sizes_that_overflow_the_box(tmp_path):
 
 
 def test_create_table_description_stays_in_budget():
-    from kitchensink4ppt import packs, server  # noqa: F401  (registers tools)
+    import inspect
 
-    tool = packs.tool_objects()["create_table"]
-    desc = tool.description or ""
+    from kitchensink4ppt import server
+
+    desc = inspect.getdoc(server.create_table) or ""
     assert "row_heights" in desc and "col_widths" in desc
     assert round(len(desc) / 4) <= 130, (
         f"create_table description is ~{round(len(desc) / 4)} tokens"
     )
 
 
+# --------------------------------------------------- the tool surface is fixed
 
 
-_BODY = (
-    "If the new tools are not in your tool "
-    "list, this client fixed its list when the session or worker started: "
-    "do not retry here. What works in every client: ask the user to add "
-    "the packs to KS4P_MODE (comma list) in this server's launch "
-    "settings, restart the app or session, then start a new worker if "
-    "needed. Claude Code only: the orchestrator can instead call "
-    "enable_tools in the main session and then start a new worker. If "
-    "enable_tools refuses a pack, an administrator locked the tool set: "
-    "do not retry."
-)
+def test_legacy_dynamic_surface_settings_fail_closed(monkeypatch):
+    """Retired policy variables cannot silently widen the surface."""
+    from kitchensink4ppt.settings import Settings, SettingsError
 
-_NOTE = "tools/list_changed was sent. " + _BODY
-
-_NOOP_NOTE = (
-    "These packs were already on, so no list change was sent. " + _BODY
-)
-
-_WORKER_SENTENCE = (
-    "Workers and subagents only see the tools that were on when they "
-    "started: start the server with KS4P_MODE set to a comma list of "
-    "packs, or, in Claude Code, enable packs in the main session before "
-    "starting workers."
-)
+    monkeypatch.setenv("KS4P_MODE", "full,typo-pack")
+    monkeypatch.setenv("KS4P_PACK_POLICY", "lockedd")
+    with pytest.raises(SettingsError) as caught:
+        Settings.from_env()
+    # MODE is judged first: a list of packs is a limit, so it names MODE.
+    assert "KS4P_MODE" in str(caught.value)
+    assert "KS4P_READ_ONLY" in str(caught.value)
+    assert "KS4P_FORBID" in str(caught.value)
 
 
-@pytest.fixture()
-def pristine_packs():
-    """Restore the process-wide enabled set after a test flips it."""
-    from kitchensink4ppt import packs, server  # noqa: F401
-
-    before = dict(packs._ENABLED)
-    yield packs
-    packs._ENABLED.clear()
-    packs._ENABLED.update(before)
-
-
-def test_enable_tools_note_is_the_887_wording(pristine_packs):
-    """The old note promised a tool-list refresh that a worker or
-    subagent never gets, so the worker retried the same dead call."""
-    packs = pristine_packs
-    out = packs.enable(["graphics"])
-    assert out["enabled"] == ["graphics"]
-    assert out["note"] == _NOTE
-
-
-def test_the_note_is_emitted_on_a_no_op_re_enable(pristine_packs):
-    """The caller who cannot see the tools is exactly the caller
-    whose second attempt enables nothing new, and that was the call the
-    old note stayed silent on."""
-    packs = pristine_packs
-    packs.enable(["graphics"])
-    again = packs.enable(["graphics"])
-    assert again["enabled"] == []
-    assert again["already_enabled"] == ["graphics"]
-    # _sync fires the visibility hook only when a tool actually
-    # flipped, so claiming a notification here was a plain falsehood.
-    assert again["note"] == _NOOP_NOTE
-    assert "tools/list_changed was sent" not in again["note"]
-    # the guidance itself is identical either way
-    assert _BODY in again["note"]
-
-
-def test_the_worker_sentence_is_in_the_instructions_and_the_index():
-    """Said once where a client actually reads the surface."""
+def test_fixed_surface_instructions_do_not_offer_runtime_tool_changes():
     from kitchensink4ppt import server
-    from kitchensink4ppt.ops import workflows as wf
 
-    assert _WORKER_SENTENCE in (server.mcp.instructions or "")
-    assert _WORKER_SENTENCE in wf.get_workflows()["note"]
-
-
-def test_the_locked_refusal_names_the_administrator(monkeypatch):
-    """A refusal that does not say a human set the lock reads
-    like a bug to retry."""
-    from kitchensink4ppt import packs
-    from kitchensink4ppt.core.errors import PptMcpError
-
-    monkeypatch.setenv(packs.ENV_PACK_POLICY, "locked")
-    with pytest.raises(PptMcpError) as excinfo:
-        packs.enable(["graphics"])
-    assert excinfo.value.code == "CONFLICT"
-    assert (
-        "An administrator locked the tool packs for this install."
-        in str(excinfo.value)
-    )
+    instructions = server.create_server().instructions.lower()
+    assert "enable_tools" not in instructions
+    assert "disable_tools" not in instructions
+    assert "tools/list_changed" not in instructions
 
 
-def test_a_pack_policy_typo_does_not_fail_open(monkeypatch):
-    """The one env whose whole purpose is a lock used to shrug off a
-    misspelling: KS4P_PACK_POLICY=lockedd served UNLOCKED while its
-    sibling KS4P_MODE=fulll refused to start."""
-    from kitchensink4ppt import packs
-    from kitchensink4ppt.core.errors import PptMcpError
-
-    monkeypatch.setenv(packs.ENV_PACK_POLICY, "lockedd")
-    with pytest.raises(PptMcpError) as excinfo:
-        packs.resolve_lock()
-    message = str(excinfo.value)
-    assert "KS4P_PACK_POLICY" in message and "lockedd" in message
-    with pytest.raises(PptMcpError):
-        packs.apply_startup_mode()
-
-
-def test_the_accepted_pack_policies_still_work(monkeypatch):
-    from kitchensink4ppt import packs
-
-    monkeypatch.setenv(packs.ENV_PACK_POLICY, "locked")
-    assert packs.resolve_lock() is True
-    monkeypatch.setenv(packs.ENV_PACK_POLICY, "auto")
-    assert packs.resolve_lock() is False
-    monkeypatch.setenv(packs.ENV_PACK_POLICY, "")
-    assert packs.resolve_lock() is False
-
-
-# ============================================================ 
+# ============================================================ edge cases
+# Retext carriers and run signatures, the payload validator, the COM walk
+# and table geometry.
 
 
 def _bare_body():
@@ -828,7 +753,7 @@ def test_placeholder_retext_uses_break_character_properties():
 
 
 def test_a_field_in_the_replacement_gets_the_properties_too():
-    """A:fld and a:br are landing spots as well as sources."""
+    """a:fld and a:br are landing spots as well as sources."""
     from kitchensink4ppt.ops import shapes as _shp
 
     old = _bare_body()
@@ -872,7 +797,7 @@ def test_empty_replacement_keeps_the_end_paragraph_style():
 
 
 def test_a_visible_run_still_takes_the_run_style_not_end_para():
-    """The other direction must not flip."""
+    """Guard: the other direction must not flip."""
     from kitchensink4ppt.ops.text import _replace_body_paragraphs
 
     body = _bare_body()
@@ -928,7 +853,7 @@ def test_east_asian_difference_is_reported_as_a_collapse():
 
 
 def test_rtl_difference_is_reported_as_a_collapse():
-    """Same for a:rtl, which the old signature never looked at."""
+    """The same for a:rtl, which the old signature never looked at."""
     old = _bare_body()
     _two_run_para(
         old, lambda rpr: etree.SubElement(rpr, qn("a:rtl")).set("val", "1")
@@ -938,7 +863,7 @@ def test_rtl_difference_is_reported_as_a_collapse():
 
 
 def test_identical_runs_are_not_reported_as_a_collapse():
-    """The widened signature must not cry wolf on runs that
+    """Guard: the widened signature must not cry wolf on runs that
     really are alike, including a bare a:br between them."""
     old = _bare_body()
     p = _two_run_para(old, None)
@@ -974,7 +899,7 @@ def test_disagreeing_hyperlinks_are_dropped_not_spread():
 
 
 def test_one_shared_hyperlink_still_rides_through():
-    """Agreement is not a loss. A link every run shared stays."""
+    """Guard: agreement is not a loss. A link every run shared stays."""
     from kitchensink4ppt.core.package import NSMAP
 
     old = _bare_body()
@@ -994,7 +919,7 @@ def test_one_shared_hyperlink_still_rides_through():
 
 
 def test_a_carried_level_survives_a_later_explicit_one(field_deck):
-    """N2: `carried` is body-global, so a later paragraph whose level the
+    """`carried` is body-global, so a later paragraph whose level the
     caller stated used to erase the accurate report from an earlier one."""
     from kitchensink4ppt.ops import text as txt
 
@@ -1016,6 +941,7 @@ def test_a_carried_level_survives_a_later_explicit_one(field_deck):
     )
 
 
+# -------------------------- the payload validator: MCE branches and chart text
 
 _MC = "http://schemas.openxmlformats.org/markup-compatibility/2006"
 _P14 = "http://schemas.microsoft.com/office/powerpoint/2010/main"
@@ -1122,7 +1048,7 @@ def test_nested_alternate_content_branches_resolve(make_deck, tmp_path):
 
 
 def test_chart_text_bodies_are_covered(tmp_path):
-    """C:rich and c:txPr use the same paragraph-bearing model. Leaving
+    """c:rich and c:txPr use the same paragraph-bearing model. Leaving
     them out made the 'every text body' claim false."""
     from kitchensink4ppt.core.errors import ValidationFailed
     from kitchensink4ppt.ops import charts as ch
@@ -1152,7 +1078,7 @@ def test_chart_text_bodies_are_covered(tmp_path):
 
 
 def test_a_real_chart_round_trips(tmp_path):
-    """Covering charts must not refuse a chart the server built."""
+    """Guard: covering charts must not refuse a chart the server built."""
     from kitchensink4ppt.ops import charts as ch
 
     prs = Presentation()
@@ -1170,6 +1096,7 @@ def test_a_real_chart_round_trips(tmp_path):
     assert out.is_file()
 
 
+# ------------------------------------------------------ the full-load COM walk
 
 
 class _FakeFrame:
@@ -1404,7 +1331,7 @@ def test_a_busy_fault_inside_a_group_still_blames_the_application():
 
 
 def test_an_unclassified_fault_is_still_a_file_verdict():
-    """Classification must not swallow real content failures."""
+    """Guard: classification must not swallow real content failures."""
     from kitchensink4ppt.com import bridge
 
     pres = _FakePres([
@@ -1415,7 +1342,7 @@ def test_an_unclassified_fault_is_still_a_file_verdict():
 
 
 def test_mixed_tristate_is_not_treated_as_yes():
-    """N3: `if shp.HasTextFrame` counted msoTriStateMixed (-2) as true, so
+    """`if shp.HasTextFrame` counted msoTriStateMixed (-2) as true, so
     an unusual shape was probed for a TextFrame it does not support and
     became a false failure."""
     from kitchensink4ppt.com import bridge
@@ -1431,6 +1358,7 @@ def test_mixed_tristate_is_not_treated_as_yes():
     assert out["text_reads"] == 0, "a mixed tri-state was probed as a yes"
 
 
+# -------------------------------------------------------------- table geometry
 
 
 def _table_pkg(tmp_path, name="m5.pptx"):
@@ -1496,7 +1424,7 @@ def test_a_complete_overfilling_list_resizes_the_frame_too(tmp_path):
 
 
 def test_a_complete_exact_list_does_not_claim_a_resize(tmp_path):
-    """A list that already totals the box says nothing."""
+    """Guard: a list that already totals the box says nothing."""
     from kitchensink4ppt.ops import tables as tb
 
     pkg = _table_pkg(tmp_path)
@@ -1511,7 +1439,7 @@ def test_a_complete_exact_list_does_not_claim_a_resize(tmp_path):
 
 
 def test_a_single_row_underfill_resizes(tmp_path):
-    """The 1-row and 1-column edges."""
+    """The 1-row and 1-column edges of the same rule."""
     from kitchensink4ppt.ops import tables as tb
     from kitchensink4ppt.ops import geometry as g
 
@@ -1526,7 +1454,7 @@ def test_a_single_row_underfill_resizes(tmp_path):
 
 
 def test_a_partial_dict_still_fits_the_box_it_was_given(tmp_path):
-    """A dict names some rows and leaves the rest to the box, so
+    """Guard: a dict names some rows and leaves the rest to the box, so
     the box still rules and the frame does not move."""
     from kitchensink4ppt.ops import tables as tb
     from kitchensink4ppt.ops import geometry as g

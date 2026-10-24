@@ -1,31 +1,29 @@
-"""Response envelope: mutation success shape, structured refusals, closed
-code vocabulary, and the pack-hint signpost on refusals."""
+"""Operation envelopes and the fixed-surface refusal vocabulary."""
 
 from __future__ import annotations
 
 import pytest
 
-from kitchensink4ppt import packs, server
+from kitchensink4ppt import server
+from kitchensink4ppt.core.errors import CODES
+from kitchensink4ppt.registry import public_ops
+from kitchensink4ppt.settings import Settings
+from kitchensink4ppt.surface import envelope
+from kitchensink4ppt.surface.plan import MAX_DESCRIPTION_CHARS, build
 
-_CLOSED_CODES = {
-    "AMBIGUOUS_LOCATION", "NOT_FOUND", "DOCUMENT_LOCKED", "APP_NOT_RUNNING",
-    "APP_BUSY", "APP_BLOCKED", "PROTECTED_VIEW", "VALIDATION_FAILED",
-    "STALE_ANCHOR", "RANGE_OUT_OF_BOUNDS", "UNSUPPORTED_CONTENT",
-    "CONFLICT", "BAD_PARAMS",
-}
+_CLOSED_CODES = CODES
 
 
 def _fn(name: str):
-    return packs.tool_objects()[name].fn
+    fn = getattr(server, name)
 
+    def call(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except BaseException as exc:
+            return envelope.refusal(exc)
 
-@pytest.fixture(autouse=True)
-def _restore_surface():
-    before = dict(packs._ENABLED)
-    yield
-    packs._ENABLED.clear()
-    packs._ENABLED.update(before)
-    server._PENDING_VISIBILITY.clear()
+    return call
 
 
 def test_mutation_success_envelope(make_deck):
@@ -67,42 +65,39 @@ def test_missing_file_refusal():
 
 
 def test_all_mapped_codes_are_closed_vocabulary():
-    for _etype, code in server._CODE_MAP:
+    for _etype, code in envelope._CODE_MAP:
         assert code in _CLOSED_CODES, f"{code} is outside the closed vocabulary"
 
 
-def test_pack_hint_names_enable_tools(make_deck):
-    """Discoverability rule 2: a refusal that DECLARES it directs the caller
-    to a disabled tool (exc.hint_tools, set at the raise site) must carry
-    the exact enable_tools call. Message text is never scanned (M8)."""
+def test_internal_hint_tools_do_not_reintroduce_runtime_surface_advice(make_deck):
+    """Legacy hint metadata cannot tell callers to mutate the fixed surface."""
     from kitchensink4ppt.core.errors import UnsupportedStructure
 
     exc = UnsupportedStructure(
         "table cell text goes through set_table_cells, not format_text"
     )
     exc.hint_tools = ["set_table_cells"]
-    out = server._refusal(exc)
+    out = envelope.refusal(exc)
     assert out["ok"] is False
     hint = out["error"]["hint"]
-    assert "enable_tools" in hint
-    assert "tables-charts" in hint
+    assert hint
+    assert "enable_tools" not in hint
+    assert "pack" not in hint.lower()
 
 
-def test_pack_hint_absent_when_pack_enabled():
-    packs.enable(["tables-charts"])
+def test_declared_hint_overrides_generic_fixed_surface_hint():
     from kitchensink4ppt.core.errors import UnsupportedStructure
 
     exc = UnsupportedStructure(
         "table cell text goes through set_table_cells"
     )
-    exc.hint_tools = ["set_table_cells"]
-    out = server._refusal(exc)
-    assert "enable_tools" not in out["error"]["hint"]
+    exc.hint = "Use set_table_cells for table-cell content."
+    out = envelope.refusal(exc)
+    assert out["error"]["hint"] == exc.hint
 
 
-def test_format_text_cell_refusal_signposts_pack(make_deck):
-    """The real text refusal path: format_text on a table graphicFrame
-    should point at the tables-charts pack while it is disabled."""
+def test_format_text_cell_refusal_names_the_correct_operation(make_deck):
+    """The real refusal path points at the operation that can do the job."""
     deck = make_deck("cellref.pptx")
     from kitchensink4ppt.core.package import PptxPackage
     from kitchensink4ppt.ops.read import list_elements
@@ -116,64 +111,32 @@ def test_format_text_cell_refusal_signposts_pack(make_deck):
     )
     assert out["ok"] is False
     assert "set_table_cells" in out["error"]["message"]
-    assert "enable_tools" in out["error"]["hint"]
-    assert "tables-charts" in out["error"]["hint"]
+    assert "enable_tools" not in out["error"]["hint"]
 
 
-def test_docstring_budget_and_no_em_dashes():
-    """Every tool description inside 80-120 tokens (chars/4, multiplex
-    tools get headroom to ~350) and free of em dashes."""
-    multiplex = {
-        "list_elements", "manage_backups", "enable_tools", "apply_edits",
-        "get_workflows", "diagnose", "validate", "manage_section",
-        "generate_diagram", "manage_custom_show",
-    }
-    # These readers answer under an output budget and page, and a
-    # description that did not say so would be lying by omission on exactly
-    # the decks where it matters. They get room for the paging contract and
-    # nothing more; they land at 139 to 175, so this ceiling still bites.
-    # extract_text joined the list: it had been paging
-    # all along without a word of it in the description.
-    paged_readers = {
-        "get_presentation_view", "get_text", "find_text", "get_slide_info",
-        "extract_text",
-    }
-    for name, tool in packs.tool_objects().items():
-        desc = tool.description or ""
+def test_fixed_tool_description_budget_and_no_em_dashes():
+    plan = build(Settings())
+    for name, tool in plan.tools.items():
+        desc = tool.description
         assert desc, f"{name} has no description"
         assert "\u2014" not in desc, f"{name} description has an em dash"
-        tokens = len(desc) / 4
-        cap = 350 if name in multiplex else (180 if name in paged_readers else 130)
-        assert 60 <= tokens <= cap, (
-            f"{name} description is ~{tokens:.0f} tokens, "
-            f"outside [60, {cap}]"
-        )
+        assert len(desc) <= MAX_DESCRIPTION_CHARS
 
 
 def test_mutating_tools_carry_contract_sentence():
     contract = "Saves atomically with two-slot backup"
-    for name, tool in packs.tool_objects().items():
-        params = (tool.parameters or {}).get("properties", {})
-        if "backup" in params:
-            desc = " ".join((tool.description or "").split())
+    for name, spec in public_ops().items():
+        if "backup" in spec.args.model_fields:
+            desc = " ".join((getattr(server, name).__doc__ or "").split())
             assert contract in desc, (
                 f"{name} takes backup= but lacks the mutation contract "
                 "sentence"
             )
 
 
-def test_lite_docstrings_advertise_packs():
-    """Discoverability rule 3: every lite READ/EDIT docstring spends a line
-    pointing beyond itself (a pack name or enable_tools); safety and pack
-    tools are the exempt set."""
-    exempt = {
-        "enable_tools", "disable_tools", "create_snapshot", "manage_backups",
-        "copy_presentation",
-    }
-    for name in packs.tool_names()["lite"]:
-        if name in exempt:
-            continue
-        desc = packs.tool_objects()[name].description or ""
-        assert (
-            "enable_tools" in desc or "pack" in desc
-        ), f"lite tool {name} never mentions the packs"
+def test_fixed_surface_copy_does_not_advertise_retired_controls():
+    for name, tool in build(Settings()).tools.items():
+        desc = tool.description.lower()
+        assert "enable_tools" not in desc, name
+        assert "disable_tools" not in desc, name
+        assert "tools/list_changed" not in desc, name

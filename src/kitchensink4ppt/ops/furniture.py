@@ -26,13 +26,22 @@ operation this file-based tool does not imitate.
 from __future__ import annotations
 
 import copy
+import datetime
+import uuid
 
 from lxml import etree
 
 from ..core.errors import PptMcpError, TargetNotFound, UnsupportedStructure
-from ..core.package import PRESENTATION_PART, PptxPackage, qn, resolve_target
+from ..core.package import (
+    PRESENTATION_PART,
+    PptxPackage,
+    qn,
+    resolve_target,
+    seat_ahead_of_extlst,
+)
 from . import geometry as g
 from .read import resolve_slide, slides_in_scope
+from .read import cnvpr_id
 
 _RT_SLIDE_LAYOUT = (
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout"
@@ -44,13 +53,13 @@ _RT_SLIDE_MASTER = (
 _FURNITURE_TYPES = ("ftr", "sldNum", "dt")
 
 #: Slide size presets: name -> (cx, cy, sldSz type attr or None).
-#: 16:9 decks carry no type attr (as PowerPoint writes them); 4:3 is
+#: 16:9 decks carry no type attr (verified from real decks); 4:3 is
 #: PowerPoint's screen4x3; 16:10 the classic 10 x 6.25 in screen16x10.
 _SIZE_PRESETS = {
     "16:9": (12192000, 6858000, None),
     "4:3": (9144000, 6858000, "screen4x3"),
     "16:10": (9144000, 5715000, "screen16x10"),
-    # Paper presets, PowerPoint's own dimensions (M9: the tool docstring
+    # Paper presets, PowerPoint's own dimensions (the tool docstring
     # advertises these; the implementation must accept them).
     "a4": (9906000, 6858000, "A4"),
     "letter": (9144000, 6858000, "letter"),
@@ -150,6 +159,52 @@ def _set_sp_text(sp: etree._Element, text: str) -> None:
     t.text = text
 
 
+def _has_date_field(sp: etree._Element | None) -> bool:
+    return sp is not None and any(
+        (f.get("type") or "").startswith("datetime") for f in sp.iter(qn("a:fld"))
+    )
+
+
+def _date_field_source(pkg: PptxPackage, support: dict) -> etree._Element | None:
+    """The layout's date placeholder when it carries a date field, else the
+    master's; None when neither does."""
+    for key in ("layout_part", "master_part"):
+        part = support.get(key)
+        if part and pkg.has_part(part):
+            sp = _find_ph(pkg.root(part), "dt")
+            if _has_date_field(sp):
+                return sp
+    return None
+
+
+def _make_date_automatic(sp: etree._Element, src: etree._Element | None) -> None:
+    """Give a date placeholder that holds fixed text an automatic date again:
+    the layout's (or master's) date field, as date=True clones onto a slide
+    without one; failing that, the field PowerPoint itself writes when
+    "Update automatically" is chosen (type datetime1, a fresh id, today's
+    date as the cached text, which PowerPoint refreshes)."""
+    body = sp.find(qn("p:txBody"))
+    if body is None:
+        body = etree.SubElement(sp, qn("p:txBody"))
+        etree.SubElement(body, qn("a:bodyPr"))
+        etree.SubElement(body, qn("a:lstStyle"))
+    for p in body.findall(qn("a:p")):
+        body.remove(p)
+    src_body = src.find(qn("p:txBody")) if _has_date_field(src) else None
+    if src_body is not None:
+        for p in src_body.findall(qn("a:p")):
+            body.append(copy.deepcopy(p))
+        return
+    today = datetime.date.today()
+    p = etree.SubElement(body, qn("a:p"))
+    fld = etree.SubElement(p, qn("a:fld"))
+    fld.set("id", "{" + str(uuid.uuid4()).upper() + "}")
+    fld.set("type", "datetime1")
+    etree.SubElement(fld, qn("a:rPr"), lang="en-US", smtClean="0")
+    etree.SubElement(fld, qn("a:t")).text = f"{today.month}/{today.day}/{today.year}"
+    etree.SubElement(p, qn("a:endParaRPr"), lang="en-US", dirty="0")
+
+
 def _ensure_ph(
     pkg: PptxPackage,
     slide_part: str,
@@ -175,10 +230,11 @@ def _ensure_ph(
         if sp_tree is None:
             raise UnsupportedStructure(f"{slide_part} has no p:spTree")
         sp_tree.append(sp)
+        seat_ahead_of_extlst(sp_tree, sp)
         action = "added"
     else:
         cnvpr = sp.find(f"{qn('p:nvSpPr')}/{qn('p:cNvPr')}")
-        new_id = int(cnvpr.get("id")) if cnvpr is not None else None
+        new_id = cnvpr_id(cnvpr)
         action = "set"
     if text is not None:
         _set_sp_text(sp, text)
@@ -269,8 +325,15 @@ def set_footer(
             else:
                 # date=True keeps the cloned automatic date field; a string
                 # replaces it with fixed text (the dialog's "Fixed" mode).
+                # date=True on a slide whose date holds fixed text brings
+                # the automatic field back ("Update automatically").
                 text = None if date is True else str(date)
                 action, sid = _ensure_ph(pkg, part, support, "dt", text=text)
+                if date is True and action != "unsupported":
+                    sp = _find_ph(pkg.root(part), "dt")
+                    if sp is not None and not _has_date_field(sp):
+                        _make_date_automatic(sp, _date_field_source(pkg, support))
+                        pkg.mark_dirty(part)
                 entry["date"] = action
                 if sid is not None:
                     entry["date_shape_id"] = sid

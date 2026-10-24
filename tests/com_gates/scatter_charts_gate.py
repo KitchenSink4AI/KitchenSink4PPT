@@ -1,5 +1,7 @@
 """Standalone COM gate for scatter charts + per-series colors — run when
-PowerPoint is CLOSED. (The structure/oracle halves already run in tests/unit/test_charts.py.)
+PowerPoint is CLOSED. (Packaged because the validator window can be
+contended by concurrent automation; the structure/oracle halves already run
+in tests/unit/test_charts.py.)
 
 What it proves: a deck carrying a c:scatterChart (marker-only, per-series
 X/Y, one colored series) and a color-opted line chart opens CLEAN in real

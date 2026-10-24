@@ -1,8 +1,8 @@
 """Comments: modern threaded comments (write + reply + resolve + delete) and
 legacy classic comments (read-only). No PowerPoint MCP server anywhere models
-comments; python-pptx has no API at all (issue #487).
+comments; python-pptx has no API at all.
 
-Two disjoint systems exist and do NOT interconvert (research Part VIII):
+Two disjoint systems exist and do NOT interconvert:
 
 - MODERN (PowerPoint 2019/365, the default since 2021): namespace p188
   (.../powerpoint/2018/8/main). One authors part per package
@@ -16,8 +16,10 @@ Two disjoint systems exist and do NOT interconvert (research Part VIII):
   status attribute on p188:cm (ST_CommentStatus: active/resolved/closed).
   PowerPoint 2019 and earlier cannot edit modern comments at all.
 - LEGACY (classic, ECMA-376): p:cmLst per slide + one ppt/commentAuthors.xml
-  (integer author ids). Identity is (authorId, idx); no replies, no resolved
-  flag, plain p:text instead of a txBody. This module reads legacy comments
+  (integer author ids). Identity is (authorId, idx); no resolved flag, plain
+  p:text instead of a txBody. Since PowerPoint 2013 a reply is a classic
+  comment whose p15:threadingInfo names its parent (p15:parentCm authorId and
+  idx), and is read as a reply in that thread. This module reads legacy comments
   but never writes them, and refuses to ADD modern comments to a deck that
   carries classic ones: Microsoft documents that the two systems do not mix
   in one file (a deck keeps whichever kind it has).
@@ -31,13 +33,13 @@ module converts (EMU / 12700).
 The element layout follows what PowerPoint writes for decks with classic
 comments and with a p188:authorLst.
 
-Timestamps are UTC now (comments are review metadata), formatted the way PowerPoint writes them: no timezone suffix,
+Timestamps are real UTC now (comments are review metadata, not corpus
+content), formatted the way PowerPoint writes them: no timezone suffix,
 millisecond precision.
 """
 
 from __future__ import annotations
 
-import os
 import posixpath
 import re
 import uuid
@@ -45,6 +47,7 @@ from datetime import datetime, timedelta, timezone
 
 from lxml import etree
 
+from ..core import authorship as _authorship
 from ..core.errors import (
     PptMcpError,
     TargetNotFound,
@@ -60,6 +63,7 @@ from ..core.package import (
 )
 from .read import resolve_slide, slide_table, slides_in_scope
 from .shapes import _find_shape
+from ._textcontent import append_text as _append_paragraph_text
 
 # --------------------------------------------------------------- namespaces
 
@@ -127,9 +131,20 @@ _GUID_RE = re.compile(
 
 
 def default_author() -> str:
-    """Server-level default author name: KS4P_COMMENT_AUTHOR env var when
-    set, else "KitchenSink4PPT"."""
-    return os.environ.get("KS4P_COMMENT_AUTHOR", "").strip() or "KitchenSink4PPT"
+    """The name a comment is signed with when the call names no author
+    (core/authorship.py): KS4P_COMMENT_AUTHOR when set, else the user's own
+    name, or the assistant label with KS4P_AUTHOR=assistant."""
+    return _authorship.signer(None)[0]
+
+
+def _signer(author: str | None) -> tuple[str, str | None, str, str | None]:
+    """(name, initials or None, author_source, note or None) for one comment
+    or reply. No author (None or "") means the default; a blank one is
+    refused. An email address never signs: the note says what signed
+    instead."""
+    if author and not str(author).strip():
+        raise PptMcpError("author must be a non-empty name")
+    return _authorship.signer_with_note(author)
 
 
 def _new_guid() -> str:
@@ -162,8 +177,8 @@ _last_stamp: list[str] = [""]
 def _now_iso() -> str:
     """Real UTC now, PowerPoint's format, STRICTLY INCREASING within this
     process: PowerPoint orders replies by `created`, not document order, so
-    two stamps landing in the same millisecond render in arbitrary order
-    (found by the COM readback gate). Equal stamps are bumped by 1 ms."""
+    two stamps landing in the same millisecond render in arbitrary order.
+    Equal stamps are bumped by 1 ms."""
     dt = datetime.now(timezone.utc)
     stamp = f"{dt:%Y-%m-%dT%H:%M:%S}.{dt.microsecond // 1000:03d}"
     if stamp <= _last_stamp[0]:
@@ -176,8 +191,10 @@ def _now_iso() -> str:
 
 
 def _initials(name: str) -> str:
-    parts = [w for w in re.split(r"[\s._-]+", name.strip()) if w]
-    return ("".join(w[0] for w in parts[:3]).upper() or "?")
+    # Initials come from words containing letters; punctuation is
+    # never itself an initial ("Jane (Editor)" -> "JE").
+    parts = re.findall(r"[^\W\d_]+", name)
+    return ("".join(word[0].upper() for word in parts)[:3] or "?")
 
 
 def _rel_target(src: str, dest: str) -> str:
@@ -191,25 +208,23 @@ def _require_text(text) -> str:
 
 
 def _txbody(text: str) -> etree._Element:
-    """p188:txBody with one plain a:p per line."""
+    """p188:txBody with ``\n`` paragraphs and ``\v`` soft breaks."""
     body = etree.Element(_q188("txBody"))
     etree.SubElement(body, qn("a:bodyPr"))
     etree.SubElement(body, qn("a:lstStyle"))
     for line in text.split("\n"):
         p = etree.SubElement(body, qn("a:p"))
         if line:
-            r = etree.SubElement(p, qn("a:r"))
-            rpr = etree.SubElement(r, qn("a:rPr"))
-            rpr.set("lang", "en-US")
-            t = etree.SubElement(r, qn("a:t"))
-            t.text = line
+            _append_paragraph_text(
+                p, line, lambda rpr: rpr.set("lang", "en-US")
+            )
         else:
             etree.SubElement(p, qn("a:endParaRPr")).set("lang", "en-US")
     return body
 
 
 def _txbody_text(body: etree._Element | None) -> str:
-    """Plain text of an a:CT_TextBody (paragraphs by newline, a:br newline)."""
+    """Plain text of a body (``\n`` paragraphs, ``\v`` soft breaks)."""
     if body is None:
         return ""
     paras = []
@@ -219,7 +234,7 @@ def _txbody_text(body: etree._Element | None) -> str:
             if node.tag == qn("a:t") and node.text:
                 chunks.append(node.text)
             elif node.tag == qn("a:br"):
-                chunks.append("\n")
+                chunks.append("\v")
         paras.append("".join(chunks))
     return "\n".join(paras)
 
@@ -295,9 +310,11 @@ def _ensure_modern_authors_part(pkg: PptxPackage) -> str:
     return MODERN_AUTHORS_PART
 
 
-def _author_guid(pkg: PptxPackage, name: str) -> str:
+def _author_guid(pkg: PptxPackage, name: str, initials: str | None = None) -> str:
     """GUID of the p188:author entry for `name`: exact name match reuses the
-    existing entry (author dedup), otherwise a new entry is created."""
+    existing entry (author dedup), otherwise a new entry is created, with
+    `initials` when given (the user's own Office initials) or initials made
+    from the name."""
     part = _ensure_modern_authors_part(pkg)
     root = pkg.root(part)
     for author in root.findall(_q188("author")):
@@ -309,7 +326,7 @@ def _author_guid(pkg: PptxPackage, name: str) -> str:
     author = etree.SubElement(root, _q188("author"))
     author.set("id", guid)
     author.set("name", name)
-    author.set("initials", _initials(name))
+    author.set("initials", initials or _initials(name))
     author.set("userId", name)
     author.set("providerId", "None")
     pkg.mark_dirty(part)
@@ -421,19 +438,20 @@ def _ensure_modern_part(pkg: PptxPackage, slide_part: str) -> tuple[str, str]:
 
 
 def _slide_cid(pkg: PptxPackage, slide_part: str) -> str:
-    """The slide's creationId val (p14:creationId in the slide extLst); "0"
-    when the slide has none (synthetic decks). PowerPoint resolves the
-    moniker through sldId; cId refines it."""
+    """The slide's creationId val (p14:creationId); "0" when the slide has
+    none (synthetic decks). PowerPoint writes it in the extLst of p:cSld;
+    the slide's own extLst is read too, for producers that put it there.
+    PowerPoint resolves the moniker through sldId; cId refines it."""
     root = pkg.root(slide_part)
-    ext_lst = root.find(qn("p:extLst"))
-    if ext_lst is None:
-        return "0"
-    for ext in ext_lst.findall(qn("p:ext")):
-        if ext.get("uri") == EXT_URI_SLIDE_CREATION_ID:
-            for child in ext:
-                val = child.get("val") or child.get("id")
-                if val:
-                    return val
+    for ext_lst in (root.find(f"{qn('p:cSld')}/{qn('p:extLst')}"), root.find(qn("p:extLst"))):
+        if ext_lst is None:
+            continue
+        for ext in ext_lst.findall(qn("p:ext")):
+            if ext.get("uri") == EXT_URI_SLIDE_CREATION_ID:
+                for child in ext:
+                    val = child.get("val") or child.get("id")
+                    if val:
+                        return val
     return "0"
 
 
@@ -584,7 +602,9 @@ def add_comment(
     (+ slide rel + content type), and the slide p:extLst commentRel wiring.
     `anchor`: None = the slide; {"x","y"} in EMU = a slide position;
     {"shape_id": N} = that shape. Author entries are deduplicated by exact
-    name match; the default author is configurable (KS4P_COMMENT_AUTHOR).
+    name match. With no author, the comment is signed with the user's own
+    name, or as the assistant with KS4P_AUTHOR=assistant (core/authorship.py);
+    the answer's author_source says which.
     Refuses decks carrying classic comments (the two systems do not mix)."""
     text = _require_text(text)
     rec = resolve_slide(pkg, slide)
@@ -597,10 +617,8 @@ def add_comment(
             "list_comments; delete the classic comments in PowerPoint first "
             "if you want modern threads."
         )
-    name = (author or default_author()).strip()
-    if not name:
-        raise PptMcpError("author must be a non-empty name")
-    author_id = _author_guid(pkg, name)
+    name, initials, source, note = _signer(author)
+    author_id = _author_guid(pkg, name, initials)
     _rid, part = _ensure_modern_part(pkg, rec["part"])
     anchor_el, pos_el, anchor_echo = _build_anchor(
         pkg, rec["part"], rec["slide_id"], anchor
@@ -617,16 +635,20 @@ def add_comment(
         cm.append(pos_el)
     cm.append(_txbody(text))
     pkg.mark_dirty(part)
-    return {
+    answer = {
         "slide_index": rec["index"],
         "slide_id": rec["slide_id"],
         "comment_id": comment_id,
         "author": name,
+        "author_source": source,
         "author_id": author_id,
         "created": created,
         "part": part,
         "anchor": anchor_echo,
     }
+    if note:
+        answer["warnings"] = [note]
+    return answer
 
 
 def reply_to_comment(
@@ -649,10 +671,8 @@ def reply_to_comment(
             f"deep. Reply to the thread root {_guid_or_none(cm.get('id'))} "
             "instead."
         )
-    name = (author or default_author()).strip()
-    if not name:
-        raise PptMcpError("author must be a non-empty name")
-    author_id = _author_guid(pkg, name)
+    name, initials, source, note = _signer(author)
+    author_id = _author_guid(pkg, name, initials)
     reply_lst = cm.find(_q188("replyLst"))
     if reply_lst is None:
         reply_lst = etree.Element(_q188("replyLst"))
@@ -669,16 +689,20 @@ def reply_to_comment(
     new.set("created", created)
     new.append(_txbody(text))
     pkg.mark_dirty(part)
-    return {
+    answer = {
         "slide_index": rec["index"],
         "slide_id": rec["slide_id"],
         "comment_id": _guid_or_none(cm.get("id")),
         "reply_id": reply_id,
         "author": name,
+        "author_source": source,
         "author_id": author_id,
         "created": created,
         "replies_in_thread": len(reply_lst),
     }
+    if note:
+        answer["warnings"] = [note]
+    return answer
 
 
 def _modern_record(cm: etree._Element, authors: dict, part: str) -> dict:
@@ -737,16 +761,67 @@ def _legacy_record(cm: etree._Element, authors: dict, part: str) -> dict:
         "status": None,
         "resolved": None,  # classic comments have no resolved flag
         "anchor": anchor,
-        "replies": [],  # classic comments cannot thread
+        "replies": [],  # filled by _thread_legacy
         "part": part,
     }
+
+
+_PARENT_CM = "{http://schemas.microsoft.com/office/powerpoint/2012/main}parentCm"
+
+
+def _legacy_parent(cm: etree._Element) -> tuple[str, str] | None:
+    """(authorId, idx) of the classic comment `cm` replies to, from its
+    p15:threadingInfo/p15:parentCm, or None for the start of a thread."""
+    ext_lst = cm.find(qn("p:extLst"))
+    parent = ext_lst.find(f".//{_PARENT_CM}") if ext_lst is not None else None
+    if parent is None:
+        return None
+    return parent.get("authorId", ""), parent.get("idx", "")
+
+
+def _thread_legacy(items: list[tuple[etree._Element, dict]]) -> list[dict]:
+    """One slide's classic comments, in document order, with each reply
+    under the first comment of its thread (a reply to a reply too, as
+    PowerPoint shows one level). A reply whose parent is not on the slide,
+    or whose chain loops, stays a thread of its own, so nothing is hidden."""
+    keyed = {(cm.get("authorId", ""), cm.get("idx", "")): rec for cm, rec in items}
+    parent_of: dict[int, dict] = {}
+    for cm, rec in items:
+        found = keyed.get(_legacy_parent(cm))
+        if found is not None and found is not rec:
+            parent_of[id(rec)] = found
+
+    def thread_start(rec: dict) -> dict | None:
+        seen = set()
+        while id(rec) in parent_of:
+            if id(rec) in seen:
+                return None
+            seen.add(id(rec))
+            rec = parent_of[id(rec)]
+        return rec
+
+    out = []
+    for _cm, rec in items:
+        start = thread_start(rec)
+        if start is None or start is rec:
+            out.append(rec)
+            continue
+        start["replies"].append({
+            "reply_id": rec["comment_id"],
+            "author": rec["author"],
+            "author_id": rec["author_id"],
+            "created": rec["created"],
+            "text": rec["text"],
+        })
+    return out
 
 
 def list_comments(pkg: PptxPackage, scope=None) -> dict:
     """Every comment in scope (None = all slides), BOTH systems: modern
     threaded comments with replies nested under their thread root and
     resolved status, and legacy classic comments (read-only; identity is
-    (authorId, idx) rendered as legacy-A-I; no replies, no resolved flag)."""
+    (authorId, idx) rendered as legacy-A-I; replies PowerPoint threaded
+    nested under their thread; no resolved flag)."""
     modern_authors = _modern_author_map(pkg)
     legacy_authors = _legacy_author_map(pkg)
     slides = []
@@ -757,13 +832,17 @@ def list_comments(pkg: PptxPackage, scope=None) -> dict:
         for _rid, part in _modern_parts(pkg, rec["part"]):
             for cm in pkg.root(part).findall(_q188("cm")):
                 comments.append(_modern_record(cm, modern_authors, part))
-        for part in _legacy_parts(pkg, rec["part"]):
-            for cm in pkg.root(part).findall(qn("p:cm")):
-                comments.append(_legacy_record(cm, legacy_authors, part))
+        legacy = [
+            (cm, _legacy_record(cm, legacy_authors, part))
+            for part in _legacy_parts(pkg, rec["part"])
+            for cm in pkg.root(part).findall(qn("p:cm"))
+        ]
+        comments.extend(_thread_legacy(legacy))
         total += len(comments)
         total_replies += sum(len(c["replies"]) for c in comments)
         slides.append({
             "slide_index": rec["index"],
+            "slide_number": rec["index"] + 1,
             "slide_id": rec["slide_id"],
             "count": len(comments),
             "comments": comments,

@@ -1,0 +1,48 @@
+[project]
+name = "kitchensink4ppt"
+version = "2.0.0"
+description = "Create and edit PowerPoint (.pptx) files with your AI assistant: 193 actions, a backup before every change, diagrams from editable shapes, tables, charts and slide templates. Local MCP server for Claude Code, Codex CLI and other MCP clients."
+readme = "README.md"
+license = "AGPL-3.0-only"
+license-files = ["LICENSE", "NOTICE.md"]
+authors = [{ name = "KitchenSink4AI", email = "support@kitchensink4.ai" }]
+keywords = [
+    "mcp", "powerpoint", "pptx", "ooxml", "claude", "model-context-protocol",
+    "presentations", "slides", "shapes", "svg", "vector-graphics", "tables",
+]
+requires-python = ">=3.12"
+dependencies = [
+    "kitchensink4-license-community==0.2.0",
+    "fastmcp>=3.4,<4",
+    "lxml",
+    "regex",
+    "packaging",
+    "svgelements>=1.9",
+    "latex2mathml>=3.81",
+    "mathml2omml>=0.0.2",
+    "pywin32; sys_platform == 'win32'",
+]
+
+[project.optional-dependencies]
+# The app includes the editing modules and owns their optional dependencies.
+metrics = ["fonttools>=4.0"]
+optimize = ["Pillow"]
+
+[project.urls]
+Homepage = "https://kitchensink4.ai"
+Documentation = "https://github.com/KitchenSink4AI/KitchenSink4PPT#readme"
+Repository = "https://github.com/KitchenSink4AI/KitchenSink4PPT"
+Issues = "https://github.com/KitchenSink4AI/KitchenSink4PPT/issues"
+
+# The public command names are unchanged. They are facades now: each one
+# injects the Community policy and then starts the shared core.
+[project.scripts]
+ppt-mcp = "ks4ppt_community_launch:main"
+kitchensink4ppt = "ks4ppt_community_launch:main"
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

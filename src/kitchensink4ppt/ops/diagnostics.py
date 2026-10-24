@@ -4,12 +4,11 @@ given, the file about to be worked on.
 Environment half: export engine availability (COM PowerPoint, LibreOffice),
 sandbox state, and platform basics. File half: existence, size, lock state
 (owner file + exclusive-lock probe), package openability (zip + required
-parts), and slide count. Pack state is appended by the server layer, which is
-the only place that knows the FastMCP registry.
+parts), and slide count. Fixed-surface facts are appended by the server layer.
 
 Read-only by contract: nothing here mutates the file or launches PowerPoint
-(engine detection is registry/path probing only; use the validate tool in the
-assembly-export pack for a real invisible-PowerPoint open test).
+(engine detection is registry/path probing only; use validate for a real
+invisible-PowerPoint open test).
 
 PASTE-SAFE BY DEFAULT. diagnose output is what a user pastes into a bug
 report, so it carries no absolute paths: not the sandbox roots, not the
@@ -25,9 +24,9 @@ import os
 import sys
 from pathlib import Path
 
-from .. import packs as _packs
 from ..core import sandbox
 from ..core.errors import PptMcpError
+from ..core.swapwait import exists_after_swap
 
 
 def _redact(text: str, p: Path, verbose: bool) -> str:
@@ -44,21 +43,10 @@ def _redact(text: str, p: Path, verbose: bool) -> str:
     return text
 
 
-def _resolved_mode_env() -> dict:
-    """What the mode and lock envs actually resolve to, checkboxes and
-    power-user variables combined."""
-    try:
-        return {
-            "resolved_mode": _packs.resolve_startup_mode(),
-            "resolved_locked": _packs.resolve_lock(),
-        }
-    except PptMcpError as exc:
-        return {"resolved_error": str(exc)}
-
-
 def _file_checks(path: str, verbose: bool = False) -> dict:
     checked = sandbox.check_path(path, "diagnose file")
     p = Path(checked)
+    exists_after_swap(p)  # a deck in the middle of another save comes back
     out: dict = {"name": p.name, "exists": p.is_file()}
     if verbose:
         out["path"] = str(p)
@@ -151,17 +139,15 @@ def diagnose(path: str | None = None, verbose: bool = False) -> dict:
         "python": sys.version.split()[0],
         "engines": _engine_report(verbose),
         "sandbox": sandbox_block,
-        "mode_env": {
-            "KS4P_MODE": os.environ.get("KS4P_MODE", "(unset, lite)"),
-            "KS4P_PACK_POLICY": os.environ.get(
-                "KS4P_PACK_POLICY", "(unset, auto)"
-            ),
-            "KS4P_ALL_TOOLS": os.environ.get("KS4P_ALL_TOOLS", "(unset)"),
-            "KS4P_LOCK_TOOLS": os.environ.get("KS4P_LOCK_TOOLS", "(unset)"),
-            # Garbage in either toggle refuses at startup, so a running
-            # server cannot reach the except branch; it is here so a
-            # diagnostic never becomes the thing that raises.
-            **_resolved_mode_env(),
+        "launch_env": {
+            "KS4P_READ_ONLY": os.environ.get("KS4P_READ_ONLY", "(unset)"),
+            "KS4P_FORBID": os.environ.get("KS4P_FORBID", "(unset)"),
+            "legacy_present": [
+                name for name in (
+                    "KS4P_MODE", "KS4P_PACK_POLICY",
+                    "KS4P_ALL_TOOLS", "KS4P_LOCK_TOOLS",
+                ) if name in os.environ
+            ],
         },
     }
     if path is not None:

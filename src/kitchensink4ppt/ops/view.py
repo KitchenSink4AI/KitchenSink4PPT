@@ -17,7 +17,12 @@ re-derivable from package content alone):
   slide_id is the p:sldId id, shape_id the shape's p:cNvPr id (unique per
   slide). Both inputs survive slide reorders and edits to OTHER shapes,
   so anchors are stable across exactly those operations; deleting or
-  re-id-ing the shape itself invalidates its anchor, which is the point.
+  re-id-ing the shape itself invalidates its anchor, which is the point,
+  with one exception: a new shape takes one more than the highest id left
+  on its slide (as in PowerPoint), so after the highest-numbered shape is
+  deleted the next new shape takes its id and answers to its old anchor.
+  Slide ids work the same way. The delete answers say so when it happens;
+  read the view again before reusing anchors across deletes and inserts.
 - Table cells are addressed "t:<shape anchor>:rNcN" with 1-BASED row and
   column numbers (r1c1 = top-left cell).
 - resolve_anchor(pkg, anchor) recomputes digests for every shape in the
@@ -41,16 +46,18 @@ import hashlib
 import re
 
 from ..core import budget as _budget
+from ..core import messages as _messages
 from ..core.errors import AmbiguousTarget, PptMcpError, TargetNotFound
 from ..core.package import PptxPackage, qn
 from . import read as _read
 
 _DETAILS = ("outline", "text", "full")
 
+#: Kinds the view shows by name and box only (detail="full"); they hold no text.
+_NO_TEXT_KINDS = ("group", "picture", "media", "chart", "diagram", "ole", "graphicFrame", "ink")
+
 _ANCHOR_LEN = 6
 _ANCHOR_LEN_EXTENDED = 10
-
-_TITLE_PH_TYPES = ("title", "ctrTitle")
 
 
 def _digest(slide_id: int, shape_id: int) -> str:
@@ -65,11 +72,11 @@ def _shape_map(pkg: PptxPackage) -> list[dict]:
         sp_tree = pkg.root(rec["part"]).find(f"{qn('p:cSld')}/{qn('p:spTree')}")
         if sp_tree is None:
             continue
-        for elem, kind, _z, _parent in _read.iter_shapes(sp_tree):
+        for elem, kind, _z, _parent in _read.iter_shapes(sp_tree, wrapped=True):
             cnvpr = _read._cnvpr(elem)
-            if cnvpr is None:
-                continue
-            sid = int(cnvpr.get("id"))
+            sid = _read.cnvpr_id(cnvpr)
+            if sid is None:
+                continue  # no id (a damaged deck): no anchor to give
             out.append(
                 {
                     "slide_index": rec["index"],
@@ -115,6 +122,34 @@ _ANCHOR_RE = re.compile(
     r"(?(t):r(?P<row>\d+)c(?P<col>\d+)))$"
 )
 
+#: A shape anchor as the view prints it, "a:3f9c2a", brackets optional. A
+#: `shape` argument takes this form; the bare hex apply_edits also reads is
+#: left to it, because a bare word such as "face" could be a shape's name.
+_SHAPE_ANCHOR_RE = re.compile(r"\[?a:([0-9a-fA-F]{4,40})\]?")
+#: The view's slide and table-cell anchors, which name no shape.
+_OTHER_ANCHOR_RE = re.compile(
+    r"\[?(?:s:\d+|t:(?:a:)?[0-9a-fA-F]{4,40}:r\d+c\d+)\]?")
+
+
+def shape_anchor_hex(ref) -> str | None:
+    """The lowercase hex of a shape anchor ("a:3f9c2a" or "[a:3f9c2a]"), or
+    None when `ref` is not one."""
+    if not isinstance(ref, str):
+        return None
+    m = _SHAPE_ANCHOR_RE.fullmatch(ref.strip())
+    return m.group(1).lower() if m else None
+
+
+def is_slide_or_cell_anchor(ref) -> bool:
+    """Whether `ref` is the view's slide anchor (s:N) or a table-cell anchor
+    (t:hex:rNcN): an address, but not of a shape."""
+    return isinstance(ref, str) and _OTHER_ANCHOR_RE.fullmatch(ref.strip()) is not None
+
+
+def anchor_digest(slide_id: int, shape_id: int) -> str:
+    """The full digest a shape's anchor is a prefix of."""
+    return _digest(slide_id, shape_id)
+
 
 def resolve_anchor(pkg: PptxPackage, anchor: str) -> dict:
     """Resolve a view anchor back to its target. Accepts "s:<slide_id>",
@@ -145,6 +180,10 @@ def resolve_anchor(pkg: PptxPackage, anchor: str) -> dict:
             f"anchor {anchor!r} matches no shape in {pkg.path.name}; the "
             "view is stale, re-run get_presentation_view"
         )
+    if len(hits) > 1 and len({(s["slide_id"], s["shape_id"]) for s in hits}) == 1:
+        from .shapes import _shared_id_refusal
+
+        raise _shared_id_refusal(hits[0]["shape_id"], [s["elem"] for s in hits])
     if len(hits) > 1:
         cands = [
             {"shape": {"slide": s["slide_index"], "id": s["shape_id"]},
@@ -246,13 +285,7 @@ def _geometry_note(elem) -> str:
 
 
 def _slide_title(pkg: PptxPackage, part: str) -> str | None:
-    sp_tree = pkg.root(part).find(f"{qn('p:cSld')}/{qn('p:spTree')}")
-    if sp_tree is None:
-        return None
-    for elem, kind, _z, _parent in _read.iter_shapes(sp_tree):
-        if kind == "placeholder" and _read._ph(elem).get("type") in _TITLE_PH_TYPES:
-            return _read.shape_text(elem)
-    return None
+    return _read.slide_title(pkg, part)
 
 
 # ------------------------------------------------------------------ public
@@ -276,12 +309,14 @@ def get_presentation_view(
     `page` block naming the total, the count rendered, the count omitted,
     and the offset that continues; slides are never cut mid-way, so every
     anchor in the view is a complete, usable one. `anchor_count` counts the
-    anchors actually rendered."""
+    anchors actually rendered. `slide_count` is the deck's slide count, as
+    in every other answer; a scoped view adds `slides_in_scope`."""
     if detail not in _DETAILS:
         raise PptMcpError(
             f"unknown detail {detail!r}; one of: {', '.join(_DETAILS)}"
         )
     slides = _read.slides_in_scope(pkg, scope)
+    deck_count = len(slides) if scope is None else len(_read.slide_table(pkg))
     anchors = _display_anchors(_shape_map(pkg))
 
     header: list[str] = [
@@ -293,6 +328,10 @@ def get_presentation_view(
             "Anchors: [s:N] slide id, [a:hex] shape, t:hex:rNcN table cell "
             "(rNcN is 1-based; row/col args to table tools are 0-based)."
         )
+    if detail == "outline":
+        header.append(_messages.VIEW_OUTLINE_OMISSIONS)
+    elif detail == "text":
+        header.append(_messages.VIEW_TEXT_OMISSIONS)
 
     blocks: list[str] = []
     block_anchors: list[int] = []
@@ -321,22 +360,28 @@ def get_presentation_view(
 
         sp_tree = root.find(f"{qn('p:cSld')}/{qn('p:spTree')}")
         if sp_tree is not None:
-            for elem, kind, _z, _parent in _read.iter_shapes(sp_tree):
+            for elem, kind, _z, _parent in _read.iter_shapes(sp_tree, wrapped=True):
                 cnvpr = _read._cnvpr(elem)
                 if cnvpr is None:
                     continue
-                anchor = anchors[(rec["slide_id"], int(cnvpr.get("id")))]
+                sid = _read.cnvpr_id(cnvpr)
+                anchor = anchors.get((rec["slide_id"], sid)) if sid is not None else None
+                # A shape without an id (a damaged deck) still shows; it has no anchor.
+                tag = f"[a:{anchor}]" if anchor else "[no id]"
                 geo = _geometry_note(elem) if detail == "full" else ""
                 if kind == "table":
                     lines.append("")
-                    lines.extend(_render_table(elem, anchor))
+                    table_lines = _render_table(elem, anchor or "")
+                    if not anchor:
+                        table_lines[0] = "[no id] table:"
+                    lines.extend(table_lines)
                     anchor_count += 1
                     continue
-                if kind in ("group", "picture", "chart", "diagram", "ole", "graphicFrame"):
+                if kind in _NO_TEXT_KINDS:
                     if detail == "full":
                         name = cnvpr.get("name", "")
                         label = f"{kind} \"{name}\"" if name else kind
-                        lines.append(f"[a:{anchor}] {label}{geo}")
+                        lines.append(f"{tag} {label}{geo}")
                         anchor_count += 1
                     continue
                 text_lines = _text_lines(elem)
@@ -344,9 +389,9 @@ def get_presentation_view(
                     continue
                 label = _shape_label(elem, kind)
                 if len(text_lines) == 1:
-                    lines.append(f"[a:{anchor}] {label}{geo}: {text_lines[0]}")
+                    lines.append(f"{tag} {label}{geo}: {text_lines[0]}")
                 else:
-                    lines.append(f"[a:{anchor}] {label}{geo}:")
+                    lines.append(f"{tag} {label}{geo}:")
                     lines.extend(text_lines)
                 anchor_count += 1
 
@@ -375,10 +420,15 @@ def get_presentation_view(
 
     result = {
         "view": "\n".join([head, *kept]),
-        "slide_count": len(slides),
+        "slide_count": deck_count,
         "detail": detail,
         "anchor_count": rendered_anchors,
     }
+    if scope is not None:
+        result = {
+            "view": result.pop("view"), "slide_count": deck_count,
+            "slides_in_scope": len(slides), **result,
+        }
     if page is not None:
         result["page"] = page
     return result

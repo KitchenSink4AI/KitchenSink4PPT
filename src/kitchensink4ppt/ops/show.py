@@ -24,7 +24,7 @@ Custom shows DO live in presentation.xml: p:custShowLst (schema position
 already in core.package._PRESENTATION_ORDER) holds p:custShow elements
 (@name, @id unique unsigned int) whose p:sldLst/p:sld r:id entries reference
 the PRESENTATION part's slide relationships, the same rIds p:sldIdLst uses.
-The slide-delete GC (slides._drop_custom_show_refs) already prunes
+The slide-delete cleanup (slides._drop_custom_show_refs) already prunes
 entries at deleted slides, removes emptied shows (PowerPoint refuses empty
 custom shows), and drops an emptied custShowLst; the lifecycle here stays
 consistent with that: delete removes the list when the last show goes, and
@@ -49,6 +49,7 @@ from ..core.package import (
     rels_name,
     resolve_target,
 )
+from ..core.xmlbool import xml_bool
 from .slides import _resolve_slide, _slide_entries
 
 RT_PRES_PROPS = (
@@ -123,10 +124,7 @@ def _rank_insert(parent: etree._Element, el: etree._Element, order) -> None:
 
 
 def _bool_attr(el: etree._Element, name: str, default: bool) -> bool:
-    raw = el.get(name)
-    if raw is None:
-        return default
-    return raw in ("1", "true")
+    return xml_bool(el.get(name), default)
 
 
 def _show_state(pkg: PptxPackage) -> dict:
@@ -344,7 +342,8 @@ def _show_record(pkg: PptxPackage, show: etree._Element) -> dict:
                 dangling += 1
                 continue
             slides.append(
-                {"index": rec["index"], "slide_id": rec["slide_id"]}
+                {"index": rec["index"], "slide_number": rec["index"] + 1,
+                 "slide_id": rec["slide_id"]}
             )
     record = {
         "name": show.get("name", ""),
@@ -437,7 +436,8 @@ def manage_custom_show(
         for sel in slides:
             index, _part, _entry, slide_id, rid = _resolve_slide(pkg, sel)
             rids.append(rid)
-            resolved.append({"index": index, "slide_id": slide_id})
+            resolved.append({"index": index, "slide_number": index + 1,
+                             "slide_id": slide_id})
         lst = _cust_show_lst(pkg)
         if lst is None:
             lst = etree.Element(qn("p:custShowLst"))

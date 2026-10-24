@@ -1,9 +1,9 @@
 # KitchenSink4PPT
 
-> Everything plus the kitchen sink for Microsoft PowerPoint: the KitchenSink-family .pptx MCP server. 142 tools organized as capability packs with tiered loading from day one. Headline capability: native tweakable graphics, meaning SVG converted to grouped native PowerPoint shapes with glued connectors, editable afterward by shape identity (move the node, the arrows follow). Also file-based structural table operations (merge cells, insert/delete rows and columns), slide CRUD done right (insert, deep duplicate, delete with cleanup, reorder, hide), create-from-template with theme-color-referenced fills, and render-to-verify export. Engineered not to corrupt: atomic validated saves, automatic backups before every mutation, byte-identical passthrough of untouched parts.
+> Everything plus the kitchen sink for Microsoft PowerPoint: the KitchenSink-family .pptx MCP server. 9 tools with 145 operations between them (193 counting each action), about 7.3k tokens at startup, everything available from the first call. Headline capability: native tweakable graphics, meaning SVG converted to grouped native PowerPoint shapes with glued connectors, editable afterward by shape identity (move the node, the arrows follow). Also file-based structural table operations (merge cells, insert and delete rows and columns), slide operations done right (insert, deep duplicate, delete with cleanup, reorder, hide), create-from-template with theme-color-referenced fills, and render-to-verify export. Engineered not to corrupt: atomic validated saves, automatic backups before every mutation, byte-identical passthrough of untouched parts. Ambiguous targets are refused with every candidate listed instead of guessed.
 
-Release: v1.3.2
-Platform: file-based tools (the large majority) are cross-platform and need no PowerPoint installation; the export and validation tools (PDF, per-slide PNG, opens-clean check) use a local Microsoft PowerPoint via COM on Windows when present.
+Release: v2.0.0
+Platform: file-based tools (the large majority) run on Windows and Linux (macOS is untested in this release) and need no PowerPoint installation; the export and validation tools (PDF, per-slide PNG, opens-clean check) use a local Microsoft PowerPoint via COM on Windows when present.
 MCP transport: stdio.
 
 ## Install
@@ -12,72 +12,65 @@ MCP transport: stdio.
 - uvx (no install): `uvx kitchensink4ppt`
 - Claude Desktop: download the `.mcpb` bundle from the latest GitHub release and open it. Requires `uv` on PATH.
 - Claude Code: `claude mcp add ppt -s user -- uvx kitchensink4ppt`
+- Codex CLI: `codex mcp add ppt -- uvx kitchensink4ppt`
 - Any other MCP client: run the `kitchensink4ppt` (or `ppt-mcp`) executable over stdio, e.g. `{"mcpServers": {"ppt": {"command": "kitchensink4ppt"}}}`
 - MCP registry name: `io.github.KitchenSink4AI/kitchensink4ppt`
 
-## Tiered loading (day one, not a roadmap item)
+## How the surface works (new in 2.0)
 
-Sessions start in a lite core of 25 tools (about 7,200 tokens; the full surface is about 39,700). Packs are enabled mid-session with `enable_tools(["pack-name"])`; the server reports the token cost added. `enable_tools` and `disable_tools` send `tools/list_changed` when they change the visible set, but some clients keep the list from session or worker startup; set `KS4P_MODE` to a comma list, restart the app or session, then start a new worker, or in Claude Code enable packs in the main session before starting workers. The lite core contains no degraded stand-ins for pack capabilities, and any refusal for out-of-scope work names the exact pack and the exact enable_tools call that unlocks it.
+The server offers nine tools. Every tool except `ppt_help` takes `{op, args}`: `op` names the operation and `args` holds its arguments, including `file_path` (the .pptx) unless the operation names other paths. Call `ppt_help` with an `op` to get that operation's arguments and a validated example. Unknown arguments are refused by name. A few names a model reaches for first are read as the operation's own: `shape_id` as `shape`, `font_size` as `size_pt` (or `size` on the placeholder operations), and `slides` as `scope` on the scoped operations; the answer's `normalized_from` says which name was read as which, and two names sent with different values are refused. Slides: `slide` counts from 0 and `slide_number` counts from 1, so the slide a user calls slide 2 is `slide_number` 2 or `slide` 1. Every answer about one slide starts with its `slide_number`, `slide_count` and `slide_title`; `slide_count` is the deck after the call, `delete_slide` names the removed slide `deleted_slide_number`, and `duplicate_slide` and `copy_slide_between` name the copied slide `source_slide_number`. When the slide was named by `slide` or `slide_index`, a `slide_note` says in words which slide that was. A read whose `scope` names one slide starts the same way, and `slide_count` always counts the whole deck; a scoped read adds `slides_in_scope`. The other arguments that name slides or positions (`to_slide`, `to`, `position`, `order`, `slides`, `scope`) count from 0, like `slide`, and `ppt_help` describes each one. Each has a twin counted from 1, such as `to_slide_number`, `to_number`, `position_number`, `order_numbers`, `number_ranges` and `slide_numbers`, except the `scope` of `set_footer`, whose own `slide_number` turns slide numbers on; send one form, not both. A change whose answer passes the output limit is shortened, never refused, and `page.note` says the change stands. All 145 operations are available from the start; there is nothing to enable and no tool-set switching. About 7,316 approximate tokens cover the whole surface.
 
-Environment pins for clients without list_changed support, or for power users:
-- `KS4P_MODE=lite` (default) | `KS4P_MODE=full` | `KS4P_MODE=graphics,design` (comma-separated pack list)
-- `KS4P_PACK_POLICY=locked` prevents runtime pack changes (administrator setting)
-- `KS4P_ALL_TOOLS` loads every pack at startup
-- `KS4P_LOCK_TOOLS` freezes the resulting surface
-- `KS4P_UPDATE_CHECK=off` disables the disclosed weekly version check. A version check never installs an update.
+- `ppt_read` (18 operations): read without changing anything. `get_presentation_view` (anchored markdown projection of the deck: slides, shapes with ids, tables, notes), `get_slide_info`, `get_text`, `find_text` (deck-wide, or in a `scope` of slides, a range such as `{"start": 1, "end": 3}` or `slide_numbers` counted from 1; exact case unless `match_case` is false, and `case_note` says where matches in another case are), `extract_text`, `list_elements`, `list_hyperlinks` (links and click actions on shapes, text, table cells, notes, SmartArt, layouts and masters, with broken ones flagged), `get_table`, `get_chart_data`, `get_notes`, `list_comments`, `list_equations`, `get_transitions`, `list_animations`, `get_server_info` (the authoritative runtime identity record: product, edition, version, test count, tool surface), `get_workflows`.
+- `ppt_inspect` (17 operations): audits that change nothing. `audit_accessibility`, `check_layout`, `font_inventory`, `comment_report`, `compare_decks`, `deck_statistics`, `diagnose`, `extract_brand`, `get_theme`, `get_autofit_state`, `get_document_properties`, `get_export_engines`, `live_status`, `powerpoint_status`, `zombie_check`.
+- `ppt_edit` (19 operations): text, notes and slides. `apply_edits` (batched, every anchor validated first, one backup and one save per batch; it batches speaker notes too), `search_and_replace`, `set_placeholder_text`, `fit_text`, `format_text`, `set_bullets`, `insert_textbox`, `set_notes` (one slide, or many slides in one save with `notes`, each entry named by `slide_id` or `slide_number`), `set_hyperlink`, `insert_slide`, `delete_slide`, `duplicate_slide`, `reorder_slides`, `move_slide`, `set_slide_hidden`, `manage_section`, `set_language`.
+- `ppt_graphics` (27 operations, the centerpiece): `svg_to_shapes` (arbitrary SVG compiled to grouped native PowerPoint shapes; transforms flattened, arcs converted to Beziers), `insert_shape` (presets plus freeform custom geometry, gradients, theme-color fills), `insert_connector` (straight, elbow, curved, GLUED to shapes so they follow when a shape moves), `set_shape` (edit in place by shape id, name or group path; with a resize it can scale text and line widths), `set_shape_adjustments` (read and set a preset shape's adjust handles by name, angles in degrees), `copy_shape_between` (a shape or group from a slide of another deck, with its pictures, charts and links), `generate_diagram` (timeline, org chart, matrix, cycle, comparison in one call), `group_shapes`, `ungroup_shapes`, `align_shapes`, `distribute_shapes`, `set_z_order`, images, video, audio, equations, `set_alt_text`, `set_reading_order`.
+- `ppt_tables` (16 operations): `create_table`, `set_table_cells`, `merge_cells`, `unmerge_cells`, insert and delete rows AND columns, `format_table_cells`, `set_column_widths`, `set_row_heights`, `apply_table_style`, `import_table`, and charts (`create_chart`, `update_chart_data`, `format_chart`) with editable data workbooks.
+- `ppt_design` (19 operations): `set_slide_size`, `apply_layout`, `set_theme_colors`, `set_theme_fonts`, `apply_brand`, backgrounds, master and layout editing (`create_layout`, placeholders, decoration shapes), `replace_fonts`, `replace_colors`, `set_transition`, `add_entrance_animation`, `clear_animations`.
+- `ppt_review` (7 operations): threaded comments (`add_comment`, `reply_to_comment`, `resolve_comment`, `delete_comment`) and `anonymize_deck`; also `update_now` (updates the server, only when the user asks or agrees) and `update_notices` (turns update notices on, off, or reports their status).
+- `ppt_deck` (22 operations): `create_presentation` (from YOUR template), `copy_presentation`, `create_snapshot` (a permanent copy, kept in the deck's hidden backup folder unless `dest_dir` names a folder for a visible one), `manage_backups`, `copy_slide_between`, `merge_decks`, `split_deck`, `export_pdf` (COM), `export_slide_image` (per-slide PNG, the render-to-verify primitive), `export_shape_image` (one shape or group as a PNG), `export_handout`, `export_table`, `generate_agenda_slide`, `refresh_agenda_slide`, `set_footer`, `compress_deck`, `validate` (opens-clean plus overflow report), `live_save`, `live_scroll_to`.
+- `ppt_help`: the arguments and an example for any operation.
 
-`get_server_info` is the authoritative runtime identity record. Use it for the installed product, package, version, homepage, sibling products, registered tool surface, lite count, released test count, and pack surface. Do not infer those values from remembered documentation.
+The operations figure is produced by `scripts/measure_surface.py` (145 over real stdio). The figure that counts each action separately, 193, is produced by `scripts/count_operations.py`, which reads the dispatch values each operation actually validates out of committed source. Its docstring carries the counting definition and the exclusions.
 
-## Capabilities by pack
+Launch settings can narrow the surface. `KS4P_READ_ONLY=1` leaves only `ppt_read`, `ppt_inspect` and `ppt_help`. `KS4P_FORBID` removes named tools or operations (`ppt_app`, which is not one of the nine tools, is also accepted as a name and removes everything that starts or attaches to PowerPoint). `KS4P_ALLOWED_ROOTS` sandboxes every path. `KS4P_CALL_TIMEOUT_S` and `KS4P_MAX_OUTPUT_CHARS` bound a call's time and reply size. `KS4P_AUTHOR` chooses who signs a comment or reply whose call names no author: `user` (the default: the user's own name, their Office user name or Windows sign-in name) or `assistant` ("AI Assistant via KS4PPT", which a call also gets with `author="assistant"`); `KS4P_COMMENT_AUTHOR` names one outright, and the answer's `author_source` says which applied. An email address never signs, whether a setting names it or a call sends it as `author`: the next choice signs and the answer says so. `KS4P_UPDATE_CHECK=off` disables the weekly version check completely, and `KS4P_UPDATE_NOTICES=off` turns the update notices off and keeps the check (`on` turns them back on). Update notices: at most once a week, after a tool call, the server asks PyPI in the background which version is newest; the request names only the package and the installed version. When a newer version exists, a client with form elicitation shows a dialog (Update now / Not now) after a read when the server runs from uvx or the Claude Desktop bundle; otherwise a read result gets one `update` field, to relay once. `ppt_review` `update_now` installs the new version only when the user asks or agrees, and `update_notices` (`on`, `off`, `status`) changes the setting from any client. It never downloads or installs a new version unless the user chooses Update now in its notice or asks the AI to update it. The 1.x settings `KS4P_MODE`, `KS4P_PACK_POLICY`, `KS4P_ALL_TOOLS` and `KS4P_LOCK_TOOLS` are retired. Settings from earlier versions are handled for you: an old default (`KS4P_MODE=lite`, `full` or `everything`, `KS4P_PACK_POLICY=auto`, `KS4P_ALL_TOOLS`, `KS4P_LOCK_TOOLS=false`) is ignored with a one-line notice, and a setting that locked the tools (`KS4P_PACK_POLICY=locked`, `KS4P_LOCK_TOOLS=true` or a `KS4P_MODE` list of tool groups) stops the start with a message naming what to use instead. A call refused because of a launch setting returns `NOT_AVAILABLE`, and no tool call can undo it.
 
-Lite core (always on, 25 tools):
-`get_presentation_view` (anchored markdown projection of the deck: slides, shapes with ids, tables, notes), `apply_edits` (batched, every anchor validated first, one backup and one save per batch), `get_text`, `find_text`, `search_and_replace`, `insert_slide`, `delete_slide`, `duplicate_slide`, `reorder_slides`, placeholder/text setters, `get_slide_info`, `list_elements`, `copy_document`, `create_snapshot`, `manage_backups`, `diagnose`, `get_workflows`, `enable_tools`
+Do not infer product facts from remembered documentation. `get_server_info` is the authoritative record.
 
-graphics (the centerpiece):
-`svg_to_shapes` (arbitrary SVG compiled to grouped native PowerPoint shapes; transforms flattened, arcs converted to Beziers), `insert_shape` (presets plus freeform custom geometry, gradients, theme-color fills), `insert_connector` (straight/elbow/curved, GLUED to shapes so they follow when a shape moves), `set_shape` (edit-in-place by shape id: geometry, fill, line, text, dash, arrowheads), `group_shapes`/`ungroup_shapes`, `align_shapes`, `distribute_shapes`, `set_z_order`, `format_shape_text`
+## Upgrading from 1.x
 
-tables-charts (file-based structural table operations):
-`create_table`, `set_cells`, `set_cells_block`, `merge_cells`, insert/delete rows AND columns, `set_column_widths`, `format_cells` (borders, shading), `apply_table_style` (verified style GUIDs), `export_table`/`import_table` (CSV/JSON); chart creation where release testing stays green
-
-design:
-`create_presentation` (from YOUR template), `list_layouts`/`list_masters`, `apply_layout`, `get_theme` (colors and fonts), theme-color-referenced fills (schemeClr tokens that follow the theme)
-
-assembly-export:
-`set_notes`/`get_notes` (speaker notes), `manage_section`, `set_footer` and slide numbers, `hide_slide`, `export_pdf` (COM), `export_slide_image` (per-slide PNG, the render-to-verify primitive), `validate` (opens-clean plus overflow report), `extract_text`
-
-Six packs plus the lite core, all populated in v1.1: lite (25 tools, ~7.2k tokens), graphics (27, ~8.8k), tables-charts (19, ~5.4k), design (25, ~6.8k), assembly-export (28, ~7.3k), review-sweeps (13, ~3.3k), com (5, ~0.9k). Every figure counts the whole tools/list entry the client receives, not description and schema alone. assembly-export also carries slide transitions and bounded entrance animations. review-sweeps covers threaded comments, structural deck compare, and the deck-wide font/color/language/logo sweeps plus compress. com is Windows only: PowerPoint status, zombie check, and editing decks open in PowerPoint via live=auto routing. v1.1 consolidated nine packs into six; the v1.0 names transitions-animations, review, sweeps, and com-live still resolve to their new homes in enable_tools, disable_tools, and KS4P_MODE.
+Version 2.0 regroups the 142 flat tools of 1.3.1 into the nine tools above. Every 1.3.1 operation survives except `enable_tools` and `disable_tools`, which are gone because nothing needs enabling. Call a former tool as an operation of the group that now holds it: `ppt_graphics` with `op: "svg_to_shapes"` replaces the tool `svg_to_shapes`. The full map is `docs/surface_map.md` in the repository, and `get_workflows` with the `migrate-from-v1` recipe returns it too. Some arguments changed; check `ppt_help` for the operation before the first call.
 
 ## Recommended workflows
 
-Build a diagram an audience member can still adjust:
-`enable_tools(["graphics"])` -> `svg_to_shapes` (the whole diagram lands as one grouped set of native shapes with glued connectors) -> `set_shape` by id for any tweak (recolor one node, re-dash one connector) -> `enable_tools(["assembly-export"])` -> `export_slide_image` to verify visually -> `validate`.
+`get_workflows` returns the recipes with the right tool and operation for each step. The common ones:
 
-Restructure a table:
-`get_presentation_view` (find the table and its anchor) -> `enable_tools(["tables-charts"])` -> insert/delete columns, `merge_cells`, `format_cells` -> `set_cells_block` for the data -> `validate`.
+Build a diagram an audience member can still adjust:
+`ppt_graphics svg_to_shapes` (the whole diagram lands as one grouped set of native shapes with glued connectors) -> `ppt_graphics set_shape` by id for any tweak -> `ppt_deck export_slide_image` to verify visually -> `ppt_deck validate`.
+
+Restructure a table nobody else can touch:
+`ppt_read get_presentation_view` (find the table and its anchor) -> `ppt_tables` insert or delete columns, `merge_cells`, `format_table_cells` -> `set_table_cells` for the data -> `ppt_deck validate`.
 
 Build a deck on the house template:
-`enable_tools(["design"])` -> `create_presentation` from the template -> `apply_layout` per slide -> populate placeholders via lite core -> theme-color fills for any added shapes -> `export_pdf`.
+`ppt_deck create_presentation` from the template -> `ppt_design apply_layout` per slide -> populate placeholders with `ppt_edit set_placeholder_text` -> theme-color fills for any added shapes -> `ppt_deck export_pdf`.
 
 Heavy editing with a safety net:
-`copy_document` (work on a dated copy) -> `create_snapshot` -> `get_presentation_view` -> `apply_edits` (batched, anchors validated) -> `validate` -> `export_slide_image` on changed slides.
+`ppt_deck copy_presentation` (work on a copy) -> `ppt_deck create_snapshot` -> `ppt_read get_presentation_view` -> `ppt_edit apply_edits` (batched, anchors validated) -> `ppt_deck validate` -> `ppt_deck export_slide_image` on changed slides.
 
 Use `refresh-an-existing-deck` when updating an established presentation rather than rebuilding it as a new deck.
 
 ## Result contracts
 
-Every read is bounded. When a result is incomplete, the response says so and supplies the continuation needed to retrieve the next page. Treat `page`, `returned`, and any continuation field as part of the result contract. Never infer that `slide_count` items were returned merely because the presentation contains that many slides. Continue until the response says no content remains.
-
-Paged reads lead with `page` and `returned`. Continue until the result says no content remains. `extract_text` accepts `limit` and `offset`. `check_layout` accepts `min_group_overlap_in` and `exclude_names`.
+Every read is bounded. When a result is incomplete, the response says so and supplies the continuation needed to retrieve the next page. Treat `page`, `returned`, and any continuation field as part of the result contract. Never infer that `slide_count` items were returned merely because the presentation contains that many slides. Continue until the response says no content remains. Long answers start with their totals and paging details, so a client that shows only the start of an answer still sees how much there is. `extract_text` accepts `limit` and `offset`; `check_layout` accepts `min_group_overlap_in` and `exclude_names`.
 
 A contrast result can be informational when the background cannot be reduced to one dependable color, including pictures, gradients and PowerPoint built-in table styles. Do not turn an undetermined result into a pass or an error.
 
-`create_presentation(slide_size=...)` accepts only the presets listed in its tool description. It refuses an unknown value and refuses `slide_size` when a template is also supplied. A presentation created without a template defaults to 16:9; request 4:3 explicitly when required. A template keeps its own slide size. `set_slide_size` changes the canvas without moving existing content and is not a conversion back to the old layout. The 16:10 preset resizes layout boxes only.
+`create_presentation(slide_size=...)` accepts only the presets listed in its description. It refuses an unknown value and refuses `slide_size` when a template is also supplied. A presentation created without a template defaults to 16:9; request 4:3 explicitly when required. A template keeps its own slide size, and `create_presentation` reports the sensitivity label and core properties it inherits from the template. `set_slide_size` changes the canvas without moving existing content.
 
 After replacing text, inspect the result for the formatting that was preserved and for `autofit_scale_reset`. That note means the previous shrink value was cleared and the new fit is unknown. Do not claim that replacement text was refitted. Use `fit_text` when the text must be fitted deliberately.
 
-`format_text` accepts `anchor` and `wrap`. Inside `apply_edits`, the vertical-anchor key is `text_anchor`. Unknown keys in line and fill specifications are refused by name; use only the keys listed in the tool descriptions.
+`format_text` accepts `anchor` and `wrap`. Inside `apply_edits`, the vertical-anchor key is `text_anchor`, and `set_paragraph`, `insert_paragraph` and `delete_paragraph` change one paragraph of a shape, counted from 0 as `find_text` reports it (or `paragraph_number`, counted from 1), as the shape was before the batch. `set_text` replaces every paragraph: new paragraph N takes old paragraph N's formatting. `search_and_replace` with `remove_empty_paragraphs` removes the paragraphs its replacements leave empty. Unknown keys in line and fill specifications are refused by name. Bullets get a default hanging indent on text boxes; `indent: "none"` clears it, and `space_before` and `space_after` are available.
 
-`validate` may return `failed_slide_index`, `failed_slide_id`, `failed_shape_index` and `failed_shape_name`. Install `kitchensink4ppt[metrics]` for installed-font width measurement; `fit_text`, `get_autofit_state` and `check_layout` report `method="font-metrics"` or `method="estimate"`. `create_table` accepts `row_heights` and `col_widths` as a full inches list or `{index: inches}`. `KS4P_PDFTOPPM` names the poppler executable. `KS4P_PACK_POLICY` accepts only `auto` or `locked`. A complete `row_heights` or `col_widths` list resizes the table frame and the result reports `box_resized`. `validate` also reports `walk_truncated` on very large decks.
+`validate` may return `failed_slide_index`, `failed_slide_id`, `failed_shape_index` and `failed_shape_name`. Its PowerPoint check gets more time on a bigger deck (slides, shapes, notes pages and media, up to 300 seconds), and `opens_clean_time_limit` says how much; a check that runs out of time answers `opens_clean: null` and `timed_out: true`, which is a time limit, not a verdict on the deck. Install `kitchensink4ppt[metrics]` for installed-font width measurement; `fit_text`, `get_autofit_state` and `check_layout` report `method="font-metrics"` or `method="estimate"`. `create_table` accepts `row_heights` and `col_widths` as a full inches list or `{index: inches}`. `KS4P_PDFTOPPM` names the poppler executable.
 
 ## Safety model
 
@@ -87,26 +80,33 @@ After replacing text, inspect the result for the formatting that was preserved a
 - Ambiguous targets are REFUSED with a candidate list; no tool ever acts on a first match.
 - Slide order is resolved through the presentation's slide list, never ZIP entry order.
 - Presentation writes are serialized across processes. A live lock is not reclaimed merely because it is more than ten minutes old, and a lock written by another host is not reclaimed locally. Wait for the lock or report the refusal.
-- A timeout may end only a PowerPoint process started by this server. It must not end a PowerPoint process that was already running when the call began.
+- Only a PowerPoint process started by this server is ever ended, and a hung call is cancelled safely. A PowerPoint that was already running is left alone.
+- An encrypted presentation is refused before any Office call, and a read-only file is reported as read-only.
 - Saves preserve each embedded media file's existing compression. A text or structure edit must not recompress unrelated media.
-- The test suite has about 1,600 tests.
+- Release evidence for 2.0: a suite of 3,689 tests, including checks that generated decks open in PowerPoint and fail on any repair prompt, and a raw MCP stdio round-trip suite.
 
 ## Documented refusals
 
-These are contracts. Handle them; do not retry blindly. The 12 closed codes:
+These are contracts. Handle them; do not retry blindly. The closed error codes:
 
-- `AMBIGUOUS_LOCATION` several targets matched; use the unambiguous address from the candidates in the message.
-- `NOT_FOUND` re-run get_presentation_view or get_slide_info to see current slides, ids, and anchors.
-- `STALE_ANCHOR` the deck changed since the view was taken; re-run get_presentation_view and resend with fresh anchors.
-- `DOCUMENT_LOCKED` close the file in PowerPoint (or wait out the other process) and retry; dual-mode tools accept live='auto' to edit the open copy instead.
+- `AMBIGUOUS_LOCATION` several targets matched; use one of the addresses in the message.
+- `NOT_FOUND` re-run `ppt_read get_presentation_view` or `get_slide_info` to see current slides, ids, and anchors.
+- `STALE_ANCHOR` the deck changed since the view was taken; re-run `get_presentation_view` and resend with fresh anchors.
+- `DOCUMENT_LOCKED` close the file in PowerPoint (or wait out the other process) and retry; operations with a live argument accept `live='auto'` to edit the open copy instead. The read operations are not refused for this: they read the file as last saved and say so in `open_deck_note`.
 - `VALIDATION_FAILED` the original file was NOT modified; the message says what the produced package failed.
 - `APP_NOT_RUNNING` this operation needs PowerPoint installed and reachable.
 - `APP_BUSY` PowerPoint is showing a dialog or running a command; clear it and retry.
-- `APP_BLOCKED` PowerPoint is not answering; wait or restart it.
+- `APP_BLOCKED` PowerPoint is not answering; wait or close the dialog.
 - `PROTECTED_VIEW` click Enable Editing in PowerPoint first.
-- `UNSUPPORTED_CONTENT` structurally unsupported or password-protected content, refused instead of written partially.
-- `CONFLICT` the destination path exists and overwrite was not requested.
-- `BAD_PARAMS` bad arguments, including a path outside the configured sandbox roots (`KS4P_ALLOWED_ROOTS`).
+- `PROTECTED` the file is protected; remove the protection in PowerPoint, or edit the open copy live.
+- `UNSUPPORTED_CONTENT` structurally unsupported, protected or damaged content, refused instead of written partially.
+- `CONFLICT` the destination exists and overwrite was not requested, or PowerPoint disconnected during the call.
+- `BAD_ARGS` the arguments did not fit the operation; `ppt_help` with that op gives them and an example.
+- `BAD_PARAMS` the request did not fit the operation, including a path outside the configured sandbox roots (`KS4P_ALLOWED_ROOTS`).
+- `LIMIT_EXCEEDED` the answer would pass the output limit; narrow the request.
+- `TIMEOUT` the call ran past its limit; `details.saved` says whether anything was saved.
+- `NOT_AVAILABLE` a launch setting turned this off.
+- `INTERNAL_ERROR` try once more, then report it with the version from `get_server_info`.
 
 Refusals are the reliability feature, not the failure mode. A refusal names
 what was wrong, leaves the file untouched, and carries the next call in
@@ -114,17 +114,17 @@ what was wrong, leaves the file untouched, and carries the next call in
 
 ## The KitchenSink family
 
-- KitchenSink4Word (the original fixture, 222 operations across 110 tools for .docx): https://kitchensink4.ai/KitchenSink4Word/
-- KitchenSink4XL (the electrical aisle, 69 tools for .xlsx, every value labeled calculated, cached, or absent): https://kitchensink4.ai/KitchenSink4XL/
-- KitchenSink4Web (the garden section, browser automation with budget-priced page reads and a consent ladder): https://kitchensink4.ai/KitchenSink4Web/
-- Family storefront: https://kitchensink4.ai/products/
+- KitchenSink4Word (231 actions in 115 operations across 10 tools for .docx): https://community.kitchensink4.ai/word/
+- KitchenSink4XL (the electrical aisle, 131 actions in 69 operations across 7 tools for .xlsx, every value labeled calculated, cached, or absent): https://community.kitchensink4.ai/xl/
+- KitchenSink4Web (the garden section, browser automation with budget-priced page reads and a consent ladder): https://community.kitchensink4.ai/web/
+- Family storefront: https://community.kitchensink4.ai/
 
 ## Links
 
 - GitHub: https://github.com/KitchenSink4AI/KitchenSink4PPT
 - PyPI: https://pypi.org/project/kitchensink4ppt/
 - MCP registry: io.github.KitchenSink4AI/kitchensink4ppt
-- Landing page: https://kitchensink4ai.github.io/KitchenSink4PPT/
+- Landing page: https://community.kitchensink4.ai/ppt/
 - Issues (bugs, feature requests, licensing): https://github.com/KitchenSink4AI/KitchenSink4PPT/issues/new/choose
 
 ## License

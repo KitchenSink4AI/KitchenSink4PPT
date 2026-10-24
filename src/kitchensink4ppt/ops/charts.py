@@ -1,12 +1,12 @@
 """Native charts: create and update ECMA c:chartSpace parts on slides.
 
-Ported from word-mcp ops/charts.py (the hand-built chart-part + embedded
-minimal workbook pattern; research Part X confirms the axis/series/cache
-writers transfer unchanged). PPT-side differences: the chart part lives at
+The same approach as the Word editor's charts (the hand-built chart-part +
+embedded minimal workbook pattern; the axis/series/cache writers transfer
+unchanged). PPT-side differences: the chart part lives at
 ppt/charts/chartN.xml, its workbook at ppt/embeddings/, the chart rel comes
 from the SLIDE part, and the shape wrapper is a p:graphicFrame.
 
-Design rules carried over verbatim:
+Design rules:
 - Child order in every chart CT_* is xsd:sequence-fixed; XML is emitted in
   template order, never call order.
 - The literal caches (numCache/strCache) are what render; the embedded xlsx
@@ -45,9 +45,9 @@ titles, number format, gridlines, data labels) via schema-ordered insertion
 into existing chart parts; child order in every CT_* is xsd:sequence-fixed,
 so every new child goes in by rank, never appended blindly.
 
-Chart addressing (`chart` parameter): None for the slide's only chart, a
-0-based chart index on the slide, or {"shape_id": N}; multi-chart slides
-without disambiguation refuse with a candidate list.
+Chart addressing (`chart` parameter): None for the slide's only chart,
+{"index": N}, or {"shape_id": N}; multi-chart slides without
+disambiguation refuse with a candidate list.
 """
 
 from __future__ import annotations
@@ -55,25 +55,38 @@ from __future__ import annotations
 import io
 import math
 import posixpath
+import re
 import zipfile
 
 from lxml import etree
 
 from ..core.errors import (
-    AmbiguousTarget,
     PptMcpError,
-    TargetNotFound,
     UnsupportedStructure,
     ValidationFailed,
 )
-from ..core.package import NSMAP, PptxPackage, qn
+from ..core import xmlsafe, zipsafe
+from ..core.package import (
+    NSMAP,
+    PptxPackage,
+    qn,
+    rels_name,
+    rels_source,
+    resolve_target,
+    seat_ahead_of_extlst,
+)
+from ..core.xmlbool import attr_bool
+
+#: How the chart's embedded workbook is named in a refusal.
+_WORKBOOK = "the chart's embedded workbook"
 from . import geometry as g
-from .read import iter_shapes, resolve_slide
+from .chart_select import chart_data_source
+from .chart_select import resolve_chart as _resolve_chart
+from .read import resolve_slide
 
 _C = NSMAP["c"]
 _A = NSMAP["a"]
 _R_NS = NSMAP["r"]
-_CX = "http://schemas.microsoft.com/office/drawing/2014/chartex"
 _REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
 
 _CHART_CT = "application/vnd.openxmlformats-officedocument.drawingml.chart+xml"
@@ -175,13 +188,16 @@ def _num(v, where: str) -> float:
     return f
 
 
-def _parse_cats_series(categories, series) -> dict:
+def _parse_cats_series(categories, series, *, numeric_categories=False) -> dict:
     """Shared shape/number validation for categories + series (no chart-type
     rules; those live in _parse_data). Extra keys on a series dict beyond
     name/values/type/axis are ignored."""
     if not isinstance(categories, list) or not categories:
         raise PptMcpError("categories must be a non-empty list of labels")
-    cats = ["" if v is None else str(v) for v in categories]
+    if numeric_categories:
+        cats = [_num(v, f"in categories[{i}]") for i, v in enumerate(categories)]
+    else:
+        cats = ["" if v is None else str(v) for v in categories]
     if not isinstance(series, list) or not series:
         raise PptMcpError(
             'series must be a non-empty list of {"name", "values"} dicts'
@@ -319,9 +335,7 @@ def _parse_scatter_data(categories, series) -> dict:
 
 def _attach_series_colors(parsed: dict, series_specs: list) -> None:
     """Copy validated per-series "color" opt-ins from the caller's series
-    dicts onto the parsed series (create path only; update_chart_data
-    preserves existing formatting and ignores extra keys as documented).
-    Validation happens here, before any package mutation."""
+    dicts onto the parsed series. Validation happens before package mutation."""
     from .text import _fill_element  # hex / theme-token validation
 
     for spec, out in zip(series_specs, parsed["series"]):
@@ -335,6 +349,69 @@ def _series_fill(color: str) -> etree._Element:
     from .text import _fill_element
 
     return _fill_element(color)
+
+
+_A_FILL_TAGS = {
+    "noFill", "solidFill", "gradFill", "blipFill", "pattFill", "grpFill",
+}
+
+
+def _replace_fill(parent: etree._Element, color: str) -> None:
+    """Replace one DrawingML fill while preserving unrelated formatting."""
+    for child in list(parent):
+        if etree.QName(child).namespace == _A and etree.QName(child).localname in _A_FILL_TAGS:
+            parent.remove(child)
+    fill = _series_fill(color)
+    before = {
+        "ln", "effectLst", "effectDag", "scene3d", "sp3d", "prstDash",
+        "custDash", "round", "bevel", "miter", "headEnd", "tailEnd",
+        "extLst",
+    }
+    for i, child in enumerate(parent):
+        if etree.QName(child).namespace == _A and etree.QName(child).localname in before:
+            parent.insert(i, fill)
+            return
+    parent.append(fill)
+
+
+def _ensure_chart_child(parent: etree._Element, name: str, before: tuple[str, ...]):
+    found = parent.find(_qc(name))
+    if found is not None:
+        return found
+    found = etree.Element(_qc(name))
+    for i, child in enumerate(parent):
+        if etree.QName(child).localname in before:
+            parent.insert(i, found)
+            return found
+    parent.append(found)
+    return found
+
+
+def _apply_series_color(ser: etree._Element, group_name: str, color: str) -> None:
+    """Apply update_chart_data's explicit color without rebuilding a series."""
+    if group_name == "scatterChart":
+        marker = _ensure_chart_child(
+            ser, "marker", ("dPt", "dLbls", "trendline", "errBars", "xVal")
+        )
+        sppr = _ensure_chart_child(marker, "spPr", ())
+        _replace_fill(sppr, color)
+        return
+
+    sppr = _ensure_chart_child(
+        ser, "spPr",
+        (
+            "invertIfNegative", "pictureOptions", "marker", "explosion",
+            "dPt", "dLbls", "trendline", "errBars", "cat", "val", "xVal",
+            "yVal", "shape", "smooth", "extLst",
+        ),
+    )
+    if group_name == "lineChart":
+        ln = sppr.find(f"{{{_A}}}ln")
+        if ln is None:
+            ln = etree.SubElement(sppr, f"{{{_A}}}ln")
+        _replace_fill(ln, color)
+    else:
+        _replace_fill(sppr, color)
 
 
 # ------------------------------------------------- embedded workbook builder
@@ -435,6 +512,259 @@ def _build_workbook(parsed: dict) -> bytes:
         zf.writestr("xl/_rels/workbook.xml.rels", _XLSX_WORKBOOK_RELS)
         zf.writestr("xl/worksheets/sheet1.xml", _build_worksheet_xml(parsed))
     return buf.getvalue()
+
+
+_A1_RANGE_RE = re.compile(
+    r"^(?P<sheet>'(?:[^']|'')+'|[^!]+)!"
+    r"\$(?P<col1>[A-Z]{1,3})\$(?P<row1>[1-9][0-9]*)"
+    r"(?::\$(?P<col2>[A-Z]{1,3})\$(?P<row2>[1-9][0-9]*))?$"
+)
+
+
+def _resize_a1_formula(formula: str, count: int) -> str:
+    """Resize one simple, single-column worksheet range without moving it."""
+    match = _A1_RANGE_RE.fullmatch(formula or "")
+    if match is None or match.group("col2") not in (None, match.group("col1")):
+        raise UnsupportedStructure(
+            f"the chart's data range {formula!r} is not one simple single-column range "
+            "such as Sheet1!$B$2:$B$5, so this server will not rewrite it; nothing "
+            "was changed. To change these numbers, delete the chart and make a "
+            "new one with ppt_tables create_chart."
+        )
+    first = int(match.group("row1"))
+    last = first + count - 1
+    start = f"${match.group('col1')}${first}"
+    cells = start if count == 1 else f"{start}:${match.group('col1')}${last}"
+    return f"{match.group('sheet')}!{cells}"
+
+
+def _formula_cells(formula: str, count: int) -> tuple[str, list[str]]:
+    match = _A1_RANGE_RE.fullmatch(formula or "")
+    if match is None:
+        raise UnsupportedStructure(f"unsupported chart workbook range {formula!r}")
+    token = match.group("sheet")
+    sheet = token[1:-1].replace("''", "'") if token.startswith("'") else token
+    first = int(match.group("row1"))
+    return sheet, [f"{match.group('col1')}{first + i}" for i in range(count)]
+
+
+def _formula_range_cells(formula: str) -> tuple[str, list[str]]:
+    """Return every cell named by one supported single-column formula."""
+    match = _A1_RANGE_RE.fullmatch(formula or "")
+    if match is None or match.group("col2") not in (None, match.group("col1")):
+        raise UnsupportedStructure(f"unsupported chart workbook range {formula!r}")
+    token = match.group("sheet")
+    sheet = token[1:-1].replace("''", "'") if token.startswith("'") else token
+    first = int(match.group("row1"))
+    last = int(match.group("row2") or first)
+    if last < first:
+        raise UnsupportedStructure(f"unsupported chart workbook range {formula!r}")
+    return sheet, [f"{match.group('col1')}{row}" for row in range(first, last + 1)]
+
+
+def _cell_column(ref: str) -> int:
+    letters = ref.rstrip("0123456789")
+    out = 0
+    for char in letters:
+        out = out * 26 + ord(char) - ord("A") + 1
+    return out
+
+
+def _sheet_cell(sheet: etree._Element, ref: str) -> etree._Element:
+    sheet_data = sheet.find(f"{{{_SML_NS}}}sheetData")
+    if sheet_data is None:
+        raise UnsupportedStructure("embedded workbook worksheet has no sheetData")
+    row_number = int(ref.lstrip("ABCDEFGHIJKLMNOPQRSTUVWXYZ"))
+    row = next((item for item in sheet_data if item.get("r") == str(row_number)), None)
+    if row is None:
+        row = etree.Element(f"{{{_SML_NS}}}row", r=str(row_number))
+        for i, item in enumerate(sheet_data):
+            if int(item.get("r", "0")) > row_number:
+                sheet_data.insert(i, row)
+                break
+        else:
+            sheet_data.append(row)
+    cell = next((item for item in row if item.get("r") == ref), None)
+    if cell is None:
+        cell = etree.Element(f"{{{_SML_NS}}}c", r=ref)
+        column = _cell_column(ref)
+        for i, item in enumerate(row):
+            if _cell_column(item.get("r", "A1")) > column:
+                row.insert(i, cell)
+                break
+        else:
+            row.append(cell)
+    return cell
+
+
+def _find_sheet_cell(sheet: etree._Element, ref: str) -> etree._Element | None:
+    """Read one worksheet cell without creating rows or cells."""
+    sheet_data = sheet.find(f"{{{_SML_NS}}}sheetData")
+    if sheet_data is None:
+        raise UnsupportedStructure("embedded workbook worksheet has no sheetData")
+    row_number = ref.lstrip("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+    row = next((item for item in sheet_data if item.get("r") == row_number), None)
+    if row is None:
+        return None
+    return next((item for item in row if item.get("r") == ref), None)
+
+
+def _cell_has_payload(cell: etree._Element | None) -> bool:
+    """Whether a cell carries a value or formula, independent of styling."""
+    if cell is None:
+        return False
+    return any(
+        etree.QName(child).localname in ("f", "v", "is")
+        for child in cell
+    )
+
+
+def _cell_has_formula(cell: etree._Element | None) -> bool:
+    return cell is not None and cell.find(f"{{{_SML_NS}}}f") is not None
+
+
+def _clear_sheet_cell_payload(cell: etree._Element) -> None:
+    """Clear a chart-owned literal while retaining cell style/metadata."""
+    for child in list(cell):
+        if etree.QName(child).localname in ("v", "is"):
+            cell.remove(child)
+    cell.attrib.pop("t", None)
+
+
+def _write_sheet_cell(cell: etree._Element, value, *, numeric: bool) -> None:
+    for child in list(cell):
+        if etree.QName(child).localname in ("f", "v", "is"):
+            cell.remove(child)
+    cell.attrib.pop("t", None)
+    if numeric:
+        etree.SubElement(cell, f"{{{_SML_NS}}}v").text = _fmt_num(value)
+        return
+    cell.set("t", "inlineStr")
+    inline = etree.SubElement(cell, f"{{{_SML_NS}}}is")
+    text = etree.SubElement(inline, f"{{{_SML_NS}}}t")
+    raw = str(value)
+    text.text = raw
+    if raw[:1].isspace() or raw[-1:].isspace():
+        text.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+
+
+def _workbook_sheet_parts(entries: dict[str, bytes]) -> dict[str, str]:
+    try:
+        workbook = xmlsafe.fromstring(entries["xl/workbook.xml"], doc=_WORKBOOK,
+                                      part="xl/workbook.xml")
+        rels = xmlsafe.fromstring(entries["xl/_rels/workbook.xml.rels"], doc=_WORKBOOK,
+                                  part="xl/_rels/workbook.xml.rels")
+    except (KeyError, etree.XMLSyntaxError) as exc:
+        raise UnsupportedStructure(
+            "embedded workbook has no readable workbook/sheet relationship map"
+        ) from exc
+    by_rid = {
+        rel.get("Id"): resolve_target("xl/workbook.xml", rel.get("Target", ""))
+        for rel in rels
+        if rel.get("TargetMode") != "External"
+    }
+    out = {}
+    for sheet in workbook.findall(f"{{{_SML_NS}}}sheets/{{{_SML_NS}}}sheet"):
+        rid = sheet.get(f"{{{_R_NS}}}id")
+        if rid in by_rid:
+            out[sheet.get("name", "")] = by_rid[rid]
+    return out
+
+
+def _update_workbook_in_place(blob: bytes, writes: list[tuple]) -> bytes:
+    """Patch chart cells without claiming or erasing user workbook content.
+
+    Each write carries the old and resized formula. Growth may use only blank
+    cells outside the old plotted ranges. Formulas in cells that would be
+    rewritten cause a refusal. On shrink, dropped chart literals are cleared
+    so worksheet formulas do not keep counting stale points; dropped formulas
+    are preserved exactly.
+    """
+    try:
+        source = zipfile.ZipFile(io.BytesIO(blob))
+    except zipfile.BadZipFile as exc:
+        raise UnsupportedStructure("embedded chart workbook is not a valid xlsx") from exc
+    with source:
+        infos = source.infolist()
+        # The workbook is a package of its own: checked before it is inflated.
+        zipsafe.check_members(infos, doc=_WORKBOOK)
+        entries = {info.filename: source.read(info) for info in infos}
+        sheets = _workbook_sheet_parts(entries)
+        assignments: dict[tuple[str, str], tuple[object, bool]] = {}
+        old_cells: set[tuple[str, str]] = set()
+        new_cells: set[tuple[str, str]] = set()
+        for old_formula, new_formula, values, numeric in writes:
+            old_sheet, old_refs = _formula_range_cells(old_formula)
+            sheet_name, refs = _formula_cells(new_formula, len(values))
+            if old_sheet != sheet_name:
+                raise UnsupportedStructure(
+                    "resizing a chart workbook range cannot move it to another "
+                    "worksheet"
+                )
+            if sheet_name not in sheets:
+                raise UnsupportedStructure(
+                    f"chart workbook formula names missing worksheet {sheet_name!r}"
+                )
+            old_cells.update((sheet_name, ref) for ref in old_refs)
+            new_cells.update((sheet_name, ref) for ref in refs)
+            for ref, value in zip(refs, values):
+                key = (sheet_name, ref)
+                proposed = (value, numeric)
+                if key in assignments and assignments[key] != proposed:
+                    raise UnsupportedStructure(
+                        f"chart workbook cell {sheet_name}!{ref} has conflicting writes"
+                    )
+                assignments[key] = proposed
+        changed: dict[str, etree._Element] = {}
+        for sheet_name in {name for name, _ in old_cells | new_cells}:
+            part = sheets[sheet_name]
+            if part not in entries:
+                raise UnsupportedStructure(
+                    f"chart workbook worksheet part {part!r} is missing"
+                )
+            try:
+                changed[part] = xmlsafe.fromstring(entries[part], doc=_WORKBOOK, part=part)
+            except etree.XMLSyntaxError as exc:
+                raise UnsupportedStructure(
+                    f"chart workbook worksheet {sheet_name!r} is not readable XML"
+                ) from exc
+
+        for sheet_name, ref in sorted(new_cells):
+            cell = _find_sheet_cell(changed[sheets[sheet_name]], ref)
+            if _cell_has_formula(cell):
+                raise UnsupportedStructure(
+                    f"chart workbook cell {sheet_name}!{ref} contains a formula; "
+                    "refusing to replace user workbook logic"
+                )
+            if (sheet_name, ref) not in old_cells and _cell_has_payload(cell):
+                raise UnsupportedStructure(
+                    f"growing the plotted range would overwrite populated "
+                    f"workbook cell {sheet_name}!{ref}; move or clear the adjacent "
+                    "data before updating the chart"
+                )
+
+        # Values formerly plotted must not linger after a shrink: adjacent
+        # SUMs and other worksheet formulas could continue counting them.
+        # A dropped formula is user logic, so preserve it rather than guessing.
+        for sheet_name, ref in sorted(old_cells - new_cells):
+            cell = _find_sheet_cell(changed[sheets[sheet_name]], ref)
+            if cell is not None and not _cell_has_formula(cell):
+                _clear_sheet_cell_payload(cell)
+
+        for (sheet_name, ref), (value, numeric) in assignments.items():
+            part = sheets[sheet_name]
+            _write_sheet_cell(_sheet_cell(changed[part], ref), value, numeric=numeric)
+        replacements = {
+            part: etree.tostring(
+                root, xml_declaration=True, encoding="UTF-8", standalone=True
+            )
+            for part, root in changed.items()
+        }
+        out = io.BytesIO()
+        with zipfile.ZipFile(out, "w") as target:
+            for info in infos:
+                target.writestr(info, replacements.get(info.filename, entries[info.filename]))
+        return out.getvalue()
 
 
 # ----------------------------------------------------- chart XML construction
@@ -698,7 +1028,8 @@ def _check_chart_closure(pkg: PptxPackage, chart_part: str) -> None:
     if pkg.has_part(rels_part):
         for rel in pkg.root(rels_part):
             rels[rel.get("Id")] = rel.get("Target")
-    chart_root = etree.fromstring(pkg.part_bytes(chart_part))
+    chart_root = xmlsafe.fromstring(pkg.part_bytes(chart_part), doc=pkg.path.name,
+                                    part=chart_part)
     used = set()
     for el in chart_root.iter():
         for attr, value in el.attrib.items():
@@ -721,105 +1052,6 @@ def _check_chart_closure(pkg: PptxPackage, chart_part: str) -> None:
 
 
 # ------------------------------------------------------------- chart lookup
-
-
-def _charts_on_slide(pkg: PptxPackage, part: str) -> list[dict]:
-    """Chart graphicFrames of one slide in document order. kind is "chart"
-    (ECMA c:) or "chartex" (2014 cx: modern types)."""
-    sp_tree = pkg.root(part).find(f"{qn('p:cSld')}/{qn('p:spTree')}")
-    out: list[dict] = []
-    if sp_tree is None:
-        return out
-    for elem, kind, _z, _parent in iter_shapes(sp_tree):
-        if kind not in ("chart", "graphicFrame"):
-            continue
-        gdata = elem.find(f"{qn('a:graphic')}/{qn('a:graphicData')}")
-        if gdata is None:
-            continue
-        uri = gdata.get("uri")
-        if uri == _C:
-            chart_el = gdata.find(_qc("chart"))
-            chart_kind = "chart"
-        elif uri == _CX:
-            chart_el = gdata.find(f"{{{_CX}}}chart")
-            chart_kind = "chartex"
-        else:
-            continue
-        cnvpr = None
-        nv = elem.find(qn("p:nvGraphicFramePr"))
-        if nv is not None:
-            cnvpr = nv.find(qn("p:cNvPr"))
-        rid = chart_el.get(f"{{{_R_NS}}}id") if chart_el is not None else None
-        chart_part = None
-        if rid:
-            try:
-                chart_part = pkg.relationship_target(part, rid)
-            except (KeyError, PptMcpError):
-                chart_part = None
-        out.append(
-            {
-                "index": len(out),
-                "shape_id": int(cnvpr.get("id")) if cnvpr is not None else None,
-                "name": cnvpr.get("name", "") if cnvpr is not None else "",
-                "kind": chart_kind,
-                "part": chart_part,
-            }
-        )
-    return out
-
-
-def _resolve_chart(pkg: PptxPackage, slide, chart) -> dict:
-    rec = resolve_slide(pkg, slide)
-    part = rec["part"]
-    charts = _charts_on_slide(pkg, part)
-    if not charts:
-        raise TargetNotFound(f"slide index {rec['index']} has no charts")
-
-    def candidates() -> str:
-        return ", ".join(
-            f"index {c['index']} (shape id {c['shape_id']}, {c['kind']})"
-            for c in charts
-        )
-
-    chosen = None
-    if chart is None:
-        if len(charts) > 1:
-            raise AmbiguousTarget(
-                f"slide index {rec['index']} has {len(charts)} charts; pass "
-                f"a chart index or {{'shape_id': N}}. Candidates: {candidates()}"
-            )
-        chosen = charts[0]
-    elif isinstance(chart, dict) and set(chart) == {"shape_id"}:
-        chosen = next(
-            (c for c in charts if c["shape_id"] == chart["shape_id"]), None
-        )
-        if chosen is None:
-            raise TargetNotFound(
-                f"no chart with shape id {chart['shape_id']} on slide index "
-                f"{rec['index']}. Candidates: {candidates()}"
-            )
-    elif isinstance(chart, int) and not isinstance(chart, bool):
-        if 0 <= chart < len(charts):
-            chosen = charts[chart]
-        else:
-            chosen = next((c for c in charts if c["shape_id"] == chart), None)
-            if chosen is None:
-                raise TargetNotFound(
-                    f"{chart} is neither a chart index (slide has "
-                    f"{len(charts)}) nor a chart shape id. Candidates: "
-                    f"{candidates()}"
-                )
-    else:
-        raise PptMcpError(
-            f"invalid chart selector {chart!r}: use a 0-based chart index, "
-            "{'shape_id': N}, or None for the only chart"
-        )
-    return {
-        "slide_part": part,
-        "slide_index": rec["index"],
-        "slide_id": rec["slide_id"],
-        **chosen,
-    }
 
 
 # ---------------------------------------------------------------- create
@@ -892,7 +1124,7 @@ def create_chart(
         raise UnsupportedStructure(f"{part} has no p:spTree")
     shape_id = pkg.next_shape_id(part)
     display = name or f"Chart {shape_id}"
-    frame = etree.SubElement(sp_tree, qn("p:graphicFrame"))
+    frame = seat_ahead_of_extlst(sp_tree, etree.SubElement(sp_tree, qn("p:graphicFrame")))
     nv = etree.SubElement(frame, qn("p:nvGraphicFramePr"))
     cnvpr = etree.SubElement(nv, qn("p:cNvPr"))
     cnvpr.set("id", str(shape_id))
@@ -1017,6 +1249,67 @@ def _update_data_node(ser, wrap_name: str, values, f: str, *, numeric: bool, lab
     )
 
 
+def _category_storage_is_numeric(sers: list[etree._Element]) -> bool:
+    kinds = set()
+    for ser in sers:
+        cat = ser.find(_qc("cat"))
+        if cat is None:
+            continue
+        if cat.find(_qc("numRef")) is not None or cat.find(_qc("numLit")) is not None:
+            kinds.add(True)
+        if cat.find(_qc("strRef")) is not None or cat.find(_qc("strLit")) is not None:
+            kinds.add(False)
+    if len(kinds) > 1:
+        raise UnsupportedStructure(
+            "chart series mix numeric and text category storage; refusing to guess"
+        )
+    return kinds == {True}
+
+
+def _plan_data_node(
+    ser: etree._Element,
+    wrap_name: str,
+    values: list,
+    fallback_formula: str,
+    *,
+    numeric: bool,
+    label: str,
+) -> tuple[str, tuple | None]:
+    """Validate one data node and plan its formula/workbook update."""
+    wrap = ser.find(_qc(wrap_name))
+    if wrap is None:
+        raise UnsupportedStructure(
+            f"chart series has no c:{wrap_name} node; cannot update {label}; "
+            "delete and re-create the chart instead"
+        )
+    ref_name = "numRef" if numeric else "strRef"
+    other_name = "strRef" if numeric else "numRef"
+    if wrap.find(_qc(other_name)) is not None:
+        stored = "text" if numeric else "numbers"
+        raise UnsupportedStructure(
+            f"chart stores {label} as {stored} but the supplied data is "
+            f"{'numeric' if numeric else 'text'}; refusing a type change; "
+            "delete and re-create the chart instead"
+        )
+    ref = wrap.find(_qc(ref_name))
+    if ref is not None:
+        formula = ref.find(_qc("f"))
+        if formula is None or not formula.text:
+            raise UnsupportedStructure(
+                f"chart {label} reference has no c:f formula; not a shape "
+                "this tool can update safely"
+            )
+        original = formula.text
+        resized = _resize_a1_formula(original, len(values))
+        return resized, (original, resized, values, numeric)
+    literal = wrap.find(_qc("numLit" if numeric else "strLit"))
+    if literal is not None:
+        return fallback_formula, None
+    raise UnsupportedStructure(
+        f"chart {label} holds no recognized data structure; refusing to guess"
+    )
+
+
 def update_chart_data(
     pkg: PptxPackage,
     slide,
@@ -1025,10 +1318,11 @@ def update_chart_data(
     series: list,
 ) -> dict:
     """Replace an existing chart's data in place, preserving its type,
-    formatting, and c14/c16 extensions: cache surgery on the chart part plus
-    full regeneration of the embedded workbook so Edit Data matches what
-    renders. Series count must match the chart (changing it is delete +
-    re-create); series names update from the given "name" keys. Combo charts
+    unspecified formatting, and c14/c16 extensions: cache surgery on the
+    chart part plus an in-place update of referenced workbook cells so Edit
+    Data matches what renders without dropping unrelated workbook content.
+    Series count must match the chart (changing it is delete + re-create);
+    series names update from the given "name" keys. Combo charts
     (multiple bar/line plot groups, secondary axes) update fine: series
     match up by their c:order across all groups. Scatter charts take the
     scatter data model (categories=None, series with "x"/"y" lists; xVal
@@ -1047,6 +1341,26 @@ def update_chart_data(
         raise UnsupportedStructure(
             "the chart's relationship target part is missing from the "
             "package; the deck needs repair before its charts can be edited"
+        )
+    data_source = chart_data_source(pkg, part)
+    if data_source["kind"] == "linked":
+        raise UnsupportedStructure(
+            f"this chart's numbers live in a linked workbook ({data_source.get('target')!r}), which this "
+            "server does not edit; nothing was changed. Change the numbers in that "
+            "workbook itself."
+        )
+    if data_source["kind"] in ("missing", "unsupported"):
+        raise UnsupportedStructure(
+            "the chart data relationship is missing or unsupported; its "
+            "data was not changed"
+        )
+    if (
+        data_source["kind"] == "embedded"
+        and not pkg.has_part(data_source["part"])
+    ):
+        raise UnsupportedStructure(
+            f"the chart's embedded workbook part {data_source['part']!r} is "
+            "missing; its data was not changed"
         )
     chart_root = pkg.root(part)
     groups = _plot_groups(chart_root)
@@ -1071,7 +1385,7 @@ def update_chart_data(
         )
     # Series across every plot group, in workbook-column order (c:order,
     # falling back to document position for foreign charts without it).
-    ordered: list[tuple[int, int, etree._Element]] = []
+    ordered: list[tuple[int, int, etree._Element, str]] = []
     for doc_pos, (group, ser) in enumerate(
         (g_el, s_el) for g_el in groups for s_el in g_el.findall(_qc("ser"))
     ):
@@ -1086,9 +1400,10 @@ def update_chart_data(
             order_val = int(order_el.get("val")) if order_el is not None else doc_pos
         except (TypeError, ValueError):
             order_val = doc_pos
-        ordered.append((order_val, doc_pos, ser))
+        ordered.append((order_val, doc_pos, ser, etree.QName(group).localname))
     ordered.sort(key=lambda t: (t[0], t[1]))
     sers = [t[2] for t in ordered]
+    group_by_series = [t[3] for t in ordered]
 
     if len(groups) == 1:
         base_type = {
@@ -1097,10 +1412,15 @@ def update_chart_data(
         }[group_names[0]]
     else:
         base_type = "combo"
+    categories_numeric = False
     if base_type == "scatter":
         parsed = _parse_scatter_data(categories, series)
     else:
-        parsed = _parse_cats_series(categories, series)
+        categories_numeric = _category_storage_is_numeric(sers)
+        parsed = _parse_cats_series(
+            categories, series, numeric_categories=categories_numeric
+        )
+    _attach_series_colors(parsed, series)
     if base_type == "pie" and len(parsed["series"]) > 1:
         raise PptMcpError(
             f"pie charts show exactly one series; got {len(parsed['series'])}"
@@ -1111,55 +1431,124 @@ def update_chart_data(
             f"{len(parsed['series'])}; changing series count on an existing "
             "chart is not supported; delete and re-create the chart instead"
         )
+
+    formula_plans: list[dict] = []
+    workbook_writes: list[tuple] = []
+    if base_type == "scatter":
+        for i, (ser, new) in enumerate(zip(sers, parsed["series"])):
+            npts = len(new["x"])
+            tx, tx_write = _plan_data_node(
+                ser, "tx", [new["name"]], _range_f(2 * i + 1, 1, 1),
+                numeric=False, label=f"series {i} name",
+            )
+            xval, x_write = _plan_data_node(
+                ser, "xVal", new["x"], _range_f(2 * i, 2, npts + 1),
+                numeric=True, label=f"series {i} x values",
+            )
+            yval, y_write = _plan_data_node(
+                ser, "yVal", new["y"], _range_f(2 * i + 1, 2, npts + 1),
+                numeric=True, label=f"series {i} y values",
+            )
+            formula_plans.append({"tx": tx, "xVal": xval, "yVal": yval})
+            workbook_writes.extend(
+                write for write in (tx_write, x_write, y_write) if write is not None
+            )
+    else:
+        n = len(parsed["categories"])
+        for i, (ser, new) in enumerate(zip(sers, parsed["series"])):
+            tx, tx_write = _plan_data_node(
+                ser, "tx", [new["name"]], _range_f(i + 1, 1, 1),
+                numeric=False, label=f"series {i} name",
+            )
+            cat, cat_write = _plan_data_node(
+                ser, "cat", parsed["categories"], _range_f(0, 2, n + 1),
+                numeric=categories_numeric, label="categories",
+            )
+            val, val_write = _plan_data_node(
+                ser, "val", new["values"], _range_f(i + 1, 2, n + 1),
+                numeric=True, label=f"series {i} values",
+            )
+            formula_plans.append({"tx": tx, "cat": cat, "val": val})
+            workbook_writes.extend(
+                write for write in (tx_write, cat_write, val_write)
+                if write is not None
+            )
+
+    workbook_state = "none"
+    workbook_bytes = None
+    workbook_part = data_source.get("part")
+    if data_source["kind"] == "embedded":
+        if workbook_writes:
+            workbook_bytes = _update_workbook_in_place(
+                pkg.raw_part(workbook_part), workbook_writes
+            )
+            workbook_state = "updated_in_place"
+        else:
+            workbook_state = "unchanged"
+
     if base_type == "scatter":
         n = sum(len(s["x"]) for s in parsed["series"])
         for i, (ser, new) in enumerate(zip(sers, parsed["series"])):
             npts = len(new["x"])
             _update_data_node(
-                ser, "tx", [new["name"]], _range_f(2 * i + 1, 1, 1),
+                ser, "tx", [new["name"]], formula_plans[i]["tx"],
                 numeric=False, label=f"series {i} name",
             )
             _update_data_node(
-                ser, "xVal", new["x"], _range_f(2 * i, 2, npts + 1),
+                ser, "xVal", new["x"], formula_plans[i]["xVal"],
                 numeric=True, label=f"series {i} x values",
             )
             _update_data_node(
-                ser, "yVal", new["y"], _range_f(2 * i + 1, 2, npts + 1),
+                ser, "yVal", new["y"], formula_plans[i]["yVal"],
                 numeric=True, label=f"series {i} y values",
             )
+            if "color" in new:
+                _apply_series_color(ser, group_by_series[i], new["color"])
     else:
         n = len(parsed["categories"])
         for i, (ser, new) in enumerate(zip(sers, parsed["series"])):
             _update_data_node(
-                ser, "tx", [new["name"]], _range_f(i + 1, 1, 1),
+                ser, "tx", [new["name"]], formula_plans[i]["tx"],
                 numeric=False, label=f"series {i} name",
             )
             _update_data_node(
-                ser, "cat", parsed["categories"], _range_f(0, 2, n + 1),
-                numeric=False, label="categories",
+                ser, "cat", parsed["categories"], formula_plans[i]["cat"],
+                numeric=categories_numeric, label="categories",
             )
             _update_data_node(
-                ser, "val", new["values"], _range_f(i + 1, 2, n + 1),
+                ser, "val", new["values"], formula_plans[i]["val"],
                 numeric=True, label=f"series {i} values",
             )
+            if "color" in new:
+                _apply_series_color(ser, group_by_series[i], new["color"])
     pkg.mark_dirty(part)
+    warnings: list[str] = []
+    shared_with: list[str] = []
+    if workbook_bytes is not None:
+        shared_with = _workbook_sharers(
+            pkg, workbook_part, part, data_source["relationship_id"])
+        if shared_with:
+            # Another part names the same embedded workbook (a second chart
+            # whose numbers live there too). Rewriting it would change that
+            # chart's backing cells under a cache that still shows the old
+            # numbers, so this chart gets a workbook of its own first.
+            from .slides import _clone_simple_part, _rel_target
 
-    # Regenerate the embedded workbook whole (never patch an existing xlsx).
-    workbook_state = "none"
-    rels_part = _rels_part_for(part)
-    if pkg.has_part(rels_part):
-        base = part.rsplit("/", 1)[0]
-        for rel in pkg.root(rels_part):
-            if rel.get("Type") == _PACKAGE_REL:
-                target = posixpath.normpath(
-                    posixpath.join(base, rel.get("Target"))
-                )
-                if pkg.has_part(target):
-                    pkg.set_raw_part(target, _build_workbook(parsed))
-                    workbook_state = "regenerated"
-                break
+            own = _clone_simple_part(pkg, workbook_part)
+            chart_rels = rels_name(part)
+            for rel in pkg.root(chart_rels):
+                if rel.get("Id") == data_source["relationship_id"]:
+                    rel.set("Target", _rel_target(part, own))
+            pkg.mark_dirty(chart_rels)
+            warnings.append(
+                f"this chart shared its embedded workbook with {', '.join(shared_with)}; "
+                f"it now has its own copy ({own}), so the other chart's data is unchanged"
+            )
+            workbook_part = own
+            workbook_state = "updated_in_own_copy"
+        pkg.set_raw_part(workbook_part, workbook_bytes)
     _check_chart_closure(pkg, part)
-    return {
+    out = {
         "shape_id": rec["shape_id"],
         "chart_part": part,
         "type": base_type,
@@ -1169,6 +1558,30 @@ def update_chart_data(
         "slide_index": rec["slide_index"],
         "slide_id": rec["slide_id"],
     }
+    if warnings:
+        out["workbook_shared_with"] = shared_with
+        out["warnings"] = warnings
+    return out
+
+
+def _workbook_sharers(
+    pkg: PptxPackage, workbook_part: str, chart_part: str, rid: str
+) -> list[str]:
+    """The parts, other than this chart's own data relationship, whose
+    relationships name `workbook_part` inside the package."""
+    sharers: list[str] = []
+    for name in pkg.part_names():
+        if not name.endswith(".rels"):
+            continue
+        source = rels_source(name)
+        for rel in pkg.root(name):
+            if rel.get("TargetMode") == "External":
+                continue
+            if source == chart_part and rel.get("Id") == rid:
+                continue
+            if resolve_target(source, rel.get("Target", "")) == workbook_part:
+                sharers.append(source)
+    return sorted(set(sharers))
 
 
 # ---------------------------------------------------------------- format_chart
@@ -1229,7 +1642,7 @@ def _classify_axes(plot_area) -> dict:
 
     def _visible(ax):
         d = ax.find(_qc("delete"))
-        return d is None or d.get("val") in ("0", "false")
+        return d is None or not attr_bool(d, "val", True)
 
     def _is_secondary(ax):
         crosses = ax.find(_qc("crosses"))

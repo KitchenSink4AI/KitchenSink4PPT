@@ -12,9 +12,9 @@ Slide addressing: a 0-based presentation-order index (int) or
 {"slide_id": N} (the durable p:sldId id; survives reordering, indices do
 not). Errors come from the core.errors taxonomy with actionable messages.
 
-Duplication follows the package-level algorithm (research doc Part II, the
-python-pptx issue #132 ground truth): the cloned slide KEEPS its rIds so the
-slide XML needs no rewriting; only deep-copied targets (notesSlide, chart
+Duplication follows the package-level algorithm: the cloned slide KEEPS its
+rIds so the slide XML needs no rewriting; only deep-copied targets
+(notesSlide, chart
 plus its colors/style/embedded xlsx, oleObject/package embeddings) get their
 rel Targets retargeted; media and layout rels stay shared by design; external
 rels keep TargetMode; a16/p14 creationId GUIDs are REGENERATED on every clone
@@ -31,17 +31,22 @@ from __future__ import annotations
 import copy
 import posixpath
 import re
+import secrets
 import uuid
+from importlib import resources
 from pathlib import Path
 
 from lxml import etree
 
+from ..core import safesave
+from ..core import slide_echo as _slide_echo
 from ..core.errors import (
     AmbiguousTarget,
     DocumentNotFound,
     PptMcpError,
     TargetNotFound,
     UnsupportedStructure,
+    ValidationFailed,
 )
 from ..core.package import (
     CT_SLIDE,
@@ -56,7 +61,14 @@ from ..core.package import (
     resolve_target,
 )
 from ..core.sandbox import check_path
+from ..core.swapwait import require_deck, through_swap
 from ._runmap import HLINK_QNAMES
+
+# docProps/core.xml namespaces for the properties create_presentation reports.
+_CORE_NS = {
+    "cp": "http://schemas.openxmlformats.org/package/2006/metadata/core-properties",
+    "dc": "http://purl.org/dc/elements/1.1/",
+}
 
 _RT = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/"
 RT_NOTES_SLIDE = _RT + "notesSlide"
@@ -67,10 +79,34 @@ RT_PACKAGE = _RT + "package"
 RT_TAGS = _RT + "tags"
 RT_CHART_COLORS = "http://schemas.microsoft.com/office/2011/relationships/chartColorStyle"
 RT_CHART_STYLE = "http://schemas.microsoft.com/office/2011/relationships/chartStyle"
+RT_DIAGRAM_DATA = _RT + "diagramData"
+RT_DIAGRAM_LAYOUT = _RT + "diagramLayout"
+RT_DIAGRAM_QUICK_STYLE = _RT + "diagramQuickStyle"
+RT_DIAGRAM_COLORS = _RT + "diagramColors"
+RT_DIAGRAM_DRAWING = (
+    "http://schemas.microsoft.com/office/2007/relationships/diagramDrawing"
+)
+
+_DIAGRAM_RELTYPES = frozenset({
+    RT_DIAGRAM_DATA,
+    RT_DIAGRAM_LAYOUT,
+    RT_DIAGRAM_QUICK_STYLE,
+    RT_DIAGRAM_COLORS,
+    RT_DIAGRAM_DRAWING,
+})
+_DIAGRAM_MODEL_RELTYPES = frozenset({RT_DIAGRAM_DATA, RT_DIAGRAM_DRAWING})
+_DIAGRAM_MODEL_REF_ATTRS = frozenset({
+    "modelId", "srcId", "destId", "presAssocID", "cxnId",
+    "parTransId", "sibTransId",
+})
 
 CT_PRESENTATION_MAIN = (
     "application/vnd.openxmlformats-officedocument.presentationml"
     ".presentation.main+xml"
+)
+CT_TEMPLATE_MAIN = (
+    "application/vnd.openxmlformats-officedocument.presentationml"
+    ".template.main+xml"
 )
 CT_NOTES_SLIDE = (
     "application/vnd.openxmlformats-officedocument.presentationml"
@@ -79,6 +115,27 @@ CT_NOTES_SLIDE = (
 
 #: Deep-copy-on-duplicate reltypes without special companion handling.
 _DEEP_COPY_SIMPLE = (RT_OLE_OBJECT, RT_PACKAGE, RT_TAGS)
+#: A chartex chart is copied like a chart: with its workbook, colors and style.
+RT_CHARTEX = "http://schemas.microsoft.com/office/2014/relationships/chartEx"
+#: Parts a slide owns that a copy of the slide must own too: an ActiveX
+#: control (with its binary), ink, a web add-in, the slide library's update
+#: record and the legacy VML drawing. Two slides sharing one of them share
+#: its state, and deleting either slide leaves the other's reference to a
+#: part the cleanup may remove. Pictures they use stay shared, like media.
+_DEEP_COPY_OWNED = (
+    _RT + "control",
+    _RT + "customXml",
+    "http://schemas.microsoft.com/office/2011/relationships/ink",
+    "http://schemas.microsoft.com/office/2011/relationships/webextension",
+    _RT + "slideUpdateInfo",
+    _RT + "vmlDrawing",
+)
+#: Targets of an owned part that stay shared when the part is copied.
+_SHARED_LEAVES = (
+    _RT + "image",
+    "http://schemas.microsoft.com/office/2007/relationships/media",
+    "http://schemas.microsoft.com/office/2007/relationships/hdphoto",
+)
 
 # Modern threaded comments (mirrors ops/comments.py; kept local so the
 # slide layer does not import the comments module).
@@ -150,10 +207,7 @@ def _resolve_slide(pkg: PptxPackage, slide) -> tuple[int, str, etree._Element, i
             )
     elif isinstance(slide, int) and not isinstance(slide, bool):
         if not 0 <= slide < n:
-            raise TargetNotFound(
-                f"slide index {slide} out of range, presentation has {n} "
-                f"slide{'s' if n != 1 else ''}"
-            )
+            raise TargetNotFound(_slide_echo.range_message(slide, n))
         index = slide
     else:
         raise PptMcpError(
@@ -163,7 +217,14 @@ def _resolve_slide(pkg: PptxPackage, slide) -> tuple[int, str, etree._Element, i
     entry = entries[index]
     rid = entry.get(qn("r:id"))
     part = pkg.relationship_target(PRESENTATION_PART, rid)
+    _slide_echo.report(slide, index, n, lambda: _read_slide_title(pkg, part))
     return index, part, entry, int(entry.get("id")), rid
+
+
+def _read_slide_title(pkg: PptxPackage, part: str) -> str | None:
+    from .read import slide_title
+
+    return slide_title(pkg, part)
 
 
 # --------------------------------------------------------------- layouts
@@ -327,13 +388,54 @@ def _clone_placeholder_skeleton(
     return added
 
 
-def _regenerate_creation_ids(root: etree._Element) -> int:
-    """Fresh GUIDs for every a16:creationId (shapes) and p14:creationId
-    (slide). Duplicate creationIds across slides after repeated duplication
-    are a confirmed PowerPoint repair-prompt source."""
+#: The parts that carry a p14:creationId (in their own extLst).
+_CREATION_VAL_PARTS = (
+    "ppt/slides/", "ppt/notesSlides/", "ppt/slideLayouts/", "ppt/slideMasters/",
+    "ppt/notesMasters/", "ppt/handoutMasters/",
+)
+_CREATION_VAL = re.compile(rb"""<(?:[A-Za-z0-9_]+:)?creationId\b[^>]*?\sval=["'](\d+)["']""")
+
+
+def creation_vals(pkg: PptxPackage) -> set[str]:
+    """Every p14:creationId val the deck's slides, notes pages, layouts and
+    masters use, read from their bytes without parsing them."""
+    vals: set[str] = set()
+    for name in pkg.part_names():
+        if (name.endswith(".xml") and name.startswith(_CREATION_VAL_PARTS)
+                and "/_rels/" not in name):
+            vals.update(m.decode("ascii") for m in _CREATION_VAL.findall(pkg.part_bytes(name)))
+    return vals
+
+
+def _fresh_creation_val(taken: set[str] | None) -> str:
+    """A p14:creationId val: an unsigned 32-bit integer above zero that is
+    not in `taken` (and is added to it)."""
+    while True:
+        val = str(secrets.randbelow(0xFFFFFFFF) + 1)
+        if taken is None:
+            return val
+        if val not in taken:
+            taken.add(val)
+            return val
+
+
+def _regenerate_creation_ids(root: etree._Element, taken: set[str] | None = None) -> int:
+    """Fresh creation ids for a copy, in the attribute each kind uses: a
+    braced GUID in `id` on every a16:creationId (shapes), and an unsigned
+    32-bit integer in `val` on every p14:creationId (slides, notes pages,
+    layouts, masters). Two slides sharing a creation id is a confirmed
+    PowerPoint repair-prompt source, and a comment anchors to its slide by
+    that val. `taken` holds the vals the destination deck already uses
+    (creation_vals); the new ones avoid them and join it."""
     count = 0
-    for el in root.iter(qn("a16:creationId"), qn("p14:creationId")):
+    for el in root.iter(qn("a16:creationId")):
         el.set("id", "{" + str(uuid.uuid4()).upper() + "}")
+        count += 1
+    for el in root.iter(qn("p14:creationId")):
+        el.set("val", _fresh_creation_val(taken))
+        # Copies made before this fix carry a GUID in an `id` attribute
+        # that p14:creationId does not have; a fresh copy drops it.
+        el.attrib.pop("id", None)
         count += 1
     return count
 
@@ -475,6 +577,12 @@ def insert_slide(pkg: PptxPackage, layout, position: int | None = None) -> dict:
     minus the latent date/footer/slide-number placeholders. Inserted at
     `position` (0-based final index) or at the end."""
     layout_part = _resolve_layout(pkg, layout)
+    # Checked against the deck as it is, before the slide is built: the old
+    # check ran after, and its refusal described a slide that was never made
+    # ("the deck now has 6 slides" for a 5-slide deck).
+    count = len(_slide_entries(pkg))
+    if position is not None and not 0 <= position <= count:
+        raise TargetNotFound(_slide_echo.position_message(position, count))
     sld, sp_tree = _new_slide_root()
     placeholders = _clone_placeholder_skeleton(pkg, layout_part, sp_tree)
     info = pkg.add_slide_part(_serialize(sld), layout_part=layout_part)
@@ -482,11 +590,6 @@ def insert_slide(pkg: PptxPackage, layout, position: int | None = None) -> dict:
     entries = lst.findall(qn("p:sldId"))
     index = len(entries) - 1
     if position is not None:
-        if not 0 <= position < len(entries):
-            raise TargetNotFound(
-                f"position {position} out of range; the deck now has "
-                f"{len(entries)} slides (valid: 0..{len(entries) - 1})"
-            )
         entry = entries[index]
         lst.remove(entry)
         lst.insert(position, entry)
@@ -497,6 +600,7 @@ def insert_slide(pkg: PptxPackage, layout, position: int | None = None) -> dict:
         "slide_id": info["slide_id"],
         "part": info["part"],
         "index": index,
+        "new_slide_number": index + 1,
         "layout": layout_part,
         "placeholders": placeholders,
         "in_section": in_section,
@@ -539,8 +643,30 @@ def _clone_simple_part(pkg: PptxPackage, source_part: str) -> str:
     return new_part
 
 
+def _clone_owned_part(pkg: PptxPackage, source_part: str) -> str:
+    """Copy a part a slide owns (ActiveX control, ink, web add-in, ...)
+    under a new name, and copy what it owns in turn (an ActiveX control's
+    binary); pictures and media it uses stay shared."""
+    new_part = _clone_partname(pkg, source_part)
+    pkg.set_raw_part(new_part, pkg.part_bytes(source_part))
+    _copy_content_type(pkg, source_part, new_part)
+    src_rels = rels_name(source_part)
+    if pkg.has_part(src_rels):
+        rels_root = copy.deepcopy(pkg.root(src_rels))
+        for rel in rels_root:
+            if rel.get("TargetMode") == "External" or rel.get("Type") in _SHARED_LEAVES:
+                continue
+            target = resolve_target(source_part, rel.get("Target", ""))
+            if not pkg.has_part(target):
+                continue
+            rel.set("Target", _rel_target(new_part, _clone_simple_part(pkg, target)))
+        pkg.set_raw_part(rels_name(new_part), _serialize(rels_root))
+    return new_part
+
+
 def _clone_notes_slide(
-    pkg: PptxPackage, notes_part: str, new_slide_part: str
+    pkg: PptxPackage, notes_part: str, new_slide_part: str,
+    taken: set[str] | None = None,
 ) -> str:
     """Deep-copy a notesSlide for a cloned slide. The notesMaster rel stays
     shared; the back-rel to the owning slide is retargeted at the clone
@@ -548,7 +674,7 @@ def _clone_notes_slide(
     and dangles when either is deleted)."""
     new_notes = pkg.next_partname("ppt/notesSlides/notesSlide{}.xml")
     root = copy.deepcopy(pkg.root(notes_part))
-    _regenerate_creation_ids(root)
+    _regenerate_creation_ids(root, taken)
     pkg.add_part_with_content_type(new_notes, _serialize(root), CT_NOTES_SLIDE)
     src_rels = rels_name(notes_part)
     if pkg.has_part(src_rels):
@@ -589,8 +715,198 @@ def _clone_chart(pkg: PptxPackage, chart_part: str) -> tuple[str, list[str]]:
     return new_chart, extras
 
 
+def _diagram_graph(
+    pkg: PptxPackage, slide_part: str, rels_root: etree._Element | None = None
+) -> tuple[set[str], dict[str, set[str]]]:
+    """SmartArt parts reachable from one slide and their diagram reltypes."""
+    if rels_root is None:
+        rels_part = rels_name(slide_part)
+        if not pkg.has_part(rels_part):
+            return set(), {}
+        rels_root = pkg.root(rels_part)
+    parts: set[str] = set()
+    kinds: dict[str, set[str]] = {}
+    queue: list[str] = []
+
+    def add(source: str, rel: etree._Element) -> None:
+        rel_type = rel.get("Type")
+        if rel_type not in _DIAGRAM_RELTYPES or (
+            rel.get("TargetMode") == "External"
+        ):
+            return
+        target = resolve_target(source, rel.get("Target", ""))
+        kinds.setdefault(target, set()).add(rel_type)
+        if target not in parts:
+            parts.add(target)
+            queue.append(target)
+
+    for rel in rels_root:
+        add(slide_part, rel)
+    while queue:
+        source = queue.pop(0)
+        source_rels = rels_name(source)
+        if not pkg.has_part(source_rels):
+            continue
+        for rel in pkg.root(source_rels):
+            add(source, rel)
+    return parts, kinds
+
+
+def _clone_diagram_bundle(
+    pkg: PptxPackage,
+    src_slide_part: str,
+    new_slide_part: str,
+    slide_rels: etree._Element,
+) -> tuple[dict[str, str], int]:
+    """Deep-copy every SmartArt part and regenerate its model-id graph.
+
+    Modern PowerPoint relates the cached drawing directly from the slide;
+    older producers relate it from the data model.  Traversing diagram
+    relationships covers both without assuming a filename or topology.
+    Layout, colors, and quickStyle are copied too: PowerPoint treats the five
+    parts as one mutable diagram family and repairs decks whose duplicate
+    slides point at the same family.
+    """
+    sources, kinds = _diagram_graph(pkg, src_slide_part, slide_rels)
+    if not sources:
+        return {}, 0
+
+    clones: dict[str, str] = {}
+    # Publish each empty clone into the in-memory name set as it is assigned,
+    # so two source parts with the same stem cannot choose one destination.
+    for source in sorted(sources):
+        if not pkg.has_part(source):
+            raise ValidationFailed(
+                f"SmartArt relationship from {src_slide_part} targets "
+                f"missing part {source}"
+            )
+        new_part = _clone_partname(pkg, source)
+        pkg.set_raw_part(new_part, pkg.part_bytes(source))
+        _copy_content_type(pkg, source, new_part)
+        clones[source] = new_part
+
+    model_parts = [
+        clones[source]
+        for source in sorted(sources)
+        if kinds.get(source, set()) & _DIAGRAM_MODEL_RELTYPES
+    ]
+    old_model_ids = {
+        node.get("modelId")
+        for part in model_parts
+        for node in pkg.root(part).iter()
+        if node.get("modelId")
+    }
+    fresh_ids = {
+        old: "{" + str(uuid.uuid4()).upper() + "}"
+        for old in old_model_ids
+    }
+    for part in model_parts:
+        root = pkg.root(part)
+        changed = False
+        for node in root.iter():
+            for attr, value in list(node.attrib.items()):
+                replacement = fresh_ids.get(value)
+                if replacement is not None:
+                    node.set(attr, replacement)
+                    changed = True
+        if changed:
+            pkg.mark_dirty(part)
+
+    # Copy per-diagram rels and retarget every cloned member. Other internal
+    # dependencies (normally media) remain shared deliberately, with a fresh
+    # relative target from the cloned source part.
+    for source, new_part in clones.items():
+        source_rels = rels_name(source)
+        if not pkg.has_part(source_rels):
+            continue
+        new_rels = copy.deepcopy(pkg.root(source_rels))
+        for rel in new_rels:
+            if rel.get("TargetMode") == "External":
+                continue
+            target = resolve_target(source, rel.get("Target", ""))
+            rel.set("Target", _rel_target(new_part, clones.get(target, target)))
+        pkg.set_raw_part(rels_name(new_part), _serialize(new_rels))
+
+    for rel in slide_rels:
+        if rel.get("TargetMode") == "External":
+            continue
+        target = resolve_target(src_slide_part, rel.get("Target", ""))
+        if target in clones:
+            rel.set("Target", _rel_target(new_slide_part, clones[target]))
+    return clones, len(fresh_ids)
+
+
+def _diagram_model_ids(
+    pkg: PptxPackage, parts: set[str], kinds: dict[str, set[str]]
+) -> set[str]:
+    return {
+        node.get("modelId")
+        for part in parts
+        if kinds.get(part, set()) & _DIAGRAM_MODEL_RELTYPES
+        for node in pkg.root(part).iter()
+        if node.get("modelId")
+    }
+
+
+def _verify_diagram_copy_independence(
+    pkg: PptxPackage, src_slide_part: str, new_slide_part: str
+) -> dict:
+    """Fail a slide copy before save if its SmartArt graph is still shared."""
+    source_parts, source_kinds = _diagram_graph(pkg, src_slide_part)
+    clone_parts, clone_kinds = _diagram_graph(pkg, new_slide_part)
+    shared = source_parts & clone_parts
+    if shared:
+        raise ValidationFailed(
+            "duplicate slide still shares mutable SmartArt part(s) with "
+            f"its source: {', '.join(sorted(shared))}"
+        )
+    missing = sorted(part for part in clone_parts if not pkg.has_part(part))
+    if missing:
+        raise ValidationFailed(
+            "duplicate slide has missing SmartArt part(s): " + ", ".join(missing)
+        )
+    source_ids = _diagram_model_ids(pkg, source_parts, source_kinds)
+    clone_ids = _diagram_model_ids(pkg, clone_parts, clone_kinds)
+    reused_ids = source_ids & clone_ids
+    if reused_ids:
+        raise ValidationFailed(
+            "duplicate slide still reuses SmartArt model IDs from its "
+            f"source ({len(reused_ids)} duplicate id(s))"
+        )
+
+    unresolved: set[str] = set()
+    for part in clone_parts:
+        if RT_DIAGRAM_DATA not in clone_kinds.get(part, set()):
+            continue
+        root = pkg.root(part)
+        data_ids = {
+            node.get("modelId")
+            for node in root.iter()
+            if node.get("modelId")
+        }
+        for node in root.iter():
+            for attr, value in node.attrib.items():
+                local = etree.QName(attr).localname
+                if (
+                    local in _DIAGRAM_MODEL_REF_ATTRS
+                    and value.startswith("{")
+                    and value.endswith("}")
+                    and value not in data_ids
+                ):
+                    unresolved.add(value)
+    if unresolved:
+        raise ValidationFailed(
+            "duplicate slide has unresolved SmartArt model-id references "
+            f"({len(unresolved)} id(s))"
+        )
+    return {
+        "parts": len(clone_parts),
+        "model_ids": len(clone_ids),
+    }
+
+
 def duplicate_slide(pkg: PptxPackage, slide, position: int | None = None) -> dict:
-    """Fully independent copy of a slide (the python-pptx issue #132
+    """Fully independent copy of a slide (the package-level duplication
     machinery). Placed right after the source by default, or at `position`
     (0-based final index). Layout and media rels stay shared; notesSlide,
     chart (with colors/style/xlsx), and oleObject/package parts are
@@ -605,14 +921,12 @@ def duplicate_slide(pkg: PptxPackage, slide, position: int | None = None) -> dic
     n_after = len(_slide_entries(pkg)) + 1
     final = src_index + 1 if position is None else position
     if not 0 <= final < n_after:
-        raise TargetNotFound(
-            f"position {position} out of range; the deck will have "
-            f"{n_after} slides (valid: 0..{n_after - 1})"
-        )
+        raise TargetNotFound(_slide_echo.position_message(position, n_after - 1))
     new_part = pkg.next_partname("ppt/slides/slide{}.xml")
 
     new_root = copy.deepcopy(pkg.root(src_part))
-    guids = _regenerate_creation_ids(new_root)
+    taken = creation_vals(pkg)
+    guids = _regenerate_creation_ids(new_root, taken)
 
     copied: list[str] = []
     shared: list[str] = []
@@ -621,10 +935,16 @@ def duplicate_slide(pkg: PptxPackage, slide, position: int | None = None) -> dic
     src_rels = rels_name(src_part)
     if pkg.has_part(src_rels):
         rels_root = copy.deepcopy(pkg.root(src_rels))
+        diagram_clones, diagram_ids = _clone_diagram_bundle(
+            pkg, src_part, new_part, rels_root
+        )
+        copied.extend(diagram_clones.values())
         for rel in list(rels_root):
             if rel.get("TargetMode") == "External":
                 continue  # hyperlink/linked-media rels: duplicated as-is
             rel_type = rel.get("Type")
+            if rel_type in _DIAGRAM_RELTYPES:
+                continue  # already deep-copied as one model-id graph
             target = resolve_target(src_part, rel.get("Target", ""))
             if rel_type in (RT_MODERN_COMMENTS, RT_LEGACY_COMMENTS):
                 # Comments never travel with the clone: modern anchors
@@ -636,17 +956,21 @@ def duplicate_slide(pkg: PptxPackage, slide, position: int | None = None) -> dic
                 stripped_comments.append(target)
                 continue
             if rel_type == RT_NOTES_SLIDE:
-                new_target = _clone_notes_slide(pkg, target, new_part)
-            elif rel_type == RT_CHART:
+                new_target = _clone_notes_slide(pkg, target, new_part, taken)
+            elif rel_type in (RT_CHART, RT_CHARTEX):
                 new_target, extras = _clone_chart(pkg, target)
                 copied.extend(extras)
             elif rel_type in _DEEP_COPY_SIMPLE:
                 new_target = _clone_simple_part(pkg, target)
+            elif rel_type in _DEEP_COPY_OWNED and pkg.has_part(target):
+                new_target = _clone_owned_part(pkg, target)
             else:
                 shared.append(target)  # layout, media, jump-hyperlink slides
                 continue
             rel.set("Target", _rel_target(new_part, new_target))
             copied.append(new_target)
+    else:
+        diagram_ids = 0
     if stripped_comments:
         # Drop the {6950BFC3-...} commentRel extension from the clone's
         # extLst; a wiring stub pointing at a removed rel corrupts.
@@ -663,15 +987,21 @@ def duplicate_slide(pkg: PptxPackage, slide, position: int | None = None) -> dic
 
     reg = pkg.register_slide_entry(new_part, position=final)
     in_section = _assign_section_membership(pkg, reg["slide_id"], final)
+    diagram_integrity = _verify_diagram_copy_independence(
+        pkg, src_part, new_part
+    )
     result = {
         "slide_id": reg["slide_id"],
         "part": new_part,
         "index": final,
+        "new_slide_number": final + 1,
         "source_slide_id": src_id,
         "source_part": src_part,
         "copied_parts": copied,
         "shared_parts": sorted(set(shared)),
         "creation_ids_regenerated": guids,
+        "diagram_model_ids_regenerated": diagram_ids,
+        "diagram_integrity": diagram_integrity,
         "in_section": in_section,
     }
     if stripped_comments:
@@ -738,6 +1068,21 @@ def _drop_custom_show_refs(pkg: PptxPackage, rid: str) -> dict:
     return result
 
 
+def _drop_outline_entries(root: etree._Element, rid: str) -> int:
+    """Remove the p:sld entries naming `rid` from every p:sldLst outside the
+    presentation part (viewProps.xml's p:outlineViewPr list); a list left
+    empty goes too, as PowerPoint writes no list when nothing is collapsed."""
+    dropped = 0
+    for lst in list(root.iter(qn("p:sldLst"))):
+        here = [s for s in lst.findall(qn("p:sld")) if s.get(qn("r:id")) == rid]
+        for sld in here:
+            lst.remove(sld)
+        if here and len(lst) == 0:
+            lst.getparent().remove(lst)
+        dropped += len(here)
+    return dropped
+
+
 def _neuter_jump_hyperlinks(pkg: PptxPackage, deleted_part: str) -> list[dict]:
     """Other parts (slides, layouts, masters, notesSlides) can carry jump
     hyperlinks (slide-reltype rels) targeting the deleted slide. Drop the
@@ -767,11 +1112,16 @@ def _neuter_jump_hyperlinks(pkg: PptxPackage, deleted_part: str) -> list[dict]:
                     if el.get(qn("r:id")) == rid:
                         el.getparent().remove(el)
                         removed += 1
-                if removed:
+                # The outline view's collapsed-slide list in viewProps.xml
+                # names the slide through the same relationship; an entry
+                # left behind is a dangling id the save refuses.
+                listed = _drop_outline_entries(src_root, rid)
+                if removed or listed:
                     pkg.mark_dirty(source)
-                flagged.append(
-                    {"part": source, "rid": rid, "hyperlinks_removed": removed}
-                )
+                if removed or not listed:
+                    flagged.append(
+                        {"part": source, "rid": rid, "hyperlinks_removed": removed}
+                    )
         if changed:
             pkg.mark_dirty(name)
     return flagged
@@ -790,27 +1140,59 @@ def _is_referenced(pkg: PptxPackage, target: str) -> bool:
     return False
 
 
+def _internal_targets(pkg: PptxPackage, part: str) -> list[str]:
+    """The parts `part` names through its internal relationships."""
+    part_rels = rels_name(part)
+    if not pkg.has_part(part_rels):
+        return []
+    return [
+        resolve_target(part, rel.get("Target", ""))
+        for rel in pkg.root(part_rels)
+        if rel.get("TargetMode") != "External"
+    ]
+
+
 def _gc_parts(pkg: PptxPackage, candidates: list[str]) -> list[str]:
-    """Remove parts no longer referenced by ANY remaining rels file,
-    starting from the deleted slide's former targets and cascading (a gc'd
-    chart releases its colors/style/xlsx; a gc'd notesSlide never releases
-    the notesMaster, which the presentation rels still reference; media
-    shared with other slides survives the reference count)."""
-    removed: list[str] = []
+    """Remove the parts only the deleted slide reached: its former targets
+    and everything they reach, minus whatever the rest of the package still
+    reaches (a gc'd chart releases its colors/style/xlsx; the notesMaster,
+    layouts, masters and media shared with other slides stay). Reachability,
+    not reference counting: companions that name each other (A to B and B
+    to A, or A to itself) and that nothing else reaches go too, where a
+    reference count kept them alive."""
+    closure: list[str] = []
+    seen: set[str] = set()
     queue = list(candidates)
     while queue:
         target = queue.pop(0)
-        if target in removed or not pkg.has_part(target):
+        if target in seen or not pkg.has_part(target):
             continue
-        if _is_referenced(pkg, target):
+        seen.add(target)
+        closure.append(target)
+        queue.extend(_internal_targets(pkg, target))
+    # What the rest of the package reaches: every relationship whose source
+    # lies outside that set (the package root's included), followed on
+    # through any member it reaches.
+    kept: set[str] = set()
+    queue = []
+    for name in pkg.part_names():
+        if not name.endswith(".rels"):
             continue
-        target_rels = rels_name(target)
-        if pkg.has_part(target_rels):
-            for rel in pkg.root(target_rels):
-                if rel.get("TargetMode") != "External":
-                    queue.append(resolve_target(target, rel.get("Target", "")))
+        source = rels_source(name)
+        if source in seen:
+            continue
+        for rel in pkg.root(name):
+            if rel.get("TargetMode") != "External":
+                queue.append(resolve_target(source, rel.get("Target", "")))
+    while queue:
+        target = queue.pop()
+        if target not in seen or target in kept:
+            continue
+        kept.add(target)
+        queue.extend(_internal_targets(pkg, target))
+    removed = [target for target in closure if target not in kept]
+    for target in removed:
         _remove_part_and_rels(pkg, target)
-        removed.append(target)
     return removed
 
 
@@ -838,7 +1220,7 @@ def _delete_slide_impl(pkg: PptxPackage, slide, *, allow_last: bool) -> dict:
     _remove_part_and_rels(pkg, part)
     flagged = _neuter_jump_hyperlinks(pkg, part)
     gc_removed = _gc_parts(pkg, candidates)
-    return {
+    out = {
         "deleted_part": part,
         "slide_id": slide_id,
         "index": index,
@@ -847,6 +1229,17 @@ def _delete_slide_impl(pkg: PptxPackage, slide, *, allow_last: bool) -> dict:
         "section_entries_removed": section_entries,
         "flagged_hyperlinks": flagged,
     }
+    left = [int(e.get("id")) for e in _slide_entries(pkg) if (e.get("id") or "").isdigit()]
+    if left and slide_id > max(left):
+        # A new slide takes one more than the highest slide id left
+        # (PowerPoint does the same, even in one session), so the view's
+        # anchor for this slide would name the next slide added.
+        out["warnings"] = [
+            f"slide id {slide_id} was the highest in the deck, so the next slide "
+            f"added takes it and answers to the old anchor s:{slide_id}; take "
+            "anchors from a new get_presentation_view before editing by anchor again"
+        ]
+    return out
 
 
 def delete_slide(pkg: PptxPackage, slide) -> dict:
@@ -909,6 +1302,7 @@ def move_slide(pkg: PptxPackage, slide, to: int) -> dict:
         "part": part,
         "from": index,
         "to": to,
+        "new_slide_number": to + 1,
         "in_section": in_section,
         "section_moves": section_moves,
     }
@@ -1021,9 +1415,10 @@ def create_presentation(
     keep_slides: bool = False,
     slide_size: str | None = None,
 ) -> dict:
-    """Create a NEW .pptx at `path` from a template (.pptx or .potx). The
-    template's bytes are copied, a .potx/.ppsx main content type is restamped
-    to the presentation type, and with keep_slides=False (the default) every
+    """Create a NEW .pptx or .potx at `path` from a template (.pptx or
+    .potx). The template's bytes are copied and the main content type is
+    restamped to match the requested output suffix. With keep_slides=False
+    (the default) every
     slide is removed through the delete machinery, leaving masters, layouts,
     and themes intact. The template source file is never modified.
 
@@ -1040,8 +1435,15 @@ def create_presentation(
     losing to it: change it afterwards with set_slide_size.
 
     This is the one ops function that writes to disk: byte copy, then a
-    PptxPackage edit and an atomic validated save on the NEW file only."""
+    PptxPackage edit and an atomic validated save on the NEW file only.
+
+    Because the copy is byte-for-byte, the new deck also carries the
+    template's sensitivity label and core properties. The result reports
+    them (sensitivity_label in merge_decks' shape, and core_properties:
+    title, last_modified_by, revision) so the inheritance is never silent;
+    change them with set_document_properties or a label tool afterwards."""
     from .furniture import _SIZE_PRESETS
+    from .labels import read_label
 
     # None is "not given", which is what lets an EXPLICIT slide_size="16:9"
     # beside a template refuse like every other explicit value. While the
@@ -1064,35 +1466,52 @@ def create_presentation(
         )
     dest = Path(path)
     check_path(dest, "create presentation")
-    if dest.suffix.lower() != ".pptx":
+    safesave.refuse_protected_output(dest, purpose="create presentation")
+    output_suffix = dest.suffix.lower()
+    if output_suffix not in (".pptx", ".potx"):
         raise PptMcpError(
-            f"output must be a .pptx file, got {dest.name!r}"
+            f"output must be a .pptx presentation or .potx template, got "
+            f"{dest.name!r}"
         )
+    output_main_type = (
+        CT_TEMPLATE_MAIN if output_suffix == ".potx" else CT_PRESENTATION_MAIN
+    )
+    if not dest.exists() and safesave.replace_in_flight(dest):
+        # A save that did not finish left a deck of this name aside: put it
+        # back first, so a new deck is never made over it.
+        with safesave.write_lock(dest):
+            pass
     if dest.exists():
         raise PptMcpError(
             f"{dest} already exists; refusing to overwrite. Delete it first "
             "or choose another name."
         )
     if template is None:
-        import pptx  # bundled default template used as raw bytes only
-
-        src = Path(pptx.__file__).parent / "templates" / "default.pptx"
-        if not src.exists():  # pragma: no cover
+        src = (
+            resources.files("kitchensink4ppt")
+            .joinpath("templates")
+            .joinpath("default.pptx")
+        )
+        if not src.is_file():  # pragma: no cover - broken installation only
             raise DocumentNotFound(
-                "python-pptx default template not found; pass an explicit "
-                "template .pptx/.potx"
+                "bundled default presentation template not found; reinstall "
+                "the package or pass an explicit template .pptx/.potx"
             )
+        source_bytes = src.read_bytes()
+        source_label = "kitchensink4ppt/templates/default.pptx"
     else:
         src = Path(template)
         check_path(src, "read template")
-        if not src.exists():
-            raise DocumentNotFound(f"no template file at {src}")
+        require_deck(src, f"no template file at {src}")
         if src.suffix.lower() not in (".pptx", ".potx", ".ppsx"):
             raise PptMcpError(
                 f"template must be .pptx, .potx, or .ppsx, got {src.name!r}"
             )
+        source_bytes = through_swap(src, src.read_bytes)
+        source_label = str(src)
+    safesave.claim_publish("the new presentation")
     dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_bytes(src.read_bytes())
+    dest.write_bytes(source_bytes)
     try:
         pkg = PptxPackage(dest)
         converted = False
@@ -1100,10 +1519,10 @@ def create_presentation(
         for node in ct_root.findall(qn("ct:Override")):
             if (
                 node.get("PartName") == "/" + PRESENTATION_PART
-                and node.get("ContentType") != CT_PRESENTATION_MAIN
+                and node.get("ContentType") != output_main_type
             ):
                 pkg.add_content_type_override(
-                    PRESENTATION_PART, CT_PRESENTATION_MAIN
+                    PRESENTATION_PART, output_main_type
                 )
                 converted = True
         removed: list[str] = []
@@ -1116,13 +1535,25 @@ def create_presentation(
         if template is None:
             _fit_default_to(pkg, slide_size)
         size = slide_size_of(pkg)
+        carried_label = read_label(pkg)
+        carried_core: dict = {}
+        if pkg.has_part("docProps/core.xml"):
+            core_root = pkg.root("docProps/core.xml")
+            for key, xpath in (
+                ("title", "dc:title"),
+                ("last_modified_by", "cp:lastModifiedBy"),
+                ("revision", "cp:revision"),
+            ):
+                node = core_root.find(xpath, _CORE_NS)
+                if node is not None and node.text:
+                    carried_core[key] = node.text
         pkg.save(do_backup=False)
     except BaseException:
         dest.unlink(missing_ok=True)  # never leave a half-built file behind
         raise
     return {
         "path": str(dest),
-        "template": str(src),
+        "template": source_label,
         "converted_content_type": converted,
         "slides_removed": len(removed),
         "gc_parts": gc_total,
@@ -1131,6 +1562,15 @@ def create_presentation(
         # here is what lets a caller catch a mismatch without a follow-up
         # get_presentation_info.
         "slide_size": size,
+        # What the byte copy carried over from the template, stated so it
+        # is never silent (same shape as merge_decks' sensitivity_label).
+        "sensitivity_label": {
+            "decision": (
+                "inherited_from_template" if carried_label else "none"
+            ),
+            "id": carried_label["id"] if carried_label else None,
+        },
+        "core_properties": carried_core,
     }
 
 
@@ -1222,7 +1662,8 @@ def apply_layout(pkg: PptxPackage, slide, layout) -> dict:
             cnvpr = sp.find(f"{qn('p:nvSpPr')}/{qn('p:cNvPr')}")
             record = {
                 "shape_id": (
-                    int(cnvpr.get("id")) if cnvpr is not None else None
+                    int(cnvpr.get("id"))
+                    if cnvpr is not None and (cnvpr.get("id") or "").isdigit() else None
                 ),
                 "type": ph.get("type", "obj"),
                 "idx": int(ph.get("idx", "0")),
@@ -1578,10 +2019,10 @@ def manage_section(
 
 
 # =====================================================================
-# APPEND-ONLY BLOCK: per-slide background. Master/layout backgrounds belong to ops/masters.py;
-# this is the PER-SLIDE p:bg override and its reset-to-inherit, the half
-# agents used to fake with a full-bleed rectangle (breaking placeholder
-# z-order and the reset story).
+# Per-slide background. Master/layout backgrounds belong to
+# ops/masters.py; this is the PER-SLIDE p:bg override and its
+# reset-to-inherit, the half agents used to fake with a full-bleed
+# rectangle (breaking placeholder z-order and the reset story).
 # =====================================================================
 
 

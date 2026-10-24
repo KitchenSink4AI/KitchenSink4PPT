@@ -1,4 +1,6 @@
-"""Regression tests for tool friction found while building a deck end to end:
+"""Regressions found while building a real deck.
+
+Covers:
 1.  generate_diagram matrix: flat row-major dict cells crashed as a raw
     KeyError: 0 outside the envelope ("Error calling tool: 0").
 2.  set_shape text_style: unknown keys were silently dropped, so styled
@@ -18,11 +20,12 @@
 from __future__ import annotations
 
 import json
+import inspect
 
 import pytest
 from lxml import etree
 
-from kitchensink4ppt import __version__, packs, server
+from kitchensink4ppt import __version__, server
 from kitchensink4ppt.core.errors import PptMcpError
 from kitchensink4ppt.core.package import PptxPackage, qn
 from kitchensink4ppt.ops import design_check as dck
@@ -31,10 +34,20 @@ from kitchensink4ppt.ops import shapes as shp
 from kitchensink4ppt.ops import slides as sl
 from kitchensink4ppt.ops import text as tx
 from kitchensink4ppt.ops.read import get_slide_info
+from kitchensink4ppt.registry import OP_TO_GROUP
+from kitchensink4ppt.surface import copy, envelope
 
 
 def _fn(name: str):
-    return packs.tool_objects()[name].fn
+    fn = getattr(server, name)
+
+    def call(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except BaseException as exc:
+            return envelope.refusal(exc)
+
+    return call
 
 
 @pytest.fixture()
@@ -120,16 +133,13 @@ def test_matrix_flat_shading(deck):
     assert r["rows"] == 2
 
 
-def test_keyerror_maps_to_bad_params():
-    """The envelope backstop: a stray KeyError/IndexError refuses
-    in-envelope as BAD_PARAMS, never escapes as a raw FastMCP error."""
-    assert server._classify(KeyError(0)) == "BAD_PARAMS"
-    assert server._classify(IndexError("x")) == "BAD_PARAMS"
-    payload = server._refusal(KeyError(0))
+def test_unexpected_lookup_failures_map_to_internal_error():
+    """A stray KeyError/IndexError is an engine failure, not caller blame."""
+    assert envelope._classify(KeyError(0)) == "INTERNAL_ERROR"
+    assert envelope._classify(IndexError("x")) == "INTERNAL_ERROR"
+    payload = envelope.refusal(KeyError(0))
     assert payload["ok"] is False
-    # the bare "0" is expanded into an actionable message
-    assert "0" in payload["error"]["message"]
-    assert len(payload["error"]["message"]) > 10
+    assert payload["error"]["message"] == copy.INTERNAL_ERROR_MESSAGE
 
 
 # --------------------------------------------- 2. set_shape text_style
@@ -226,22 +236,20 @@ def test_autofit_state_single_slide_unchanged(deck):
 
 
 def test_refusal_result_sets_is_error():
-    """The wrapper's refusal is a dict (in-process callers index it) AND
-    serializes to a CallToolResult with isError=true and the intact JSON
-    payload in both content and structuredContent."""
+    """A refusal emits one compact JSON text block with isError=true."""
     out = _fn("delete_slide")(file_path="Z:/nope/missing.pptx", slide=0)
-    assert out["ok"] is False  # dict behavior intact
-    result = out.to_mcp_result()
-    assert result.isError is True
-    assert result.structuredContent["ok"] is False
+    assert out["ok"] is False
+    result = envelope.tool_result(out, is_error=True)
+    assert result.is_error is True
+    assert result.structured_content is None
     parsed = json.loads(result.content[0].text)
-    assert parsed["error"]["code"] == result.structuredContent["error"]["code"]
+    assert parsed["error"]["code"] == out["error"]["code"]
 
 
 def test_success_result_not_flagged(make_deck):
     deck = make_deck("prodtest_ok.pptx")
     out = _fn("get_presentation_info")(file_path=str(deck))
-    assert not isinstance(out, server._RefusalResult)
+    assert isinstance(out, dict)
     assert out.get("slide_count", 0) >= 1
 
 
@@ -341,9 +349,14 @@ def test_fit_text_shrinks_overflowing_shape(deck):
     szs = [int(el.get("sz")) for el in body.iter(qn("a:rPr")) if el.get("sz")]
     assert szs and all(sz >= 1000 for sz in szs)
     assert all(sz < 4000 for sz in szs)
-    # normAutofit is now the autofit mode
+    # The shape's autofit setting is kept: it had none and gets none, so
+    # the rewritten sizes are the only mechanism.
     bodypr = body.find(qn("a:bodyPr"))
-    assert bodypr.find(qn("a:normAutofit")) is not None
+    assert [
+        child for child in bodypr
+        if etree.QName(child).localname in ("normAutofit", "spAutoFit", "noAutofit")
+    ] == []
+    assert rep["autofit"] == "none"
 
 
 def test_fit_text_reports_still_overflowing_at_floor(deck):
@@ -400,10 +413,9 @@ def test_fit_text_bad_min_size_refuses(deck):
         tx.fit_text(pkg, slide, None, min_size=0)
 
 
-def test_fit_text_registered_in_lite():
-    """Overflow is universal: fit_text ships in the always-on core."""
-    assert "fit_text" in packs.tool_names()["lite"]
-    assert packs.is_tool_enabled("fit_text")
+def test_fit_text_registered_in_fixed_edit_surface():
+    """Overflow handling remains available through the fixed edit tool."""
+    assert OP_TO_GROUP["fit_text"] == "ppt_edit"
 
 
 # --------------------------------------------- 9. contrast tinted fills
@@ -438,16 +450,16 @@ def test_contrast_opaque_fill_still_flags(deck):
 
 
 def test_set_placeholder_text_documents_paragraph_schema():
-    desc = packs.tool_objects()["set_placeholder_text"].description
+    desc = inspect.getdoc(server.set_placeholder_text) or ""
     assert '"level"' in desc or "level" in desc
     assert '"text"' in desc or "paragraphs" in desc
     assert "body" in desc and "content" in desc
 
 
 def test_fit_text_docstring_carries_honesty():
-    desc = packs.tool_objects()["fit_text"].description
+    desc = inspect.getdoc(server.fit_text) or ""
     assert "heuristic" in desc.lower() or "estimate" in desc.lower()
-    assert "export_slide_images" in desc
+    assert "export_slide_image" in desc
 
 
 # ------------------------------------- 4/10. stdio: isError + serverInfo
@@ -475,8 +487,10 @@ def test_stdio_iserror_and_server_version(make_deck, tmp_path):
         # refusal: isError=true, payload intact
         result = srv.request(
             "tools/call",
-            {"name": "delete_slide",
-             "arguments": {"file_path": str(deck), "slide": 99}},
+            {"name": "ppt_edit", "arguments": {
+                "op": "delete_slide",
+                "args": {"file_path": str(deck), "slide": 99},
+            }},
         )
         assert result.get("isError") is True
         payload = result.get("structuredContent")
@@ -494,16 +508,20 @@ def test_stdio_iserror_and_server_version(make_deck, tmp_path):
         # success: not flagged
         result = srv.request(
             "tools/call",
-            {"name": "get_presentation_info",
-             "arguments": {"file_path": str(deck)}},
+            {"name": "ppt_read", "arguments": {
+                "op": "get_presentation_info",
+                "args": {"file_path": str(deck)},
+            }},
         )
         assert not result.get("isError")
 
         # 8: fit_text is callable in lite over the wire
         result = srv.request(
             "tools/call",
-            {"name": "fit_text",
-             "arguments": {"file_path": str(deck), "slide": 0}},
+            {"name": "ppt_edit", "arguments": {
+                "op": "fit_text",
+                "args": {"file_path": str(deck), "slide": 0},
+            }},
         )
         assert not result.get("isError"), result
     finally:

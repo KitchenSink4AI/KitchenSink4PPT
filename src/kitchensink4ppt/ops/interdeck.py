@@ -1,15 +1,15 @@
 """Cross-deck slide copy: copying a slide BETWEEN presentations.
 
-The maintainer position on python-pptx #403 is "a slide is not portable",
-and both popular community recipes fail (research doc Part IV):
+The python-pptx maintainers' position is "a slide is not portable",
+and both popular community recipes fail:
 
-- The accidental-import recipe (#1036) relates the new slide to the SOURCE
+- The accidental-import recipe relates the new slide to the SOURCE
   deck's layout object; on save the serializer drags the source layout,
   master, and theme into the target package UNDER THEIR SOURCE PARTNAMES,
   colliding with the target's own slideLayout1/slideMaster1/theme1 (two zip
   members, one name: repair prompt), and never registers the dragged-in
   master in p:sldMasterIdLst.
-- The re-link recipes (#403, merger gists) bind the slide to a target
+- The re-link recipes (merger gists) bind the slide to a target
   layout. The package stays clean but the slide RESTYLES: every a:schemeClr
   re-resolves against the target theme, +mj-/+mn- typefaces re-resolve
   against the target font scheme, placeholders without a matching ph
@@ -34,7 +34,7 @@ This module implements both correct strategies:
   p:sldMasterIdLst with fresh ids in the >= 2147483648 space (unique across
   the union of all master and layout ids), and the slide binds to the
   imported copy of its original layout. This is PowerPoint's own "Keep
-  Source Formatting" paste, which is why decks accumulate masters.
+  Source Formatting" paste, which is why real decks accumulate masters.
 
 Both modes share the duplicate_slide part machinery, generalized across
 packages: the slide keeps its rIds (per-part namespace, no collisions) and
@@ -48,9 +48,11 @@ theme) when the destination has none.
 
 The SOURCE package is opened read-only and never mutated (asserted).
 Slide-size mismatches copy anyway with a warning carrying both dimensions;
-content is not rescaled. Non-placeholder shapes keep only their explicit
-formatting plus baked theme literals; text falling back to the destination
-presentation's defaultTextStyle can still drift slightly in link mode.
+content is not rescaled. Sizes within 0.01% or 1,000 EMU of each other are
+the same size (same_slide_size). Non-placeholder shapes keep only their
+explicit formatting plus baked theme literals; text falling back to the
+destination presentation's defaultTextStyle can still drift slightly in link
+mode.
 
 PROMOTION FLAG: the cross-package part importer (_import_leaf/_import_media
 /_import_rels + _mirror_content_type) is a local generalization of
@@ -68,8 +70,8 @@ from pathlib import Path
 
 from lxml import etree
 
+from ..core import slide_echo as _slide_echo
 from ..core.errors import (
-    DocumentNotFound,
     PptMcpError,
     TargetNotFound,
     UnsupportedStructure,
@@ -86,11 +88,13 @@ from ..core.package import (
     resolve_target,
 )
 from ..core.sandbox import check_path
+from ..core.swapwait import require_deck
 from ._runmap import HLINK_QNAMES
 from .media import _ensure_media_default, _find_media_by_bytes
 from .slides import (
     CT_NOTES_SLIDE,
     RT_CHART,
+    RT_LEGACY_COMMENTS,
     RT_MODERN_COMMENTS,
     RT_NOTES_MASTER,
     RT_NOTES_SLIDE,
@@ -104,6 +108,7 @@ from .slides import (
     _resolve_slide,
     _serialize,
     _slide_entries,
+    creation_vals,
 )
 
 _RT = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/"
@@ -174,17 +179,33 @@ def _mirror_content_type(
     src: PptxPackage, dst: PptxPackage, src_part: str, dst_part: str
 ) -> None:
     """Register dst_part in the destination [Content_Types].xml with the
-    content type that covered src_part in the source (Override stays an
-    Override; a Default is ensured for the extension, additively)."""
+    content type that covered src_part in the source. An Override stays an
+    Override. A Default is added for the extension when the destination has
+    none; when the destination's Default for it names another type, the
+    copied part gets an Override, so it keeps the type it had (an embedded
+    object .bin is not a printer-settings .bin). A part the source deck gives
+    no type is covered by the destination's own Default when there is one,
+    and refused otherwise: copied untyped, no program could read it."""
     got = _src_content_type(src, src_part)
-    if got is None:  # source package itself is missing coverage; nothing
-        return       # sane to invent (payload validation will not care)
+    if got is None:
+        if dst.content_type(dst_part) is not None:
+            return
+        raise UnsupportedStructure(
+            f"{src_part} in the source deck has no content type in its "
+            "[Content_Types].xml, so a copy could not say what it is; nothing "
+            "was changed. Open the source deck in PowerPoint, save it, and "
+            "copy again."
+        )
     kind, ct = got
     if kind == "override":
         dst.add_content_type_override(dst_part, ct)
-    else:
-        ext = dst_part.rsplit(".", 1)[-1]
+        return
+    ext = dst_part.rsplit(".", 1)[-1]
+    present = dst.content_type(dst_part)
+    if present is None:
         _ensure_media_default(dst, ext, ct)  # generic additive Default helper
+    elif present.lower() != ct.lower():
+        dst.add_content_type_override(dst_part, ct)
 
 
 # -------------------------------------------------- cross-package importers
@@ -280,6 +301,70 @@ def _import_leaf(
     return new_part
 
 
+def _drop_missing_targets(
+    src: PptxPackage,
+    src_slide_part: str,
+    rels_root: etree._Element | None,
+    new_root: etree._Element,
+    warnings: list[str],
+) -> None:
+    """A copied slide's relationships whose part is missing from the source.
+
+    PowerPoint opens a deck whose picture names an image part that is not
+    there, and shows a missing picture. The copy does the same: the
+    relationship is dropped and the picture keeps no image reference (a
+    warning names it). A missing part that anything but a picture needs (a
+    chart, an embedding) is refused by name before anything changes."""
+    if rels_root is None:
+        return
+    r_ns = "{" + NSMAP["r"] + "}"
+    for rel in list(rels_root):
+        if rel.get("TargetMode") == "External" or rel.get("Type") == RT_SLIDE_LAYOUT:
+            continue
+        target = resolve_target(src_slide_part, rel.get("Target", ""))
+        if src.has_part(target):
+            continue
+        rid = rel.get("Id")
+        refs = [
+            (el, attr)
+            for el in new_root.iter()
+            if isinstance(el.tag, str)
+            for attr, value in el.attrib.items()
+            if value == rid and attr.startswith(r_ns)
+        ]
+        if any(el.tag != qn("a:blip") for el, _attr in refs):
+            raise UnsupportedStructure(
+                f"the slide names {target}, which the source deck does not "
+                "hold, for something other than a picture, so it cannot be "
+                "copied; nothing was changed. Open the source deck in "
+                "PowerPoint, which repairs what it can, save it, and copy again."
+            )
+        holders = []
+        for el, attr in refs:
+            del el.attrib[attr]
+            shape = next(el.iterancestors(qn("p:pic"), qn("p:sp"), qn("p:cxnSp")), None)
+            cnvpr = shape.find(f".//{qn('p:cNvPr')}") if shape is not None else None
+            if cnvpr is None:
+                label = "the slide background"
+            else:
+                noun = "picture" if shape.tag == qn("p:pic") else "shape"
+                label = f"{noun} {cnvpr.get('name')!r}"
+            if label not in holders:
+                holders.append(label)
+        rels_root.remove(rel)
+        if holders:
+            warnings.append(
+                f"the image of {', '.join(holders)} on the copied slide is "
+                f"{target}, which the source deck does not hold; the copy "
+                "shows it as a missing picture, as PowerPoint does"
+            )
+        else:
+            warnings.append(
+                f"the copied slide's relationship to {target} was left out: "
+                "the source deck does not hold that part"
+            )
+
+
 def _import_chart(
     src: PptxPackage, dst: PptxPackage, chart_part: str, ctx: dict
 ) -> str:
@@ -295,6 +380,100 @@ def _import_chart(
         lambda _rt, target: _import_leaf(src, dst, target, ctx),
     )
     return new_chart
+
+
+def _merge_legacy_comment_authors(
+    src: PptxPackage, dst: PptxPackage, comment_part: str, warnings: list[str]
+) -> None:
+    """A copied classic comment part names its authors by number (p:cm
+    authorId), and the numbers belong to the SOURCE deck's commentAuthors
+    part: left as they are, the destination shows each comment under
+    whoever has that number there, or under no one. Each referenced source
+    author is matched in the destination by name and initials (its comments
+    are then numbered after that author's last), or added with a fresh
+    number; every authorId in the copied part is rewritten."""
+    from .comments import (
+        CT_LEGACY_AUTHORS,
+        RT_LEGACY_AUTHORS,
+        _rels_of_type,
+    )
+
+    root = dst.root(comment_part)
+    comments = root.findall(qn("p:cm"))
+    if not comments:
+        return
+    src_authors: dict[str, etree._Element] = {}
+    for _rid, part in _rels_of_type(src, PRESENTATION_PART, RT_LEGACY_AUTHORS):
+        if src.has_part(part):
+            for author in src.root(part).findall(qn("p:cmAuthor")):
+                src_authors.setdefault(author.get("id", ""), author)
+    found = _rels_of_type(dst, PRESENTATION_PART, RT_LEGACY_AUTHORS)
+    if found and dst.has_part(found[0][1]):
+        authors_part = found[0][1]
+    else:
+        authors_part = "ppt/commentAuthors.xml"
+        dst.add_part_with_content_type(
+            authors_part,
+            f'<p:cmAuthorLst xmlns:p="{NSMAP["p"]}"/>'.encode(),
+            CT_LEGACY_AUTHORS,
+        )
+        dst.add_relationship(
+            PRESENTATION_PART, RT_LEGACY_AUTHORS,
+            _rel_target(PRESENTATION_PART, authors_part),
+        )
+    authors_root = dst.root(authors_part)
+
+    def _key(author: etree._Element) -> tuple[str, str]:
+        return (author.get("name") or "", author.get("initials") or "")
+
+    def _int(value, default=0) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    mapping: dict[str, etree._Element] = {}
+    for old_id in sorted({cm.get("authorId", "") for cm in comments}):
+        source = src_authors.get(old_id)
+        if source is None:
+            warnings.append(
+                f"a copied comment names author {old_id}, which the source deck "
+                "does not list; it keeps that number"
+            )
+            continue
+        match = next(
+            (a for a in authors_root.findall(qn("p:cmAuthor")) if _key(a) == _key(source)),
+            None,
+        )
+        if match is None:
+            match = copy.deepcopy(source)
+            taken = [_int(a.get("id"), -1) for a in authors_root.findall(qn("p:cmAuthor"))]
+            match.set("id", str(max(taken, default=-1) + 1))
+            match.set("lastIdx", "0")
+            match.set("clrIdx", str(len(taken) % 8))
+            authors_root.append(match)
+        mapping[old_id] = match
+    renamed: dict[tuple[str, str], tuple[str, str]] = {}
+    for cm in comments:
+        author = mapping.get(cm.get("authorId", ""))
+        if author is None:
+            continue
+        # (authorId, idx) names one comment, so a comment joining an author
+        # who already has comments here takes the next number of theirs.
+        last = _int(author.get("lastIdx")) + 1
+        renamed[(cm.get("authorId", ""), cm.get("idx", ""))] = (author.get("id"), str(last))
+        cm.set("authorId", author.get("id"))
+        cm.set("idx", str(last))
+        author.set("lastIdx", str(last))
+    # A reply names its parent by the same pair (p15:parentCm), so it
+    # follows the renumbering and stays in its thread.
+    for parent in root.iter("{http://schemas.microsoft.com/office/powerpoint/2012/main}parentCm"):
+        new = renamed.get((parent.get("authorId", ""), parent.get("idx", "")))
+        if new is not None:
+            parent.set("authorId", new[0])
+            parent.set("idx", new[1])
+    dst.mark_dirty(authors_part)
+    dst.mark_dirty(comment_part)
 
 
 def _merge_comment_authors(
@@ -389,6 +568,24 @@ def _dest_notes_master(
             return dst.relationship_target(
                 PRESENTATION_PART, entry.get(qn("r:id"))
             )
+    # PowerPoint itself emits decks whose presentation has a notesMaster
+    # relationship but no p:notesMasterIdLst (both real corpus decks that
+    # exposed this case do).  That relationship is still the deck's existing
+    # notes master: importing and registering a second one makes PowerPoint
+    # reject the otherwise well-formed package as corrupt.  Reuse it before
+    # considering a new import.
+    pres_rels = rels_name(PRESENTATION_PART)
+    if dst.has_part(pres_rels):
+        for rel in dst.root(pres_rels):
+            if (
+                rel.get("Type") == RT_NOTES_MASTER
+                and rel.get("TargetMode") != "External"
+            ):
+                target = resolve_target(
+                    PRESENTATION_PART, rel.get("Target", "")
+                )
+                if dst.has_part(target):
+                    return target
     memo = ctx["memo"]
     if src_nm_part in memo:
         return memo[src_nm_part]
@@ -424,7 +621,7 @@ def _import_notes_slide(
     the source's when absent), media through the dedup pool."""
     new_notes = dst.next_partname("ppt/notesSlides/notesSlide{}.xml")
     root = copy.deepcopy(src.root(notes_part))
-    _regenerate_creation_ids(root)
+    _regenerate_creation_ids(root, ctx.get("creation_vals"))
     if bake_ctx is not None:
         _bake_theme_refs(root, bake_ctx, ctx["baked"])
     dst.add_part_with_content_type(new_notes, _serialize(root), CT_NOTES_SLIDE)
@@ -999,6 +1196,24 @@ def _sld_sz(pkg: PptxPackage) -> tuple[int, int] | None:
         return None
 
 
+#: Two slide sizes are the same when each side differs by less than this
+#: many EMU (about 0.001 inch) or less than this fraction of its length. A
+#: deck built with python-pptx at 13.333 inches is 12191695 or 12192305 EMU
+#: wide against PowerPoint's 12192000, which is the same slide.
+SIZE_TOLERANCE_EMU = 1000
+SIZE_TOLERANCE_FRACTION = 0.0001
+
+
+def same_slide_size(a: tuple[int, int], b: tuple[int, int]) -> bool:
+    """True when two (cx, cy) slide sizes are the same slide size."""
+    for x, y in zip(a, b):
+        gap = abs(int(x) - int(y))
+        if (gap >= SIZE_TOLERANCE_EMU
+                and gap >= SIZE_TOLERANCE_FRACTION * max(abs(x), abs(y))):
+            return False
+    return True
+
+
 def copy_slide_between(
     pkg: PptxPackage,
     src_path: str | Path,
@@ -1020,15 +1235,15 @@ def copy_slide_between(
 
     Refuses: a missing source file/slide, copying a file onto itself (use
     duplicate_slide), unknown design values. A slide-size mismatch copies
-    anyway with a warning carrying both dimensions (no rescaling)."""
+    anyway with a warning carrying both dimensions (no rescaling); sizes
+    within 0.01% or 1,000 EMU of each other are the same size."""
     if design not in ("link", "import"):
         raise PptMcpError(
             f"design must be 'link' or 'import', got {design!r}"
         )
     src_file = Path(src_path)
     check_path(src_file, "read source presentation")
-    if not src_file.exists():
-        raise DocumentNotFound(f"no source presentation at {src_file}")
+    require_deck(src_file, f"no source presentation at {src_file}")
     try:
         same = src_file.resolve() == pkg.path.resolve()
     except OSError:  # pragma: no cover
@@ -1047,7 +1262,7 @@ def copy_slide_between(
 
     warnings: list[str] = []
     src_sz, dst_sz = _sld_sz(src), _sld_sz(pkg)
-    if src_sz and dst_sz and src_sz != dst_sz:
+    if src_sz and dst_sz and not same_slide_size(src_sz, dst_sz):
         warnings.append(
             f"slide size mismatch: source is {src_sz[0]}x{src_sz[1]} EMU, "
             f"destination is {dst_sz[0]}x{dst_sz[1]} EMU; content copied "
@@ -1063,8 +1278,7 @@ def copy_slide_between(
     final = n_after - 1 if position is None else position
     if not 0 <= final < n_after:
         raise TargetNotFound(
-            f"position {position} out of range; the destination will have "
-            f"{n_after} slides (valid: 0..{n_after - 1})"
+            _slide_echo.position_message(position, n_after - 1, "the destination")
         )
 
     ctx = {
@@ -1078,7 +1292,8 @@ def copy_slide_between(
     }
     new_part = pkg.next_partname("ppt/slides/slide{}.xml")
     new_root = copy.deepcopy(src.root(src_slide_part))
-    guids = _regenerate_creation_ids(new_root)
+    ctx["creation_vals"] = creation_vals(pkg)
+    guids = _regenerate_creation_ids(new_root, ctx["creation_vals"])
     src_layout_part = _source_layout_of(src, src_slide_part)
 
     # Design binding first (link-mode carry and baking edit the slide tree
@@ -1116,6 +1331,7 @@ def copy_slide_between(
     src_rels = rels_name(src_slide_part)
     if src.has_part(src_rels):
         rels_root = copy.deepcopy(src.root(src_rels))
+        _drop_missing_targets(src, src_slide_part, rels_root, new_root, warnings)
         for rel in list(rels_root):
             if rel.get("TargetMode") == "External":
                 continue  # hyperlinks / linked media keep their URIs
@@ -1154,6 +1370,11 @@ def copy_slide_between(
                 # authors.xml and must be merged or the author reads blank.
                 new_target = _import_leaf(src, pkg, target, ctx)
                 _merge_comment_authors(src, pkg, new_target, warnings)
+            elif rel_type == RT_LEGACY_COMMENTS:
+                # Classic comments name their authors by number, and the
+                # numbers belong to the source deck: remap them.
+                new_target = _import_leaf(src, pkg, target, ctx)
+                _merge_legacy_comment_authors(src, pkg, new_target, warnings)
             elif rel_type in _DEEP_COPY_SIMPLE:
                 new_target = _import_leaf(src, pkg, target, ctx)
             else:  # media, customXml, anything else internal
@@ -1182,6 +1403,7 @@ def copy_slide_between(
         "slide_id": reg["slide_id"],
         "part": new_part,
         "index": final,
+        "new_slide_number": final + 1,
         "design": design,
         "layout": dest_layout,
         "source": {

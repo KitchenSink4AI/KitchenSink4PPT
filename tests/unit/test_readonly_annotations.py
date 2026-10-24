@@ -28,8 +28,9 @@ from pathlib import Path
 
 import pytest
 
-from kitchensink4ppt import packs, server  # noqa: F401  (the import registers tools)
+from kitchensink4ppt import server  # noqa: F401  (the import registers ops)
 from kitchensink4ppt.core import readonly
+from kitchensink4ppt.registry import public_ops
 
 PACKAGE = Path(readonly.__file__).parent.parent
 
@@ -80,10 +81,18 @@ MUTATION_MARKERS = [
 
 #: Modules the walk stops at. Each is infrastructure a read can
 #: legitimately reach: xproc.py and serial.py are the cross-process and in-process locks,
-#: dialogs.py reads the OS window layer, and update_check.py reads the
-#: cached update line.
+#: dialogs.py reads the OS window layer, update_check.py reads the
+#: cached update line, and update_flow.py keeps the server's own notice
+#: setting (update-notices.json) in its state folder and runs the update
+#: the user chose. It touches no deck, and it is called from the surface
+#: hook around a call, never from the body of any read operation.
+#: The walk follows calls by name, so a walked function that shares a name
+#: with a leaf's function captures every call into the leaf. The status
+#: tools call serial.release(); the lockfile release in core/lockrelease.py
+#: is named release_lockfile so that the walk does not take one for the
+#: other, and it stays walked (checked in the read-only walk test).
 LEAF_MODULES = {"xproc.py", "serial.py", "dialogs.py",
-                "update_check.py"}
+                "update_check.py", "update_flow.py"}
 LEAF_FUNCTIONS = {"_screen_repair_async"}
 
 _MARKER_RE = re.compile("|".join(MUTATION_MARKERS))
@@ -152,19 +161,15 @@ def _reaches_mutation(index, name, seen=None, depth=0, trail=""):
 
 
 def _registered() -> dict:
-    """tool name -> tool object, every pack, enabled or not."""
-    out = {}
-    for tools in packs._REGISTRY.values():
-        out.update(tools)
-    return out
+    """Operation name -> immutable registry specification."""
+    return public_ops()
 
 
 def test_every_registered_tool_carries_an_explicit_hint():
-    missing = []
-    for name, tool in sorted(_registered().items()):
-        annotations = getattr(tool, "annotations", None)
-        if annotations is None or annotations.readOnlyHint is None:
-            missing.append(name)
+    missing = [
+        name for name, spec in sorted(_registered().items())
+        if not isinstance(spec.read_only, bool)
+    ]
     assert not missing, (
         f"these tools reach tools/list with no readOnlyHint: {missing}")
 
@@ -183,8 +188,8 @@ def test_the_classification_covers_the_whole_surface():
 
 def test_read_only_set_matches_the_hand_audited_allowlist():
     on_the_wire = {
-        name for name, tool in _registered().items()
-        if tool.annotations.readOnlyHint is True
+        name for name, spec in _registered().items()
+        if spec.read_only is True
     }
     assert on_the_wire == READ_ONLY_TOOLS, (
         "the read-only group changed. Added: "
@@ -204,6 +209,10 @@ def test_no_read_only_tool_reaches_a_mutation_path():
     assert not offenders, (
         "tools declared read-only that can change something:" + chr(10)
         + chr(10).join(offenders))
+    # core/lockrelease.py deletes lockfiles and is not a leaf, so the walk
+    # above would have caught a read that reached its release.
+    found = _reaches_mutation(index, "release_lockfile")
+    assert found and found.endswith("reaches .unlink("), found
 
 
 @pytest.mark.parametrize("name", sorted(KNOWN_MUTATORS))
@@ -219,5 +228,5 @@ def test_an_unclassified_tool_raises_rather_than_defaulting():
 
 
 def test_the_hint_matches_the_module_for_every_tool():
-    for name, tool in _registered().items():
-        assert tool.annotations.readOnlyHint is readonly.read_only_hint(name)
+    for name, spec in _registered().items():
+        assert spec.read_only is readonly.read_only_hint(name)

@@ -2,8 +2,7 @@
 font inventory + replace, color remap/unification, proofing language, and
 whole-deck image (logo) replacement.
 
-These are the operations the commercial add-in market exists for (Slidewise,
-PPT Productivity, Power-user): native PowerPoint's Replace Fonts misses
+Each one covers a gap in native PowerPoint: its Replace Fonts misses
 charts and manually formatted boxes and cannot purge phantom declarations,
 has no color find-and-replace at all, and has no presentation-wide proofing
 language setting. All four gaps are pure XML reach, which the spine has.
@@ -32,6 +31,7 @@ from lxml import etree
 from ..core.errors import PptMcpError, TargetNotFound
 from ..core.package import PptxPackage, qn, rels_name
 from . import _traverse as tv
+from .read import cnvpr_id
 
 # ------------------------------------------------------------------- helpers
 
@@ -99,7 +99,7 @@ def font_inventory(pkg: PptxPackage, scope="all") -> dict:
     slots, theme-reference usage (+mj-lt family), and PHANTOM fonts -
     typefaces declared in run properties that govern no visible run text
     (empty runs, endParaRPr, unused lstStyle levels): the declarations
-    native Replace Fonts cannot see and the Slidewise use case.
+    native Replace Fonts cannot see.
 
     Caveat reported honestly: a lstStyle/txStyles declaration on a master
     or layout CAN still govern inherited placeholder text on slides, so
@@ -254,8 +254,8 @@ def replace_fonts(
             )
 
     # Identity pairs (old == new) are no-ops: sweeping them would rewrite
-    # 30+ parts and burn a backup slot for zero visible change
-    # . They are dropped and reported, matching
+    # 30+ parts and burn a backup slot for zero visible change.
+    # They are dropped and reported, matching
     # replace_image_everywhere's byte-identical refusal.
     identity = [old for old, new in mapping.items() if old == new.strip()]
     mapping = {o: n for o, n in mapping.items() if o not in identity}
@@ -528,7 +528,7 @@ def replace_image_everywhere(
             {
                 "part": ctx.part,
                 "bucket": ctx.bucket,
-                "shape_id": int(cnvpr.get("id")) if cnvpr is not None else None,
+                "shape_id": cnvpr_id(cnvpr),
                 "name": cnvpr.get("name", "") if cnvpr is not None else "",
                 "had_crop": src_rect is not None,
                 "had_svg_layer": had_svg,

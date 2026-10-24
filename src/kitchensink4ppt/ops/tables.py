@@ -1,9 +1,8 @@
 """Structural table operations: create, cell edit, merge/unmerge, row and
 column surgery, borders and fills, styles, and CSV/JSON export/import.
 
-File-based structural table ops are the ecosystem's total void: every other PowerPoint MCP server either cannot touch
-tables at all or only via COM. This module does the whole set on the a:tbl
-XML directly.
+Every operation here works on the a:tbl XML in the file directly, so none
+of them needs PowerPoint.
 
 Contract (all ops modules): every function takes the open PptxPackage first,
 mutates only the in-memory package, calls pkg.mark_dirty() on every part it
@@ -13,15 +12,16 @@ export_table may write a CSV/JSON file to a caller-given path (sandboxed).
 Table addressing (`table` parameter, uniform across this module):
 - None: the slide's only table (refuses with a candidate list when the
   slide has several).
-- int: 0-based table index on the slide in document order when in range;
-  otherwise treated as a shape id of a table graphicFrame.
+- {"index": N}: explicit 0-based table index in document order.
 - {"shape_id": N}: explicit shape id.
+- int: legacy shorthand accepted only when its index and shape-id readings
+  do not resolve to different tables.
 
 Cell addressing is 0-based (row, col) into the FULL grid. Merged regions do
 not collapse the grid: continuation cells still exist as a:tc elements with
 hMerge/vMerge flags, so (row, col) always maps to tr[row]/tc[col].
 
-Merge semantics (research Part V + ECMA CT_TableCell): the origin cell
+Merge semantics (ECMA CT_TableCell): the origin cell
 carries gridSpan/rowSpan; same-row continuations carry hMerge (plus rowSpan
 on multi-row regions); below-row continuations carry vMerge (plus gridSpan);
 interior cells carry both flags. Text in covered cells is MOVED into the
@@ -50,17 +50,28 @@ from pathlib import Path
 
 from lxml import etree
 
+from ..core import safesave
 from ..core.errors import (
     AmbiguousTarget,
     PptMcpError,
     TargetNotFound,
     UnsupportedStructure,
 )
-from ..core.package import PptxPackage, qn
+from ..core.package import PptxPackage, qn, seat_ahead_of_extlst
 from ..core.sandbox import check_path
+from ..core.xmlbool import attr_bool
 from . import geometry as g
 from ._runmap import rank_insert
-from .read import iter_shapes, paragraph_text, resolve_slide, table_element
+from ._textcontent import append_text as _append_paragraph_text
+from .read import (
+    cnvpr_id,
+    in_wrapper,
+    iter_shapes,
+    paragraph_text,
+    resolve_slide,
+    table_element,
+    wrapped_refusal,
+)
 
 _URI_TABLE = "http://schemas.openxmlformats.org/drawingml/2006/table"
 
@@ -105,8 +116,7 @@ _ANCHOR = {"top": "t", "middle": "ctr", "bottom": "b"}
 #: python-pptx's hardcoded default (Medium Style 2 - Accent 1); also ours.
 DEFAULT_STYLE_GUID = "{5C22544A-7EE6-4342-B048-85BDC9FD1C3A}"
 
-#: The 74 built-in table styles by friendly name (MS-OE376 sec. 5.1.6.10;
-#: GUIDs verified in research/20260830_1924_pptx_gaps_and_internals.md Part V).
+#: The 74 built-in table styles by friendly name (MS-OE376 sec. 5.1.6.10).
 #: Braces are part of the value; an un-braced GUID silently gets the default
 #: style, so apply_table_style normalizes. Unknown GUIDs degrade gracefully
 #: (PowerPoint renders the table unstyled, no repair prompt).
@@ -220,13 +230,41 @@ def _tables_on_slide(pkg: PptxPackage, part: str) -> list[dict]:
         out.append(
             {
                 "index": len(out),
-                "shape_id": int(cnvpr.get("id")) if cnvpr is not None else None,
+                "shape_id": cnvpr_id(cnvpr),
                 "name": cnvpr.get("name", "") if cnvpr is not None else "",
                 "frame": elem,
                 "tbl": tbl,
             }
         )
     return out
+
+
+def _wrapped_tables(pkg: PptxPackage, part: str) -> list[tuple]:
+    """(sp_tree, shape id, name) of each table PowerPoint keeps in a
+    compatibility wrapper on one slide (it does so when a cell holds an
+    equation). The reads list them; table operations do not change them."""
+    sp_tree = pkg.root(part).find(f"{qn('p:cSld')}/{qn('p:spTree')}")
+    out: list[tuple] = []
+    if sp_tree is None:
+        return out
+    for elem, kind, _z, _parent in iter_shapes(sp_tree, wrapped=True):
+        if kind != "table" or not in_wrapper(elem):
+            continue
+        cnvpr = None
+        nv = elem.find(qn("p:nvGraphicFramePr"))
+        if nv is not None:
+            cnvpr = nv.find(qn("p:cNvPr"))
+        out.append((sp_tree, cnvpr_id(cnvpr), cnvpr.get("name", "") if cnvpr is not None else ""))
+    return out
+
+
+def _wrapped_table_refusal(wrapped: list[tuple]) -> UnsupportedStructure | None:
+    """The by-name refusal for the first wrapped table, or None when the
+    slide has none."""
+    if not wrapped:
+        return None
+    sp_tree, sid, _name = wrapped[0]
+    return wrapped_refusal(sp_tree, sid)
 
 
 def _candidates(tables: list[dict]) -> str:
@@ -242,47 +280,118 @@ def resolve_table(pkg: PptxPackage, slide, table) -> dict:
     rec = resolve_slide(pkg, slide)
     part = rec["part"]
     tables = _tables_on_slide(pkg, part)
+    wrapped = _wrapped_tables(pkg, part)
     if not tables:
+        refusal = _wrapped_table_refusal(wrapped)
+        if refusal is not None:
+            raise refusal
         raise TargetNotFound(
             f"slide index {rec['index']} has no tables"
         )
     chosen = None
     if table is None:
+        if wrapped:
+            raise AmbiguousTarget(
+                f"slide index {rec['index']} has {len(tables) + len(wrapped)} tables, "
+                f"{len(wrapped)} of them kept by PowerPoint in a compatibility wrapper "
+                "that this server does not change; pass {'shape_id': N} for the one "
+                f"you mean. Candidates: {_candidates(tables)}; wrapped: "
+                + ", ".join(f"shape id {w[1]} ({w[2]!r})" for w in wrapped)
+            )
         if len(tables) > 1:
             raise AmbiguousTarget(
                 f"slide index {rec['index']} has {len(tables)} tables; pass "
-                f"a table index or {{'shape_id': N}}. Candidates: "
+                f"{{'index': N}} or {{'shape_id': N}}. Candidates: "
                 f"{_candidates(tables)}"
             )
         chosen = tables[0]
-    elif isinstance(table, dict) and set(table) == {"shape_id"}:
-        for t in tables:
-            if t["shape_id"] == table["shape_id"]:
-                chosen = t
-                break
-        if chosen is None:
+    elif isinstance(table, dict) and set(table) == {"index"}:
+        index = table["index"]
+        if isinstance(index, bool) or not isinstance(index, int):
+            raise PptMcpError(f"table index must be an integer, got {index!r}")
+        if not 0 <= index < len(tables):
+            refusal = _wrapped_table_refusal(wrapped)
+            if refusal is not None:
+                raise refusal
             raise TargetNotFound(
-                f"no table with shape id {table['shape_id']} on slide index "
+                f"table index {index} is out of range on slide index "
+                f"{rec['index']}; there are {len(tables)} tables. Candidates: "
+                f"{_candidates(tables)}"
+            )
+        chosen = tables[index]
+    elif isinstance(table, dict) and set(table) == {"shape_id"}:
+        shape_id = table["shape_id"]
+        if isinstance(shape_id, bool) or not isinstance(shape_id, int):
+            raise PptMcpError(
+                f"table shape_id must be an integer, got {shape_id!r}"
+            )
+        matches = [t for t in tables if t["shape_id"] == shape_id]
+        if len(matches) > 1:
+            raise AmbiguousTarget(
+                f"shape id {shape_id} occurs on {len(matches)} tables on slide "
+                f"index {rec['index']}; refusing to guess. Candidates: "
+                f"{_candidates(tables)}"
+            )
+        if not matches:
+            if wrapped:
+                refusal = wrapped_refusal(wrapped[0][0], shape_id)
+                if refusal is not None:
+                    raise refusal
+            raise TargetNotFound(
+                f"no table with shape id {shape_id} on slide index "
                 f"{rec['index']}. Candidates: {_candidates(tables)}"
             )
+        chosen = matches[0]
     elif isinstance(table, int) and not isinstance(table, bool):
-        if 0 <= table < len(tables):
-            chosen = tables[table]
-        else:
-            for t in tables:
-                if t["shape_id"] == table:
-                    chosen = t
-                    break
-            if chosen is None:
-                raise TargetNotFound(
-                    f"{table} is neither a table index (slide has "
-                    f"{len(tables)}) nor a table shape id. Candidates: "
-                    f"{_candidates(tables)}"
-                )
+        by_index = tables[table] if 0 <= table < len(tables) else None
+        shape_matches = [t for t in tables if t["shape_id"] == table]
+        if len(shape_matches) > 1:
+            raise AmbiguousTarget(
+                f"bare table integer {table} matches {len(shape_matches)} shape "
+                f"ids; use {{'index': {table}}} or {{'shape_id': {table}}}. "
+                f"Candidates: {_candidates(tables)}"
+            )
+        by_shape = shape_matches[0] if shape_matches else None
+        if (
+            by_index is not None
+            and by_shape is not None
+            and by_index["index"] != by_shape["index"]
+        ):
+            raise AmbiguousTarget(
+                f"bare table integer {table} means index {table} "
+                f"(shape id {by_index['shape_id']}) and shape id {table} "
+                f"(index {by_shape['index']}); use {{'index': {table}}} "
+                f"or {{'shape_id': {table}}}. Candidates: {_candidates(tables)}"
+            )
+        wrapped_hit = next((w for w in wrapped if w[1] == table), None)
+        if wrapped_hit is not None and (by_index is not None or by_shape is not None):
+            other = by_index or by_shape
+            raise AmbiguousTarget(
+                f"bare table integer {table} means a table on slide index "
+                f"{rec['index']} (index {other['index']}, shape id "
+                f"{other['shape_id']}, {other['name']!r}) and also shape id "
+                f"{table} ({wrapped_hit[2]!r}), a table PowerPoint keeps in a "
+                "compatibility wrapper that this server does not change; "
+                f"use {{'index': {other['index']}}} for the first or "
+                f"{{'shape_id': {table}}} for the other. Candidates: "
+                f"{_candidates(tables)}"
+            )
+        chosen = by_index or by_shape
+        if chosen is None:
+            if wrapped:
+                refusal = wrapped_refusal(wrapped[0][0], table)
+                if refusal is not None:
+                    raise refusal
+            raise TargetNotFound(
+                f"{table} is neither a table index (slide has "
+                f"{len(tables)}) nor a table shape id. Candidates: "
+                f"{_candidates(tables)}"
+            )
     else:
         raise PptMcpError(
-            f"invalid table selector {table!r}: use a 0-based table index, "
-            "{'shape_id': N}, or None for the only table"
+            f"invalid table selector {table!r}: use {{'index': N}}, "
+            "{'shape_id': N}, a safe unambiguous legacy integer, or None "
+            "for the only table"
         )
     return {
         "part": part,
@@ -342,7 +451,7 @@ def _span_int(tc: etree._Element, attr: str) -> int:
 
 
 def _is_continuation(tc: etree._Element) -> bool:
-    return tc.get("hMerge") == "1" or tc.get("vMerge") == "1"
+    return attr_bool(tc, "hMerge") or attr_bool(tc, "vMerge")
 
 
 def merge_regions(tbl: etree._Element) -> list[dict]:
@@ -375,7 +484,7 @@ def _region_str(reg: dict) -> str:
 
 
 def _cell_txbody(text: str, style: dict | None = None) -> etree._Element:
-    """Minimal single-style a:txBody for a table cell (paragraphs by \\n).
+    """Single-style a:txBody (``\\n`` paragraphs, ``\\v`` soft breaks).
     Note the DrawingML a: namespace: table cells use a:txBody, not p:txBody."""
     style = style or {}
     body = etree.Element(qn("a:txBody"))
@@ -397,12 +506,11 @@ def _cell_txbody(text: str, style: dict | None = None) -> etree._Element:
             ppr = etree.SubElement(p, qn("a:pPr"))
             ppr.set("algn", algn)
         if line:
-            r = etree.SubElement(p, qn("a:r"))
-            rpr = etree.SubElement(r, qn("a:rPr"))
-            rpr.set("lang", "en-US")
-            _apply_cell_rpr(rpr, style)
-            t = etree.SubElement(r, qn("a:t"))
-            t.text = line
+            def configure(rpr):
+                rpr.set("lang", "en-US")
+                _apply_cell_rpr(rpr, style)
+
+            _append_paragraph_text(p, line, configure)
         else:
             endpr = etree.SubElement(p, qn("a:endParaRPr"))
             endpr.set("lang", "en-US")
@@ -438,9 +546,157 @@ def _cell_text(tc: etree._Element) -> str:
     return "\n".join(paragraph_text(p) for p in body.findall(qn("a:p")))
 
 
-def _set_cell_text(tc: etree._Element, text: str, style: dict | None) -> None:
+def _holds_wrapped(tc: etree._Element) -> bool:
+    """Whether a cell's paragraphs hold an equation or other content
+    PowerPoint stores in a compatibility wrapper (ops/_wrapped.py)."""
+    from ._wrapped import AC_TAG
+
+    return any(
+        child.tag == AC_TAG
+        for p in tc.iterfind(f"{qn('a:txBody')}/{qn('a:p')}")
+        for child in p
+    )
+
+
+def _explicit_cell_text_categories(
+    body: etree._Element, *, include_emphasis: bool = False
+) -> set[str]:
+    """Formatting categories explicitly present in a cell text body."""
+    categories: set[str] = set()
+    for ppr in body.iter(qn("a:pPr")):
+        if ppr.get("algn") is not None:
+            categories.add("alignment")
+    for rpr_tag in ("a:rPr", "a:endParaRPr", "a:defRPr"):
+        for rpr in body.iter(qn(rpr_tag)):
+            if rpr.get("sz") is not None:
+                categories.add("size")
+            if include_emphasis and rpr.get("b") is not None:
+                categories.add("bold")
+            if include_emphasis and rpr.get("i") is not None:
+                categories.add("italic")
+            if include_emphasis and rpr.get("u") is not None:
+                categories.add("underline")
+            if any(
+                rpr.find(qn(tag)) is not None
+                for tag in ("a:latin", "a:ea", "a:cs")
+            ):
+                categories.add("font")
+            if rpr.find(qn("a:solidFill")) is not None or rpr.find(
+                qn("a:gradFill")
+            ) is not None:
+                categories.add("run_color")
+    return categories
+
+
+def _materialize_empty_cell_default_runs(body: etree._Element) -> etree._Element:
+    """Make paragraph defaults available to the shared run-property carrier.
+
+    PowerPoint can store an empty cell's insertion style in a:pPr/a:defRPr
+    instead of a:endParaRPr.  The shared carrier intentionally reads concrete
+    run or end-paragraph properties, so give it an end-paragraph copy of that
+    default without changing the source body or the eventual paragraph XML.
+    """
+    prepared = copy.deepcopy(body)
+    for paragraph in prepared.findall(qn("a:p")):
+        if paragraph.find(qn("a:endParaRPr")) is not None:
+            continue
+        ppr = paragraph.find(qn("a:pPr"))
+        default = ppr.find(qn("a:defRPr")) if ppr is not None else None
+        if default is None:
+            continue
+        insertion = copy.deepcopy(default)
+        insertion.tag = qn("a:endParaRPr")
+        paragraph.append(insertion)
+    return prepared
+
+
+def _prepare_named_cell_font_for_carry(
+    body: etree._Element, font: str
+) -> None:
+    """Keep the shared carry's grouped font replacement schema-correct."""
+    run_props = [
+        el
+        for tag in ("a:rPr", "a:endParaRPr", "a:defRPr")
+        for el in body.iter(qn(tag))
+    ]
+    for rpr in run_props:
+        # The shared merge treats latin/ea/cs as one choice group. Present
+        # latin during the merge, then restore all three cell-font mirrors.
+        for tag in ("a:ea", "a:cs"):
+            found = rpr.find(qn(tag))
+            if found is not None:
+                rpr.remove(found)
+    for rpr in run_props:
+        for tag in ("a:latin", "a:ea", "a:cs"):
+            found = rpr.find(qn(tag))
+            if found is None:
+                found = etree.SubElement(rpr, qn(tag))
+            found.set("typeface", str(font))
+
+
+def _set_cell_text(
+    tc: etree._Element,
+    text: str,
+    style: dict | None,
+    *,
+    preserve: bool = False,
+) -> tuple[list[str], dict]:
+    """Replace a cell's text, optionally carrying unnamed formatting.
+
+    Structural callers use the default because clearing merge continuations
+    and importing a complete table are intentional rebuilds. The public cell
+    edit path opts in so changing words does not reset their formatting.
+    """
     old = tc.find(qn("a:txBody"))
     new = _cell_txbody(text, style)
+    preserved: list[str] = []
+    facts: dict = {}
+    if preserve and old is not None:
+        from .shapes import _carry_text_properties
+        from .text import _landing_spots, _strip_empty_props
+
+        old_is_empty = not any(
+            paragraph_text(paragraph)
+            for paragraph in old.findall(qn("a:p"))
+        )
+        carry_source = (
+            _materialize_empty_cell_default_runs(old) if old_is_empty else old
+        )
+        old_categories = _explicit_cell_text_categories(
+            old, include_emphasis=old_is_empty
+        )
+        named = set(style or {})
+        named_font = (style or {}).get("font")
+        if named_font is not None:
+            # Feed one font child through the shared grouped-property merge;
+            # all three script faces are restored immediately afterwards.
+            for rpr_tag in ("a:rPr", "a:endParaRPr", "a:defRPr"):
+                for rpr in new.iter(qn(rpr_tag)):
+                    for tag in ("a:ea", "a:cs"):
+                        found = rpr.find(qn(tag))
+                        if found is not None:
+                            rpr.remove(found)
+        _landing_spots(new)
+        preserved, facts = _carry_text_properties(
+            carry_source, new, named
+        )
+        if named_font is not None:
+            _prepare_named_cell_font_for_carry(new, str(named_font))
+        _strip_empty_props(new)
+        named_categories = {
+            {"align": "alignment", "color": "run_color"}.get(key, key)
+            for key in named
+        }
+        preserved = sorted(
+            set(preserved)
+            | (
+                old_categories
+                & _explicit_cell_text_categories(
+                    new, include_emphasis=old_is_empty
+                )
+                - named_categories
+            )
+        )
     if old is not None:
         tc.replace(old, new)
     else:
@@ -450,6 +706,7 @@ def _set_cell_text(tc: etree._Element, text: str, style: dict | None) -> None:
             tcpr.addprevious(new)
         else:
             tc.append(new)
+    return preserved, facts
 
 
 def _empty_cell_body(tc: etree._Element) -> None:
@@ -538,7 +795,7 @@ def create_table(
     shape_id = pkg.next_shape_id(part)
     display = name or f"Table {shape_id}"
 
-    frame = etree.SubElement(sp_tree, qn("p:graphicFrame"))
+    frame = seat_ahead_of_extlst(sp_tree, etree.SubElement(sp_tree, qn("p:graphicFrame")))
     nv = etree.SubElement(frame, qn("p:nvGraphicFramePr"))
     cnvpr = etree.SubElement(nv, qn("p:cNvPr"))
     cnvpr.set("id", str(shape_id))
@@ -681,24 +938,49 @@ def _sizes_at_creation(sizes, n: int, total_emu: int, label: str) -> list[int]:
 
 def set_table_cells(pkg: PptxPackage, slide, table, cells: list[dict]) -> dict:
     """Bulk cell edit. cells: [{"row", "col", "text"?, ...format}] with
-    0-based addresses. Format keys: bold, italic, size (pt), color, font,
+    0-based addresses. Text uses ``\\n`` for paragraphs and ``\\v`` for soft
+    line breaks. Format keys: bold, italic, size_pt (or size), color, font,
     align (paragraph), fill (cell background spec), anchor (top | middle |
     bottom). Text plus text-level format keys rebuild the cell as a SINGLE
-    STYLE (rich per-run styling belongs to the text engine); format keys
-    without "text" re-render the cell's current plain text in the new style.
+    STYLE (rich per-run styling belongs to the text engine), preserving
+    existing formatting that the caller did not name; format keys without
+    "text" re-render the cell's current plain text in the new style.
     fill/anchor edit a:tcPr without touching text. Writing into a merge
     continuation cell refuses and names the origin.
     """
-    rec = resolve_table(pkg, slide, table)
-    tbl = rec["tbl"]
     if not isinstance(cells, list) or not cells:
         raise PptMcpError('cells must be a non-empty list of {"row", "col", ...}')
-    regions = merge_regions(tbl)
-    text_keys = ("bold", "italic", "size", "color", "font", "align")
-    edited: list[list[int]] = []
+    allowed = {
+        "row", "col", "text", "bold", "italic", "size", "size_pt",
+        "color", "font", "align", "fill", "anchor",
+    }
+    normalized: list[dict] = []
     for i, spec in enumerate(cells):
         if not isinstance(spec, dict) or "row" not in spec or "col" not in spec:
             raise PptMcpError(f'cells[{i}] must be a dict with "row" and "col"')
+        unknown = sorted(set(spec) - allowed, key=lambda key: str(key))
+        if unknown:
+            raise PptMcpError(
+                f"cells[{i}] has unknown key(s): "
+                f"{', '.join(repr(key) for key in unknown)}"
+            )
+        if "size" in spec and "size_pt" in spec:
+            raise PptMcpError(
+                f"cells[{i}] has both size and size_pt; pass size_pt only"
+            )
+        item = dict(spec)
+        if "size_pt" in item:
+            item["size"] = item.pop("size_pt")
+        normalized.append(item)
+
+    rec = resolve_table(pkg, slide, table)
+    tbl = rec["tbl"]
+    regions = merge_regions(tbl)
+    text_keys = ("bold", "italic", "size", "color", "font", "align")
+    edited: list[list[int]] = []
+    preserved: set[str] = set()
+    preservation_by_cell: list[dict] = []
+    for i, spec in enumerate(normalized):
         row, col = spec["row"], spec["col"]
         tc = _cell_at(tbl, row, col)
         if _is_continuation(tc):
@@ -710,10 +992,33 @@ def set_table_cells(pkg: PptxPackage, slide, table, cells: list[dict]) -> dict:
             )
         style = {k: spec[k] for k in text_keys if k in spec}
         text = spec.get("text")
+        cell_preserved: list[str] = []
+        cell_facts: dict = {}
         if text is not None:
-            _set_cell_text(tc, str(text), style or None)
+            cell_preserved, cell_facts = _set_cell_text(
+                tc, str(text), style or None, preserve=True
+            )
         elif style:
-            _set_cell_text(tc, _cell_text(tc), style)
+            if _holds_wrapped(tc):
+                raise UnsupportedStructure(
+                    f"cell ({row}, {col}) holds an equation or other content "
+                    "PowerPoint stores in a compatibility wrapper, and a format "
+                    "change writes the cell's text again as plain text, which "
+                    "would lose it; nothing was changed. Format that cell in "
+                    "PowerPoint, or send text for it to replace what it holds."
+                )
+            cell_preserved, cell_facts = _set_cell_text(
+                tc, _cell_text(tc), style, preserve=True
+            )
+        if cell_preserved or cell_facts:
+            report = {
+                "row": row,
+                "col": col,
+                "preserved": cell_preserved,
+            }
+            report.update(cell_facts)
+            preservation_by_cell.append(report)
+            preserved.update(cell_preserved)
         if "fill" in spec:
             _set_cell_fill(tc, spec["fill"])
         if "anchor" in spec:
@@ -722,13 +1027,18 @@ def set_table_cells(pkg: PptxPackage, slide, table, cells: list[dict]) -> dict:
             raise PptMcpError(f"cells[{i}] has nothing to change")
         edited.append([row, col])
     pkg.mark_dirty(rec["part"])
-    return {
+    result = {
         "shape_id": rec["shape_id"],
         "cells_edited": len(edited),
         "cells": edited,
         "slide_index": rec["slide_index"],
         "slide_id": rec["slide_id"],
     }
+    if preserved:
+        result["preserved"] = sorted(preserved)
+    if preservation_by_cell:
+        result["preserved_by_cell"] = preservation_by_cell
+    return result
 
 
 def _set_cell_fill(tc: etree._Element, fill) -> None:
@@ -793,7 +1103,9 @@ def merge_cells(
             if r == r1 and c == c1:
                 continue
             tc = _cell_at(tbl, r, c)
-            if _cell_text(tc).strip():
+            # A wrapped equation or newer run moves too, even one that
+            # shows no text: emptying the cell below would drop it.
+            if _cell_text(tc).strip() or _holds_wrapped(tc):
                 body = tc.find(qn("a:txBody"))
                 if body is not None and origin_body is not None:
                     for p in body.findall(qn("a:p")):
@@ -923,10 +1235,9 @@ def delete_table_rows(
     if count == nrows:
         exc = PptMcpError(
             "deleting every row would leave an invalid empty table; delete "
-            "the table shape instead: delete_shape (graphics pack), or the "
-            "apply_edits op delete_shape, which works in lite"
+            "the table shape instead with delete_shape or the apply_edits "
+            "delete_shape operation"
         )
-        exc.hint_tools = ["delete_shape"]
         raise exc
     end = at + count  # exclusive
     shrink: list[tuple[dict, int]] = []
@@ -1015,10 +1326,15 @@ def insert_table_cols(
     for tr in _rows_of(tbl):
         cells = _cells_of(tr)
         ref_tc = cells[ref_idx]
+        # A row lists its cells, then its extLst (where PowerPoint keeps
+        # the a16:rowId): an appended cell goes before that extLst.
+        tail = tr.find(qn("a:extLst"))
         for _ in range(count):
             tc = _clone_cell_shell(ref_tc)
             if at < len(cells):
                 cells[at].addprevious(tc)
+            elif tail is not None:
+                tail.addprevious(tc)
             else:
                 tr.append(tc)
     if widths == "fit":
@@ -1060,10 +1376,9 @@ def delete_table_cols(
     if count == ncols:
         exc = PptMcpError(
             "deleting every column would leave an invalid empty table; "
-            "delete the table shape instead: delete_shape (graphics pack), "
-            "or the apply_edits op delete_shape, which works in lite"
+            "delete the table shape instead with delete_shape or the "
+            "apply_edits delete_shape operation"
         )
-        exc.hint_tools = ["delete_shape"]
         raise exc
     end = at + count
     shrink: list[tuple[dict, int]] = []
@@ -1442,7 +1757,7 @@ def _resolve_style(style: str) -> str:
         guid = style.upper()
         if not guid.startswith("{"):
             # Braces are part of the value; an un-braced GUID silently gets
-            # the default style (python-pptx issue #645), so normalize.
+            # the default style, so normalize.
             guid = "{" + guid + "}"
         return guid
     raise PptMcpError(
@@ -1506,7 +1821,7 @@ def apply_table_style(
                 tblpr.set(attr, "1")
             else:
                 tblpr.attrib.pop(attr, None)
-        flag_state[attr] = tblpr.get(attr) == "1"
+        flag_state[attr] = attr_bool(tblpr, attr)
     if applied is None and all(v is None for v in flags.values()):
         raise PptMcpError("apply_table_style called with nothing to change")
     pkg.mark_dirty(rec["part"])
@@ -1537,7 +1852,7 @@ def get_table(pkg: PptxPackage, slide, table) -> dict:
     if tblpr is not None:
         styleid = tblpr.find(qn("a:tableStyleId"))
         style_guid = styleid.text if styleid is not None else None
-        flags = {f: tblpr.get(f) == "1" for f in _TBLPR_FLAGS if tblpr.get(f)}
+        flags = {f: attr_bool(tblpr, f) for f in _TBLPR_FLAGS if tblpr.get(f)}
     cells = []
     for r, tr in enumerate(_rows_of(tbl)):
         for c, tc in enumerate(_cells_of(tr)):
@@ -1599,9 +1914,11 @@ def export_table(
     path: str | None = None,
     *,
     format: str | None = None,
+    overwrite: bool = False,
 ) -> dict:
     """Export a table's cell texts. path=None returns the rows inline;
-    with a path, writes .csv (UTF-8, merge continuations as empty cells) or
+    with a path, writes .csv (UTF-8 with BOM for Excel compatibility; merge
+    continuations as empty cells) or
     .json ({"rows", "merge_regions", "style"}; lossless enough for
     import_table round-trips). format defaults from the path extension."""
     rec = resolve_table(pkg, slide, table)
@@ -1629,11 +1946,23 @@ def export_table(
         return result
     check_path(path, "export table data")
     out = Path(path)
+    safesave.refuse_protected_output(
+        out, pkg.path, purpose="write the table export"
+    )
+    if out.is_dir():
+        raise PptMcpError(
+            f"refusing to write the table export: {out} is a folder; name a file")
+    if out.exists() and not overwrite:
+        raise PptMcpError(
+            f"refusing to write the table export: {out} already exists; "
+            "send overwrite=true to replace it, or choose a new path"
+        )
+    safesave.claim_publish("the table export")
     if fmt == "csv":
         buf = io.StringIO()
         writer = csv.writer(buf, lineterminator="\n")
         writer.writerows(rows)
-        out.write_text(buf.getvalue(), encoding="utf-8")
+        out.write_text(buf.getvalue(), encoding="utf-8-sig")
     else:
         payload = {
             "rows": rows,

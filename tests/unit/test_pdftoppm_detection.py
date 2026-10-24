@@ -1,6 +1,6 @@
 """pdftoppm detection and the remedy the engine report carries.
 
-diagnose once said "needs pdftoppm (poppler): NOT
+Regression: diagnose said "needs pdftoppm (poppler): NOT
 found" and stopped there, so the one line that settles the render-engine
 question did not say what to do about it. The remedy sentence already
 existed a few lines away in the refusal; it is one constant now, used by
@@ -21,7 +21,7 @@ def _make_executable(path: Path) -> Path:
     """A fixture standing in for an INSTALLED binary.
 
     `write_bytes(b"")` alone produces a file with no execute bit, which on
-    POSIX is correctly not a renderer: the renderer check refuses it, and
+    POSIX is correctly not a renderer: the execute-bit check refuses it, and
     three of these tests failed on the Linux CI runner until the fixtures
     started representing what they claim to represent.
     """
@@ -100,6 +100,7 @@ def test_diagnose_carries_the_remedy_and_stays_paste_safe(monkeypatch):
     assert "/opt/libreoffice" not in note  # paste-safe: no install locations
 
 
+# ---------------------- a directory or a non-executable file
 
 
 def test_a_directory_named_pdftoppm_is_not_a_renderer(monkeypatch, tmp_path):

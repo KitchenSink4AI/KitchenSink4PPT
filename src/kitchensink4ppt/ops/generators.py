@@ -225,7 +225,9 @@ def generate_timeline(
     """
     _check_box(w, h, "timeline")
     if not milestones:
-        raise PptMcpError("generate_timeline needs at least one milestone")
+        raise PptMcpError(
+            "generate_diagram with kind='timeline' needs at least one milestone"
+        )
     items = [_norm_item(m, "milestone") for m in milestones]
     lanes = [str(v) for v in (swimlanes or [])]
     if len(set(lanes)) != len(lanes):
@@ -431,7 +433,7 @@ def generate_timeline(
 
 #: Org chart total-node ceiling: each node is a shape build plus a glued
 #: connector, so unbounded trees block the server for tens of seconds
-#: and render as illegible slivers
+#: (~29s at 585 nodes) and render as illegible slivers
 #: long before that. Refuse up front like matrix does for cells.
 MAX_ORGCHART_NODES = 200
 
@@ -783,7 +785,7 @@ def generate_cycle(
     name: str | None = None,
 ) -> dict:
     """Cycle diagram: N labeled ellipse nodes on a ring with CURVED glued
-    arrows between consecutive nodes (the goals-tasks-bonds cycle shape,
+    arrows between consecutive nodes (the plan-build-ship cycle shape,
     generalized), plus an optional hub node with straight glued spokes to
     every ring node.
 
@@ -795,7 +797,9 @@ def generate_cycle(
     """
     _check_box(w, h, "cycle")
     if not isinstance(nodes, list) or len(nodes) < 2:
-        raise PptMcpError("generate_cycle needs at least 2 nodes")
+        raise PptMcpError(
+            "generate_diagram with kind='cycle' needs at least 2 nodes"
+        )
     items = [_norm_item(nd, "cycle node") for nd in nodes]
     s = _scale(w, h)
     n = len(items)

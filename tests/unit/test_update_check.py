@@ -13,9 +13,10 @@ The properties pinned:
    it prevents the network call, the cache read, and the cache write.
 3. NO PRERELEASES. A prerelease is never offered to a stable build, even
    when it is the newest thing on the index.
-4. ONE SURFACE, ONLY WHEN BEHIND. diagnose carries the line when a
-   newer stable exists and carries nothing otherwise. No other tool ever
-   mentions it.
+4. ONLY WHEN BEHIND. diagnose carries the line when a newer stable
+   exists and carries nothing otherwise. Called directly, no other op
+   mentions it; the weekly notice on the tool surface is tested in
+   test_update_dialog.py.
 5. FAILURE IS QUIET, NOT HIDDEN. Timeouts, connection errors, HTTP
    errors, and malformed payloads raise nothing and print nothing; the
    cached-line reader stays silent, and status() reports the failure
@@ -23,9 +24,6 @@ The properties pinned:
 """
 
 from __future__ import annotations
-
-import asyncio
-import inspect
 
 import json
 import tomllib
@@ -35,7 +33,7 @@ from pathlib import Path
 import pytest
 from packaging.version import Version
 
-from kitchensink4ppt import __version__, packs, server  # noqa: F401  (the import registers tools)
+from kitchensink4ppt import __version__, server
 from kitchensink4ppt.core import update_check as uc
 
 
@@ -50,14 +48,8 @@ def _isolated(tmp_path, monkeypatch):
 
 
 def _call(name, *args, **kwargs):
-    """Invoke a registered tool in process (the pptx suite convention: the
-    registry holds the FunctionTool, the raw callable is .fn). The pack
-    toggles are async since the fastmcp 3.x port, so a coroutine result is
-    driven here rather than at every call site."""
-    out = packs.tool_objects()[name].fn(*args, **kwargs)
-    if inspect.iscoroutine(out):
-        return asyncio.run(out)
-    return out
+    """Invoke a released operation directly, below the fixed MCP surface."""
+    return getattr(server, name)(*args, **kwargs)
 
 
 def _payload(*versions, prereleases=()):
@@ -229,15 +221,15 @@ def test_diagnose_carries_the_line_only_when_behind():
     assert "surface" in out and "engines" in out
 
 
-def test_no_other_tool_mentions_the_update():
-    """The line lives in diagnose and nowhere else."""
+def test_no_other_op_mentions_the_update_when_called_directly():
+    """Called directly, the line lives in diagnose and nowhere else (the
+    surface's weekly notice: test_update_dialog.py)."""
     _write_cache("999.0.0")
     assert uc.update_notice() is not None
     for result in (_call("get_workflows"),
-                   _call("get_workflows", "build-a-diagram"),
-                   _call("enable_tools", []),
-                   _call("disable_tools", [])):
+                   _call("get_workflows", "build-a-diagram")):
         assert "update" not in result
+    assert "update" not in server.create_server().instructions.lower()
 
 
 # ------------------------------------------------------ 5. silent failure
@@ -310,10 +302,9 @@ def test_an_unwritable_cache_dir_does_not_raise(monkeypatch):
 # ------------------------------------------------------------ plumbing
 
 
-def test_there_is_no_background_starter(monkeypatch):
-    """The check runs on demand only: no thread, no scheduler, nothing at
-    startup. run_check is synchronous and the caller owns the wait."""
-    assert not hasattr(uc, "start_background_check")
+def test_run_check_itself_is_synchronous(monkeypatch):
+    """run_check answers in the caller's thread; the background route is
+    maybe_refresh_in_background (test_update_dialog.py)."""
     monkeypatch.setattr(uc, "_fetch", lambda *a, **k: _payload("1.0", "2.0"))
     assert uc.run_check() == "2.0"
     assert uc.read_cache()["latest_version"] == "2.0"

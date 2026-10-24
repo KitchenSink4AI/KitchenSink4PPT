@@ -29,6 +29,7 @@ Contract (the inverse of bridge.py, which owns invisible self-launched work):
 from __future__ import annotations
 
 import contextlib
+import os
 import threading
 import time
 from pathlib import Path
@@ -48,7 +49,7 @@ from . import xproc as _xproc
 from .bridge import powerpnt_count
 
 # HRESULTs (as signed ints, the way pywin32 surfaces them) — COM-level, not
-# app-level.
+# app-level; the table and classification match the Word editor's live layer.
 RPC_E_CALL_REJECTED = -2147418111        # modal dialog / call rejected
 RPC_E_SERVERCALL_RETRYLATER = -2147417846  # busy, retry later
 RPC_E_DISCONNECTED = -2147417848         # server died under a live proxy
@@ -69,7 +70,7 @@ GONE_HRESULTS = {
 # the limit is COM, not the app. Stay well under.
 TEXT_CHUNK = 30000
 
-# Extensions whose ROT file monikers are safe to bind (pitfall 22: binding
+# Extensions whose ROT file monikers are safe to bind (binding
 # the wrong moniker kind — e.g. a startup add-in template — is a native
 # access violation, not a catchable exception; filter before binding).
 _PRES_EXTS = (".pptx", ".pptm", ".ppt", ".ppsx", ".ppsm", ".odp")
@@ -133,8 +134,9 @@ def _classify(exc):
     """Map a com_error (or a late-bound AttributeError) to our typed
     errors, or return None if unrecognized.
 
-    AttributeError is here because
-    these are LATE-BOUND proxies: pywin32's ``dynamic.__getattr__`` turns a
+    AttributeError is here because a concurrency test of the Word editor,
+    whose design this layer shares, found the gap.
+    These are LATE-BOUND proxies: pywin32's ``dynamic.__getattr__`` turns a
     property call the application refused into a plain
     ``AttributeError: <unknown>.FullName``, with the HRESULT discarded.
     Guards that caught only ``pywintypes.com_error`` let that escape, so a
@@ -173,7 +175,8 @@ def _ensure_com(pythoncom) -> str:
     pywin32's CoInitialize is a no-op on an already-initialized thread
     while CoUninitialize ALWAYS decrements, so a paired call on a
     host-initialized thread destroys the host's apartment and disconnects
-    every COM proxy it holds.
+    every COM proxy it holds (verified empirically on the Word editor's
+    live layer).
     Initializing unconditionally is safe and self-heals an apartment some
     OTHER code tore down; skipping CoUninitialize means this module can
     never be the one that kills the thread's COM state. The apartment
@@ -182,7 +185,7 @@ def _ensure_com(pythoncom) -> str:
     The bridge owns the one implementation (CoInitializeEx, with S_FALSE
     and RPC_E_CHANGED_MODE handled deliberately and the outcome recorded
     per thread), so the live layer and the invisible-instance layer cannot
-    drift apart."""
+    drift apart on the thing that broke in the field."""
     from .bridge import _ensure_apartment
 
     return _ensure_apartment(pythoncom)
@@ -198,12 +201,12 @@ class StateGuard:
     runs in the session finally and reports (not raises) anything it could
     not put back.
 
-    Two behaviours:
+    Two behaviours carried from the Word editor's live layer:
 
     - ``restore_to`` overrides the snapshot. Snapshot-and-restore is only
       correct when the value read really was the user's; when it was
       another server process's leaked setting, restoring it re-leaks it.
-      This live layer
+      Word's ``DisplayAlerts`` is the case that proved it; this live layer
       does not currently touch application-level state, and the override
       exists so that the day it does, the wrong pattern is not the
       convenient one.
@@ -279,11 +282,41 @@ def _attach_app(win32com, pythoncom):
         ) from exc
 
 
-def _find_pres_via_rot(pythoncom, win32com, target_lower: str):
+def _file_identity(path: str):
+    """(volume serial, file index) of an existing local file, or None (an
+    unsaved deck's FullName, a web address, a missing file, or a file system
+    that gives no file index)."""
+    if not path or "://" in path:
+        return None
+    try:
+        info = os.stat(path)
+    except (OSError, ValueError):
+        return None
+    if not info.st_ino:
+        return None
+    return (info.st_dev, info.st_ino)
+
+
+def same_deck(full_name: str, target: str, wanted=None) -> bool:
+    """True when PowerPoint's FullName names the target file: the same
+    text (any case), or the same file reached another way, such as through a
+    directory junction or a SUBST drive. `wanted` is the target's identity
+    when the caller has it already."""
+    if not full_name:
+        return False
+    if full_name.lower() == target.lower():
+        return True
+    if wanted is None:
+        wanted = _file_identity(target)
+    return wanted is not None and _file_identity(full_name) == wanted
+
+
+def _find_pres_via_rot(pythoncom, win32com, target_lower: str, wanted=None):
     """Multi-instance/busy-instance fallback: open presentations register
     their full path as a file moniker; bind the Presentation directly and
     reach its Application. Only monikers whose display name IS the target
-    path (a presentation extension by construction) are ever bound."""
+    path, or names the same file another way (a presentation extension
+    either way), are ever bound."""
     if not target_lower.endswith(_PRES_EXTS):
         return None, None
     rot = pythoncom.GetRunningObjectTable()
@@ -293,7 +326,11 @@ def _find_pres_via_rot(pythoncom, win32com, target_lower: str):
             name = moniker.GetDisplayName(ctx, None)
         except Exception:
             continue
-        if isinstance(name, str) and name.lower() == target_lower:
+        if isinstance(name, str) and (
+            name.lower() == target_lower
+            or (wanted is not None and name.lower().endswith(_PRES_EXTS)
+                and _file_identity(name) == wanted)
+        ):
             with contextlib.suppress(Exception):
                 obj = rot.GetObject(moniker)
                 pres = win32com.Dispatch(
@@ -309,6 +346,7 @@ def _resolve_presentation(pythoncom, pywintypes, win32com, app, path: str):
     target = str(Path(path).resolve())
     target_lower = target.lower()
     open_names = []
+    others = []
     primary_error = None
     try:
         for pres in app.Presentations:
@@ -316,12 +354,14 @@ def _resolve_presentation(pythoncom, pywintypes, win32com, app, path: str):
             open_names.append(full)
             if full.lower() == target_lower:
                 return app, pres
+            others.append((pres, full))
     except (pywintypes.com_error, AttributeError) as exc:
         # The GetActiveObject instance may be busy or mid-shutdown while a
         # DIFFERENT instance holds the target — try the ROT before giving up.
         #
-        # AttributeError belongs here: these are late-bound proxies, so a
-        # blocked application refusing pres.FullName arrives as
+        # AttributeError belongs here (a concurrency test of the Word editor,
+        # which has the same design, found it): these are late-bound proxies,
+        # so a blocked application refusing pres.FullName arrives as
         # ``AttributeError: <unknown>.FullName``, not as com_error.
         # Catching only com_error skipped this fall-through entirely and
         # handed the caller a raw Python error. The only calls inside the
@@ -329,8 +369,15 @@ def _resolve_presentation(pythoncom, pywintypes, win32com, app, path: str):
         # is always the application refusing, never a bug in our own
         # attribute access.
         primary_error = _classify(exc) or exc
+    # A deck opened through a junction or a SUBST drive has a FullName that
+    # differs from the resolved path; the file's identity still matches.
+    wanted = _file_identity(target)
+    if primary_error is None and wanted is not None:
+        for pres, full in others:
+            if same_deck(full, target, wanted):
+                return app, pres
     other_app, other_pres = _find_pres_via_rot(
-        pythoncom, win32com, target_lower
+        pythoncom, win32com, target_lower, wanted=wanted
     )
     if other_pres is not None:
         return other_app, other_pres
@@ -345,7 +392,7 @@ def _resolve_presentation(pythoncom, pywintypes, win32com, app, path: str):
     with contextlib.suppress(Exception):
         for i in range(1, app.ProtectedViewWindows.Count + 1):
             pv = str(app.ProtectedViewWindows(i).Presentation.FullName)
-            if pv.lower() == target_lower:
+            if same_deck(pv, target, wanted):
                 pv_hit = True
                 break
     if pv_hit:
@@ -390,8 +437,7 @@ def probe_with_timeout(timeout: float = 5.0, *, check_dialogs: bool = True) -> s
     operation cannot hang the server. The worker owns its thread and may
     pair its own CoInitialize/CoUninitialize there.
 
-    A bare
-    COM round trip is not enough evidence for "ready". Simple property
+    A bare COM round trip is not enough evidence for "ready". Simple property
     reads still succeed while a modal is pending, so this probe answered
     "ready" during a real dialog storm with every resolution failing.
     live_status already read the window layer and reported blocked=true
@@ -402,7 +448,13 @@ def probe_with_timeout(timeout: float = 5.0, *, check_dialogs: bool = True) -> s
     result = {}
 
     def _worker():
-        pythoncom, pywintypes, win32com = _com_modules()
+        try:
+            pythoncom, pywintypes, win32com = _com_modules()
+        except Exception:
+            # A missing pywin32 installation is an ordinary platform
+            # capability result, not an unhandled helper-thread exception.
+            result["state"] = "not_running"
+            return
         # This thread is ours and nobody else's, so pairing is correct here.
         # It is only paired when we were the ones who armed the apartment:
         # on "already" or "changed-mode" the count belongs to someone else
@@ -445,6 +497,45 @@ def pending_dialog_titles() -> list:
         return []
 
 
+#: Whether each open deck already had unsaved changes BEFORE this server's
+#: first live edit to it, keyed by the deck's full path. A live_save reports
+#: the answer, so the caller can tell its own unsaved edits from the user's
+#: work. An entry lives only while the deck stays unsaved: a clean deck (the
+#: user saved, or it was reopened), a change in the deck file since this
+#: server's last edit (the user saved, typed, and the deck is unsaved again)
+#: or a successful live_save drops it, and the next edit starts a new record.
+#: A save by the user that cannot be excluded turns a "false" into None.
+#: Process-local; absent means unknown.
+_UNSAVED_BEFORE_OUR_EDITS: dict[str, bool | None] = {}
+
+#: The deck file's write stamp as of the end of this server's last live edit
+#: to it, per deck, so a save by the user between two edits shows as a
+#: different stamp. None: the file could not be read.
+_STAMP_AFTER_OUR_EDIT: dict[str, tuple | None] = {}
+
+
+def _file_stamp(pres) -> tuple | None:
+    """(modification time in ns, size) of the deck's file on disk, or None
+    when the deck has no readable file (never saved, a cloud-only copy)."""
+    try:
+        st = os.stat(str(pres.FullName))
+        return (st.st_mtime_ns, st.st_size)
+    except Exception:
+        return None
+
+
+def _forget_record(key: str) -> None:
+    _UNSAVED_BEFORE_OUR_EDITS.pop(key, None)
+    _STAMP_AFTER_OUR_EDIT.pop(key, None)
+
+
+def _deck_key(pres) -> str | None:
+    try:
+        return os.path.normcase(os.path.abspath(str(pres.FullName)))
+    except Exception:
+        return None
+
+
 class LiveSession:
     """What a tool body receives: the attached objects plus result plumbing.
 
@@ -458,6 +549,8 @@ class LiveSession:
         self.guard = guard
         self.undo_boundary_set = undo_boundary
         self.had_unsaved_user_changes = None
+        self.deck_key: str | None = None
+        self.unsaved_before_our_edits: bool | None = None
         self.state_restore_failed: list = []
         self.opened_read_only = False
         self.marked_final = False
@@ -512,33 +605,80 @@ def _check_protection(pres, path: str, session: LiveSession):
 
 
 @contextlib.contextmanager
-def live_session(path: str, tool_name: str, *, mutating: bool = True):
+def live_session(
+    path: str, tool_name: str, *, mutating: bool = True, edits: bool = True
+):
     """attach -> resolve -> probe -> protection check -> undo boundary ->
     yield -> LIFO state restore, per call. Nothing is cached across calls.
 
-    v1.1: the entire session runs under the process-wide COM lock, so
+    The entire session runs under the process-wide COM lock, so
     exactly one tool call reaches the user's PowerPoint at a time. Every
     live tool funnels through here, which makes this the live layer's
     single serialization chokepoint. PowerPoint being a singleton means
     concurrent live calls would otherwise land on ONE application object
     with no isolation whatsoever.
 
-    v1.1.1: and under the cross-PROCESS lock (com/xproc.py), because the
-    process-wide lock covers threads and nothing else. Concurrency
-    testing showed that gap: two server processes overlapped in 49 of 50
-    operation pairs, and a resolve-then-write sequence that looked atomic
-    was not.
+    It also runs under the cross-PROCESS lock (com/xproc.py), because the
+    process-wide lock covers threads and nothing else. A concurrency test
+    measured that gap on the Word editor, whose design this layer shares:
+    two server processes overlapped in 49 of 50 operation
+    pairs, and a resolve-then-write sequence that looked atomic was not.
     The singleton makes it sharper here, since two server processes cannot
     land anywhere but on the same application."""
     with _serial.com_operation(f"live:{tool_name}"), _xproc.cross_process_lock(
         f"live:{tool_name}"
     ):
-        with _live_session_locked(path, tool_name, mutating=mutating) as s:
+        with _live_session_locked(
+            path, tool_name, mutating=mutating, edits=edits
+        ) as s:
             yield s
 
 
+def _check_record_still_holds(key: str, pres) -> None:
+    """The deck is unsaved and a record exists. A save by the user since this
+    server's last edit (they saved, then typed) ends the run: the deck file
+    changed, so the record is dropped and the next edit starts a new one.
+    When the file cannot be compared, a "false" can no longer be trusted and
+    becomes unknown; a "true" stays true (a save only makes it less so)."""
+    then = _STAMP_AFTER_OUR_EDIT.get(key)
+    now = _file_stamp(pres)
+    if then is not None and now is not None:
+        if now != then:
+            _forget_record(key)
+        return
+    if _UNSAVED_BEFORE_OUR_EDITS.get(key) is False:
+        _UNSAVED_BEFORE_OUR_EDITS[key] = None
+
+
+def _record_first_edit(session: LiveSession, pres, completed: bool) -> None:
+    """Remember, once per run of unsaved edits, whether the deck already had
+    unsaved changes before this server's first live edit to it. A session
+    that left a clean deck clean made no edit and records nothing; one that
+    found the deck already unsaved records True once it finishes; one that
+    made the deck unsaved records False."""
+    key = session.deck_key
+    if key in _UNSAVED_BEFORE_OUR_EDITS:
+        _STAMP_AFTER_OUR_EDIT[key] = _file_stamp(pres)
+        return
+    before = session.had_unsaved_user_changes
+    if before is None:
+        return
+    dirty_now = None
+    with contextlib.suppress(Exception):
+        dirty_now = not pres.Saved
+    if before is False and dirty_now:
+        _UNSAVED_BEFORE_OUR_EDITS[key] = False
+    elif before is True and completed:
+        _UNSAVED_BEFORE_OUR_EDITS[key] = True
+    else:
+        return
+    _STAMP_AFTER_OUR_EDIT[key] = _file_stamp(pres)
+
+
 @contextlib.contextmanager
-def _live_session_locked(path: str, tool_name: str, *, mutating: bool = True):
+def _live_session_locked(
+    path: str, tool_name: str, *, mutating: bool = True, edits: bool = True
+):
     pythoncom, pywintypes, win32com = _com_modules()
     _ensure_com(pythoncom)
     app = pres = None
@@ -556,11 +696,24 @@ def _live_session_locked(path: str, tool_name: str, *, mutating: bool = True):
             session.had_unsaved_user_changes = not pres.Saved
         with contextlib.suppress(Exception):
             session.opened_read_only = bool(pres.ReadOnly)
+        session.deck_key = _deck_key(pres)
+        if session.deck_key is not None:
+            if session.had_unsaved_user_changes is False:
+                # A clean deck: whatever was recorded is over (saved or
+                # reopened), so the next edit starts a new record.
+                _forget_record(session.deck_key)
+            elif session.deck_key in _UNSAVED_BEFORE_OUR_EDITS:
+                _check_record_still_holds(session.deck_key, pres)
+            session.unsaved_before_our_edits = _UNSAVED_BEFORE_OUR_EDITS.get(
+                session.deck_key
+            )
         if mutating:
             _check_protection(pres, path, session)
             session.undo_boundary_set = _start_undo_boundary(app)
+        completed = False
         try:
             yield session
+            completed = True
         except pywintypes.com_error as exc:
             typed = _classify(exc)
             if typed:
@@ -569,6 +722,8 @@ def _live_session_locked(path: str, tool_name: str, *, mutating: bool = True):
         finally:
             restore_failed = guard.restore()
             session.state_restore_failed = restore_failed
+            if mutating and edits and session.deck_key is not None:
+                _record_first_edit(session, pres, completed)
     finally:
         # release proxies promptly; the thread's apartment deliberately
         # stays initialized (see _ensure_com)
@@ -576,12 +731,18 @@ def _live_session_locked(path: str, tool_name: str, *, mutating: bool = True):
         app = None
 
 
-def run_live(path: str, tool_name: str, body, *, mutating: bool = True) -> dict:
+def run_live(
+    path: str, tool_name: str, body, *, mutating: bool = True, edits: bool = True
+) -> dict:
     """Run body(session) inside a live session; the session's post-restore
     report (state_restore_failed) is merged into the returned result.
     mutating=False skips the protection refusal (reads work everywhere)
-    and does not move the undo boundary."""
-    with live_session(path, tool_name, mutating=mutating) as session:
+    and does not move the undo boundary. edits=False marks a mutating call
+    that does not edit the deck (live_save), so it never counts as the
+    first edit."""
+    with live_session(
+        path, tool_name, mutating=mutating, edits=edits
+    ) as session:
         result = session.result(body(session))
     result["state_restore_failed"] = session.state_restore_failed
     return result

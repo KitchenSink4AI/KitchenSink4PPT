@@ -6,7 +6,8 @@ touches, and returns a summary dict. Nothing here writes to disk.
 
 SUBSTITUTION ONLY, and deliberately so. Authoring or relayouting a diagram
 from a file is a guess: PowerPoint owns the layout algorithm and regenerates
-geometry in-app, which is why full SmartArt authoring is out of scope. Changing the WORDS in nodes that
+geometry in-app, which is why full SmartArt authoring stays out of
+scope in this codebase. Changing the WORDS in nodes that
 already exist is a different operation, it needs no layout knowledge, and it
 closes a real asymmetry: get_text, find_text, and diagram_text all read
 SmartArt, so an agent that finds a term inside a diagram and cannot replace
@@ -16,8 +17,9 @@ TWO STORAGE SITES, BOTH WRITTEN. A diagram keeps its text twice:
 
 - `ppt/diagrams/dataN.xml` (dgm:dataModel/dgm:ptLst/dgm:pt/dgm:t) is the
   MODEL. PowerPoint re-reads it and regenerates everything else from it.
-- `ppt/diagrams/drawingN.xml` (dsp:sp/dsp:txBody, related from the data part)
-  is the CACHED RENDERING, matched to the model by modelId. PowerPoint
+- `ppt/diagrams/drawingN.xml` (dsp:sp/dsp:txBody, related from the data part
+  in older files or directly from the slide in current PowerPoint files) is
+  the CACHED RENDERING, matched to the model by modelId. PowerPoint
   rebuilds it, but every other consumer draws it as-is: LibreOffice, the
   thumbnail, any viewer that never opens the deck in PowerPoint.
 
@@ -36,6 +38,7 @@ from __future__ import annotations
 
 from lxml import etree
 
+from ..core import xmlsafe
 from ..core.errors import PptMcpError, TargetNotFound, UnsupportedStructure
 from ..core.package import PptxPackage, qn, resolve_target
 from .read import (
@@ -64,19 +67,60 @@ def _dsp(name: str) -> str:
 # ------------------------------------------------------------------ finding
 
 
-def drawing_part_of(pkg: PptxPackage, data_part: str) -> str | None:
-    """The cached drawing part related from a diagram DATA part, or None."""
+def _drawing_targets(pkg: PptxPackage, source_part: str) -> list[str]:
     try:
-        rels = pkg.rels_for(data_part)
+        rels = pkg.rels_for(source_part)
     except KeyError:
-        return None
+        return []
+    targets = []
     for rel in rels.getroot():
-        if rel.get("Type") == RT_DIAGRAM_DRAWING and (
-            rel.get("TargetMode") != "External"
+        if rel.get("Type") != RT_DIAGRAM_DRAWING or (
+            rel.get("TargetMode") == "External"
         ):
-            target = resolve_target(data_part, rel.get("Target", ""))
-            return target if pkg.has_part(target) else None
-    return None
+            continue
+        target = resolve_target(source_part, rel.get("Target", ""))
+        if pkg.has_part(target):
+            targets.append(target)
+    return targets
+
+
+def _model_ids(root: etree._Element) -> set[str]:
+    return {
+        node.get("modelId")
+        for node in root.iter()
+        if node.get("modelId")
+    }
+
+
+def drawing_part_of(
+    pkg: PptxPackage,
+    data_part: str,
+    slide_part: str | None = None,
+) -> str | None:
+    """Resolve a SmartArt cached drawing in legacy and current packages.
+
+    Older producers relate drawingN.xml from dataN.xml. Current PowerPoint
+    commonly relates it from the slide instead. When a slide has several
+    diagrams, model ids bind the data model to exactly one cached drawing;
+    ambiguity refuses resolution rather than updating the wrong cache.
+    """
+    legacy = _drawing_targets(pkg, data_part)
+    if len(legacy) == 1:
+        return legacy[0]
+    if slide_part is None:
+        return None
+    candidates = _drawing_targets(pkg, slide_part)
+    if len(candidates) == 1:
+        return candidates[0]
+    if not candidates:
+        return None
+    wanted = _model_ids(pkg.root(data_part))
+    matches = []
+    for part in candidates:
+        drawing_ids = _model_ids(pkg.root(part))
+        if drawing_ids and drawing_ids <= wanted:
+            matches.append(part)
+    return matches[0] if len(matches) == 1 else None
 
 
 def diagram_frames(pkg: PptxPackage, slide_part: str):
@@ -91,15 +135,16 @@ def diagram_frames(pkg: PptxPackage, slide_part: str):
 
 
 def _text_nodes(root: etree._Element) -> list[tuple[str | None, etree._Element]]:
-    """(modelId, dgm:t) for every text-bearing point of a data model, in
-    document order. The doc point and presentation points carry no user
-    text and are skipped, matching read.diagram_text's node list."""
+    """(modelId, dgm:t) for every text node of a data model (ordinary and
+    assistant nodes, empty ones included), in document order: the same
+    list read.diagram_text reports, so an index names the same node in
+    both. The doc, presentation and connector points carry no user text."""
+    from .read import DIAGRAM_TEXT_POINT_TYPES
+
     out = []
     for pt in root.iter(_dgm("pt")):
         t = pt.find(_dgm("t"))
-        if t is None:
-            continue
-        if pt.get("type") in ("doc", "parTrans", "sibTrans"):
+        if t is None or pt.get("type", "node") not in DIAGRAM_TEXT_POINT_TYPES:
             continue
         out.append((pt.get("modelId"), t))
     return out
@@ -140,7 +185,10 @@ def _set_body_text(body: etree._Element, value: str) -> tuple[bool, bool]:
         else:
             p = etree.SubElement(body, qn("a:p"))
             if ppr_template is not None:
-                p.append(etree.fromstring(etree.tostring(ppr_template)))
+                p.append(xmlsafe.fromstring(etree.tostring(ppr_template)))
+            changed = True
+        for old_break in p.findall(qn("a:br")):
+            p.remove(old_break)
             changed = True
         runs = p.findall(qn("a:r"))
         if runs:
@@ -153,32 +201,80 @@ def _set_body_text(body: etree._Element, value: str) -> tuple[bool, bool]:
                 changed = True
                 collapsed = True
         else:
-            keep = etree.SubElement(p, qn("a:r"))
+            # An empty node's paragraph holds only its end mark (and maybe
+            # a pPr); a paragraph runs pPr, runs, endParaRPr, so the new
+            # run goes before the mark, never after it.
+            keep = etree.Element(qn("a:r"))
             if template is not None:
-                keep.append(etree.fromstring(etree.tostring(template)))
+                keep.append(xmlsafe.fromstring(etree.tostring(template)))
             etree.SubElement(keep, qn("a:t"))
+            end = p.find(qn("a:endParaRPr"))
+            if end is not None:
+                end.addprevious(keep)
+            else:
+                p.append(keep)
             changed = True
         t = keep.find(qn("a:t"))
         if t is None:
             t = etree.SubElement(keep, qn("a:t"))
-        if (t.text or "") != line:
-            t.text = line
+        chunks = line.split("\v")
+        if (t.text or "") != chunks[0]:
+            t.text = chunks[0]
             changed = True
+        cursor = keep
+        for chunk in chunks[1:]:
+            br = etree.Element(qn("a:br"))
+            if template is not None:
+                br.append(xmlsafe.fromstring(etree.tostring(template)))
+            cursor.addnext(br)
+            cursor = br
+            changed = True
+            if chunk:
+                run = etree.Element(qn("a:r"))
+                if template is not None:
+                    run.append(xmlsafe.fromstring(etree.tostring(template)))
+                etree.SubElement(run, qn("a:t")).text = chunk
+                cursor.addnext(run)
+                cursor = run
     for stale in paras[len(lines):]:
         body.remove(stale)
         changed = True
     return changed, collapsed
 
 
-def _drawing_bodies(pkg: PptxPackage, drawing_part: str) -> dict[str, etree._Element]:
-    """modelId -> dsp:txBody of the cached drawing."""
+def _drawing_bodies(
+    pkg: PptxPackage,
+    drawing_part: str,
+    data_root: etree._Element | None = None,
+) -> dict[str, etree._Element]:
+    """Data-model id -> cached drawing text body.
+
+    Simplified/legacy drawings put the data id directly on ``dsp:sp``.
+    PowerPoint uses a presentation-point id there; that ``dgm:pt`` carries
+    ``prSet/@presAssocID`` back to the editable data point. Expose both keys
+    so substitution reaches either package shape.
+    """
     out: dict[str, etree._Element] = {}
+    associations: dict[str, str] = {}
+    if data_root is not None:
+        for point in data_root.iter(_dgm("pt")):
+            model_id = point.get("modelId")
+            props = point.find(_dgm("prSet"))
+            associated = props.get("presAssocID") if props is not None else None
+            if model_id and associated:
+                associations[model_id] = associated
     root = pkg.root(drawing_part)
     for sp in root.iter(_dsp("sp")):
         model_id = sp.get("modelId")
         body = sp.find(_dsp("txBody"))
         if model_id and body is not None:
             out[model_id] = body
+            associated = associations.get(model_id)
+            if associated:
+                previous = out.get(associated)
+                has_text = any((t.text or "") for t in body.iter(qn("a:t")))
+                if previous is None or has_text:
+                    out[associated] = body
     return out
 
 
@@ -188,8 +284,9 @@ def _drawing_bodies(pkg: PptxPackage, drawing_part: str) -> dict[str, etree._Ele
 def set_diagram_text(pkg: PptxPackage, slide, shape: int, nodes: list) -> dict:
     """Replace the TEXT of existing SmartArt nodes. `nodes` is a list of
     {"model_id": ...} or {"index": N} (diagram_text reports both, in the
-    same order) plus "text"; '\\n' inside a text splits paragraphs within
-    that node. Layout, geometry, connections, styles, and colors are never
+    same order) plus "text"; '\\n' splits paragraphs within that node and
+    '\\v' inserts a soft line break inside a paragraph. Layout, geometry,
+    connections, styles, and colors are never
     touched, and no node is created or removed: this is substitution into a
     diagram PowerPoint already laid out.
 
@@ -213,7 +310,7 @@ def set_diagram_text(pkg: PptxPackage, slide, shape: int, nodes: list) -> dict:
             target_frame, data_part = frame, dp
             break
     if target_frame is None:
-        raise PptMcpError(
+        raise UnsupportedStructure(
             f"shape {shape} on slide {rec['index']} is not a SmartArt "
             "(diagram) frame; list_elements kind='shapes' and diagram_text "
             "show which shapes are diagrams"
@@ -275,7 +372,7 @@ def set_diagram_text(pkg: PptxPackage, slide, shape: int, nodes: list) -> dict:
             "replacement is one run carrying the first run's formatting"
         )
 
-    drawing_part = drawing_part_of(pkg, data_part)
+    drawing_part = drawing_part_of(pkg, data_part, part)
     synced = 0
     if drawing_part is None:
         warnings.append(
@@ -284,7 +381,7 @@ def set_diagram_text(pkg: PptxPackage, slide, shape: int, nodes: list) -> dict:
             "viewers may show nothing until it does"
         )
     else:
-        bodies = _drawing_bodies(pkg, drawing_part)
+        bodies = _drawing_bodies(pkg, drawing_part, root)
         missed = []
         for mid, _body, value in resolved:
             target = bodies.get(mid) if mid else None

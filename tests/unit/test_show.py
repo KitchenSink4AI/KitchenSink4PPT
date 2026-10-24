@@ -1,7 +1,7 @@
 """Show settings (ops.show): p:showPr in presProps and custom shows.
 
 Every mutated deck is saved, which runs pkg._validate_payload; the custom
-show lifecycle is cross-checked against The slide-delete GC
+show lifecycle is checked against the slide-delete GC
 (slides._drop_custom_show_refs), which this module must stay consistent
 with (empty shows removed, an emptied custShowLst dropped entirely).
 """

@@ -27,7 +27,10 @@ to TextRange '\\r' on the way in and back on the way out.
 from __future__ import annotations
 
 import contextlib
+import re
 
+from ..core import safesave
+from ..core import slide_echo
 from ..core.errors import (
     AmbiguousTarget,
     PptMcpError,
@@ -60,7 +63,7 @@ _KIND_BY_MSO_TYPE = {
 }
 
 # PpPlaceholderType -> the p:ph/@type string the file layer reports.
-# Verified against PowerPoint: ppPlaceholderTitle=1,
+# Ground truth verified live on PowerPoint: ppPlaceholderTitle=1,
 # ppPlaceholderCenterTitle=3 (vertical variants fold into their base type).
 _PH_XML_BY_COM = {
     1: "title", 2: "body", 3: "ctrTitle", 4: "subTitle", 5: "title",
@@ -145,11 +148,10 @@ def _resolve_slide_live(pres, selector):
         raise PptMcpError(f"invalid slide selector: {selector!r}")
     if isinstance(selector, int):
         if not 0 <= selector < count:
-            raise TargetNotFound(
-                f"slide index {selector} out of range, presentation has "
-                f"{count}"
-            )
-        return pres.Slides.Item(selector + 1)
+            raise TargetNotFound(slide_echo.range_message(selector, count))
+        slide = pres.Slides.Item(selector + 1)
+        slide_echo.report(selector, selector, count, lambda: _live_title(slide))
+        return slide
     if isinstance(selector, dict) and set(selector) == {"slide_id"}:
         sid = selector["slide_id"]
         known = []
@@ -157,6 +159,9 @@ def _resolve_slide_live(pres, selector):
             slide = pres.Slides.Item(i)
             this_id = int(slide.SlideID)
             if this_id == sid:
+                slide_echo.report(
+                    selector, i - 1, count, lambda: _live_title(slide)
+                )
                 return slide
             known.append(this_id)
         raise TargetNotFound(
@@ -166,6 +171,14 @@ def _resolve_slide_live(pres, selector):
         f"invalid slide selector {selector!r}: use a 0-based index int or "
         '{"slide_id": N}'
     )
+
+
+def _live_title(slide) -> str | None:
+    """The open slide's title text, for the slide echo; None when untitled."""
+    shapes = slide.Shapes
+    if not int(shapes.HasTitle):
+        return None
+    return str(shapes.Title.TextFrame.TextRange.Text)
 
 
 def _slide_keys(slide) -> dict:
@@ -189,7 +202,66 @@ def _iter_shapes_flat(shapes):
                 yield from _iter_shapes_flat(shp.GroupItems)
 
 
-def _find_shape_live(slide, shape_id: int):
+def _find_anchor_live(slide, ref):
+    """The shape a view anchor ("a:3f9c2a") names on the open slide, or None
+    when `ref` is not a shape anchor. The anchor is a digest of the slide
+    id and the shape id, which PowerPoint reports as they are in the file."""
+    from ..ops import view as _view
+
+    hexpart = _view.shape_anchor_hex(ref)
+    if hexpart is None:
+        return None
+    slide_id = int(slide.SlideID)
+    hits = [shp for shp in _iter_shapes_flat(slide.Shapes)
+            if _view.anchor_digest(slide_id, int(shp.Id)).startswith(hexpart)]
+    if len(hits) == 1:
+        return hits[0]
+    if hits:
+        raise AmbiguousTarget(
+            f"anchor {ref!r} matches {len(hits)} shapes on slide "
+            f"{int(slide.SlideIndex) - 1} of the open deck (ids "
+            f"{[int(s.Id) for s in hits]}); send the whole anchor or the id"
+        )
+    raise TargetNotFound(
+        f"anchor {ref!r} matches no shape on slide {int(slide.SlideIndex) - 1} "
+        "of the open deck: the shape is on another slide, or the view is "
+        "stale; re-run get_presentation_view"
+    )
+
+
+def _find_shape_live(slide, shape_id):
+    """A shape on the open slide by id, by a name only one shape carries,
+    or by the view anchor get_presentation_view printed for it. Text is a
+    name first, as on the file route: digits name the shape with that id
+    only when no shape has them as its name, and only ASCII digits count
+    (a superscript two is a name, not the number 2)."""
+    digits = isinstance(shape_id, str) and shape_id.strip().isascii() and (
+        shape_id.strip().isdecimal())
+    named_digits = digits and any(
+        str(shp.Name) == shape_id for shp in _iter_shapes_flat(slide.Shapes))
+    if isinstance(shape_id, str) and (not digits or named_digits):
+        named, seen = [], []
+        for shp in _iter_shapes_flat(slide.Shapes):
+            seen.append(f"{int(shp.Id)}:{str(shp.Name)!r}")
+            if str(shp.Name) == shape_id:
+                named.append(shp)
+        if len(named) == 1:
+            return named[0]
+        if named:
+            raise AmbiguousTarget(
+                f"{len(named)} shapes on slide {int(slide.SlideIndex) - 1} are "
+                f"named {shape_id!r}: ids {[int(s.Id) for s in named]}. Address "
+                "the shape by id"
+            )
+        anchored = _find_anchor_live(slide, shape_id)
+        if anchored is not None:
+            return anchored
+        raise TargetNotFound(
+            f"no shape named {shape_id!r} on slide {int(slide.SlideIndex) - 1} "
+            f"of the open deck; shapes present (id:name): {', '.join(seen)}"
+        )
+    if isinstance(shape_id, str):
+        shape_id = int(shape_id.strip())
     ids = []
     for shp in _iter_shapes_flat(slide.Shapes):
         this = int(shp.Id)
@@ -209,9 +281,9 @@ def _find_placeholder_live(slide, placeholder):
         raise PptMcpError(
             "live mode addresses placeholders by type string ('title', "
             "'subtitle', 'body', 'content'); COM does not expose the p:ph "
-            "idx. Address by shape id instead (live_get_slide_info lists "
-            "them), or use file-mode set_placeholder_text on the closed "
-            "file for idx addressing."
+            "idx. get_slide_info with live='force' lists shape ids; close "
+            "the presentation and use file-mode set_placeholder_text for "
+            "idx addressing."
         )
     if not isinstance(placeholder, str):
         raise PptMcpError(
@@ -244,7 +316,8 @@ def _find_placeholder_live(slide, placeholder):
         raise AmbiguousTarget(
             f"{len(candidates)} placeholders on slide "
             f"{int(slide.SlideIndex) - 1} match {placeholder!r}: {listing}. "
-            "Address by shape id (live_set_text with shape=) instead."
+            "Close the presentation, then use set_shape with shape=<id> "
+            "and text= instead."
         )
     return candidates[0]
 
@@ -286,6 +359,7 @@ def live_set_text(
             shp, ph_type = _find_shape_live(sl, shape), None
         tf = _text_frame_of(shp, f"shape {int(shp.Id)}")
         tr = tf.TextRange
+        safesave.claim_publish("the live PowerPoint text edit")
         live.set_text_chunked(tr, text)
         live.verify_text(tf.TextRange, text, f"shape {int(shp.Id)} text")
         out = {
@@ -349,7 +423,8 @@ def live_format_text(
         if para_count == 0:
             raise TargetNotFound(
                 f"shape {shape} on slide {int(sl.SlideIndex) - 1} has an "
-                "empty text body; add text first (live_set_text)"
+                "empty text body; add text with set_placeholder_text, or "
+                "close PowerPoint and use set_shape with text= first"
             )
         if paragraph is not None:
             if not 0 <= paragraph < para_count:
@@ -362,6 +437,7 @@ def live_format_text(
         else:
             target = tr
             touched = para_count
+        safesave.claim_publish("the live PowerPoint text formatting")
         f = target.Font
         if font is not None:
             f.Name = font
@@ -422,6 +498,7 @@ def live_insert_shape(
 
     def body(session):
         sl = _resolve_slide_live(session.pres, slide)
+        safesave.claim_publish("the live PowerPoint shape insertion")
         shp = sl.Shapes.AddShape(
             mso, _in_to_pt(x), _in_to_pt(y), _in_to_pt(w), _in_to_pt(h)
         )
@@ -468,7 +545,7 @@ def live_set_shape(
     if all(
         v is None for v in (x, y, w, h, rotation, fill, name)
     ):
-        raise PptMcpError("live_set_shape called with nothing to change")
+        raise PptMcpError("set_shape was called with nothing to change")
     for value, label in ((w, "w"), (h, "h")):
         if value is not None and float(value) <= 0:
             raise PptMcpError(f"{label} must be positive inches, got {value}")
@@ -477,6 +554,7 @@ def live_set_shape(
     def body(session):
         sl = _resolve_slide_live(session.pres, slide)
         shp = _find_shape_live(sl, shape)
+        safesave.claim_publish("the live PowerPoint shape edit")
         changed = []
         if x is not None:
             shp.Left = _in_to_pt(x)
@@ -543,6 +621,7 @@ def live_insert_textbox(
 
     def body(session):
         sl = _resolve_slide_live(session.pres, slide)
+        safesave.claim_publish("the live PowerPoint textbox insertion")
         shp = sl.Shapes.AddTextbox(
             _MSO_ORIENT_HORIZONTAL,
             _in_to_pt(x), _in_to_pt(y), _in_to_pt(w), _in_to_pt(h),
@@ -629,6 +708,19 @@ def _notes_text_live(slide) -> str | None:
 
 
 def _slides_in_scope_live(pres, scope):
+    from ..ops.read import is_range, range_indexes
+
+    if is_range(scope) or (
+        isinstance(scope, list) and any(is_range(item) for item in scope)
+    ):
+        count = int(pres.Slides.Count)
+        expanded = []
+        for item in scope if isinstance(scope, list) else [scope]:
+            if is_range(item):
+                expanded.extend(range_indexes(item, count))
+            else:
+                expanded.append(item)
+        scope = expanded
     if scope is None:
         return [
             pres.Slides.Item(i) for i in range(1, int(pres.Slides.Count) + 1)
@@ -665,8 +757,12 @@ def live_get_text(path: str, scope=None, *, include_notes: bool = False) -> dict
             if include_notes and s.get("notes"):
                 block = (block + "\n" if block else "") + "[Notes] " + s["notes"]
             blocks.append(block)
+        # As in file mode: slide_count is the deck, slides_in_scope the scope.
+        counts = {"slide_count": int(session.pres.Slides.Count)}
+        if scope is not None:
+            counts["slides_in_scope"] = len(slides)
         return {
-            "slide_count": len(slides),
+            **counts,
             "slides": slides,
             "text": "\n\n".join(blocks),
         }
@@ -776,6 +872,7 @@ def live_set_notes(path: str, slide, text: str) -> dict:
                 "placeholder; refusing to guess where the text goes"
             )
         tf = _text_frame_of(target, "the notes body placeholder")
+        safesave.claim_publish("the live PowerPoint notes edit")
         live.set_text_chunked(tf.TextRange, text)
         live.verify_text(tf.TextRange, text, "speaker notes")
         return {
@@ -789,6 +886,39 @@ def live_set_notes(path: str, slide, text: str) -> dict:
 
 
 # -------------------------------------------------------- search & replace
+
+
+def _utf16_len(text: str) -> int:
+    return len(text.encode("utf-16-le", "surrogatepass")) // 2
+
+
+def _live_match_spans(
+    text: str, needle: str, *, match_case: bool
+) -> list[tuple[int, int, int, int]]:
+    """Non-overlapping matches of a literal `needle` in `text`, left to
+    right, as (start, end, unit_start, unit_length).
+
+    start and end are Python code-point offsets into `text`. PowerPoint's
+    TextRange counts UTF-16 units, in which a character outside the Basic
+    Multilingual Plane (an emoji, CJK Extension B) is two units, so
+    TextRange.Characters takes unit_start + 1 and unit_length. Matching runs
+    on the text itself, case-insensitively through re.IGNORECASE exactly as
+    the closed-file search_and_replace does, never on a lower-cased copy,
+    which is longer than the text when it holds a dotted capital I."""
+    flags = 0 if match_case else re.IGNORECASE
+    out = []
+    unit_at = 0
+    last = 0
+    for m in re.finditer(re.escape(needle), text, flags):
+        start, end = m.span()
+        if start == end:
+            continue
+        unit_at += _utf16_len(text[last:start])
+        unit_len = _utf16_len(text[start:end])
+        out.append((start, end, unit_at, unit_len))
+        unit_at += unit_len
+        last = end
+    return out
 
 
 def live_search_and_replace(
@@ -806,7 +936,11 @@ def live_search_and_replace(
     character-range writes, so there is NO TextRange.Find length limit,
     replacements containing the search text never loop, and surrounding
     formatting outside each match survives. Verified by read-back per text
-    frame. Mirrors search_and_replace's result shape."""
+    frame. Mirrors search_and_replace's result shape, case_note included:
+    with match_case=True text in another case is left as it is, and the
+    answer says where."""
+    from ..ops._casenote import CaseTally
+
     path = check_path(path, "live search and replace")
     if not find:
         raise PptMcpError("search_and_replace needs a non-empty find string")
@@ -823,36 +957,27 @@ def live_search_and_replace(
         )
     pp_find = live.to_pp_text(find)
     pp_replace = live.to_pp_text(replace)
+    tally = CaseTally(pp_find, False) if match_case else None
 
-    def _spans(text: str) -> list[int]:
-        hay = text if match_case else text.lower()
-        needle = pp_find if match_case else pp_find.lower()
-        out = []
-        start = 0
-        while True:
-            i = hay.find(needle, start)
-            if i < 0:
-                return out
-            out.append(i)
-            start = i + len(needle)
-
-    def _replace_in_frame(tf, where: str) -> int:
+    def _replace_in_frame(tf, where: str, slide_index: int) -> int:
         if not tf.HasText:
             return 0
         tr = tf.TextRange
         original = str(tr.Text)
-        starts = _spans(original)
-        if not starts:
+        spans = _live_match_spans(original, pp_find, match_case=match_case)
+        if tally is not None:
+            tally.add(slide_index, original, spans)
+        if not spans:
             return 0
-        # Right-to-left so earlier offsets stay valid.
-        for i in reversed(starts):
-            tr.Characters(i + 1, len(pp_find)).Text = pp_replace
+        # Right-to-left so earlier offsets stay valid. Characters() counts
+        # UTF-16 units, so the write uses the unit positions.
+        safesave.claim_publish("the live PowerPoint text replacement")
+        for _s, _e, unit_start, unit_len in reversed(spans):
+            tr.Characters(unit_start + 1, unit_len).Text = pp_replace
         # verify-after-write: recompute expected in Python, compare.
         expected = original
-        for i in reversed(starts):
-            expected = (
-                expected[:i] + pp_replace + expected[i + len(pp_find):]
-            )
+        for start, end, _u, _n in reversed(spans):
+            expected = expected[:start] + pp_replace + expected[end:]
         got = str(tf.TextRange.Text)
         if got != expected:
             raise PptMcpError(
@@ -861,7 +986,7 @@ def live_search_and_replace(
                 "differently; the presentation may be protected. "
                 "Ctrl+Z in PowerPoint steps back the partial edits."
             )
-        return len(starts)
+        return len(spans)
 
     def body(session):
         slides_out = []
@@ -881,6 +1006,7 @@ def live_search_and_replace(
                                 tbl.Cell(r, c).Shape.TextFrame,
                                 f"slide {idx} table shape {int(shp.Id)} "
                                 f"cell r{r}c{c}",
+                                idx,
                             )
                     continue
                 has_tf = False
@@ -888,7 +1014,7 @@ def live_search_and_replace(
                     has_tf = bool(shp.HasTextFrame)
                 if has_tf:
                     count += _replace_in_frame(
-                        shp.TextFrame, f"slide {idx} shape {int(shp.Id)}"
+                        shp.TextFrame, f"slide {idx} shape {int(shp.Id)}", idx
                     )
             notes_count = 0
             if include_notes:
@@ -903,7 +1029,7 @@ def live_search_and_replace(
                         )
                     if ph_ok and shp.HasTextFrame:
                         notes_count += _replace_in_frame(
-                            shp.TextFrame, f"slide {idx} notes"
+                            shp.TextFrame, f"slide {idx} notes", idx
                         )
             if count or notes_count:
                 entry = {
@@ -915,7 +1041,7 @@ def live_search_and_replace(
                     entry["notes_count"] = notes_count
                 slides_out.append(entry)
             total += count + notes_count
-        return {
+        out = {
             "find": find,
             "replace": replace,
             "regex": False,
@@ -924,6 +1050,10 @@ def live_search_and_replace(
             "total": total,
             "slides": slides_out,
         }
+        case_note = tally.note("replace", total) if tally is not None else None
+        if case_note:
+            out["case_note"] = case_note
+        return out
 
     return live.run_live(path, "live_search_and_replace", body)
 
@@ -983,13 +1113,11 @@ def live_insert_slide(path: str, layout=None, position: int | None = None) -> di
         count = int(pres.Slides.Count)
         if position is not None:
             if not 0 <= position <= count:
-                raise TargetNotFound(
-                    f"position {position} out of range; the deck has "
-                    f"{count} slides (valid: 0..{count})"
-                )
+                raise TargetNotFound(slide_echo.position_message(position, count))
             index1 = position + 1
         else:
             index1 = count + 1
+        safesave.claim_publish("the live PowerPoint slide insertion")
         sl = pres.Slides.AddSlide(index1, chosen)
         ph_types = []
         with contextlib.suppress(Exception):
@@ -1000,6 +1128,7 @@ def live_insert_slide(path: str, layout=None, position: int | None = None) -> di
         return {
             "slide_id": int(sl.SlideID),
             "index": int(sl.SlideIndex) - 1,
+            "new_slide_number": int(sl.SlideIndex),
             "layout": str(chosen.Name),
             "placeholders": ph_types,
         }
@@ -1021,6 +1150,7 @@ def live_delete_slide(path: str, slide) -> dict:
             )
         sl = _resolve_slide_live(pres, slide)
         keys = _slide_keys(sl)
+        safesave.claim_publish("the live PowerPoint slide deletion")
         sl.Delete()
         return {
             "slide_id": keys["slide_id"],
@@ -1035,19 +1165,62 @@ def live_delete_slide(path: str, slide) -> dict:
 
 
 def live_save(path: str) -> dict:
-    """Save the open presentation IN PowerPoint (pres.Save()) — the one
-    live tool that writes the user's file, and only on explicit request.
-    The result's document_dirty confirms the post-save state."""
+    """Save the open presentation IN PowerPoint (pres.Save()). This is the
+    one live tool that writes the user's file, and only on explicit request.
+    The result's document_dirty confirms the post-save state, and
+    unsaved_before_our_edits says whether the deck already had unsaved
+    changes before this server's first live edit to it in this run
+    (true: the save also wrote the user's own unsaved work;
+    false: the deck was clean before that first edit, and anything the user
+    typed after it cannot be told apart from this server's edits; null:
+    unknown, for example this server made no live edit since the deck was
+    last clean, or a save by the user in between could not be excluded).
+    A save by the user between two of this server's edits starts a new run.
+    When the save wrote the user's own work (true), or may have (null with
+    unsaved changes), the result's first key, saved_user_work, says so."""
     path = check_path(path, "live save")
 
     def body(session):
+        before = session.unsaved_before_our_edits
+        safesave.claim_publish("the live PowerPoint save")
         session.pres.Save()
         saved = True
         with contextlib.suppress(Exception):
             saved = bool(session.pres.Saved)
-        return {"saved": str(session.pres.FullName), "save_confirmed": saved}
+        out = {}
+        # The fact that this save wrote the user's own work goes first, so
+        # the model reads it before anything else and tells the user.
+        if before is True:
+            out["saved_user_work"] = (
+                "This save also wrote unsaved changes the user had already "
+                "made to this deck, besides this server's edits. Tell the "
+                "user."
+            )
+        elif before is None and session.had_unsaved_user_changes:
+            out["saved_user_work"] = (
+                "This save may also have written unsaved changes the user "
+                "had made to this deck. Tell the user."
+            )
+        out["saved"] = str(session.pres.FullName)
+        out["save_confirmed"] = saved
+        out["unsaved_before_our_edits"] = before
+        if before is True:
+            out["save_note"] = (
+                "The deck already had unsaved changes before this server's "
+                "first live edit, so this save also wrote the user's own "
+                "unsaved work."
+            )
+        elif before is None and session.had_unsaved_user_changes:
+            out["save_note"] = (
+                "This server cannot say whose unsaved changes these were: it "
+                "made no live edit to this deck since it was last clean, or "
+                "a save by the user in between could not be excluded."
+            )
+        if saved and session.deck_key is not None:
+            live._forget_record(session.deck_key)
+        return out
 
-    return live.run_live(path, "live_save", body)
+    return live.run_live(path, "live_save", body, edits=False)
 
 
 def live_scroll_to(path: str, slide) -> dict:
@@ -1074,7 +1247,7 @@ def live_status() -> dict:
     """Responsiveness probe + per-presentation dirty state of the user's
     PowerPoint; safe anytime (helper-thread probe, names only).
 
-    v1.1 additions: modal dialogs read at the OS window layer (COM cannot
+    Also reports modal dialogs read at the OS window layer (COM cannot
     see the dialogs that are blocking COM), and the COM serialization
     snapshot. When another tool call holds the lock the state is reported
     as 'serving' and nothing is probed: the instance is not unresponsive,

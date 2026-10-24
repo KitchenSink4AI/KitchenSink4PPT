@@ -1,7 +1,7 @@
 """View layer (ops/view.py): anchored projection determinism, anchor
 stability across slide reorders, resolve_anchor round-trips, detail levels,
 pipe tables, notes blocks, hidden markers, and views of freshly grown decks.
-Runs on the corpus plus synthetic decks (make_deck fixture).
+Runs on the real corpus plus synthetic decks (make_deck fixture).
 """
 
 from __future__ import annotations
@@ -253,7 +253,10 @@ def test_hidden_slide_marked(make_deck):
 def test_scope_limits_view(make_deck):
     pkg = PptxPackage(make_deck())
     out = view.get_presentation_view(pkg, scope=0)
-    assert out["slide_count"] == 1
+    # slide_count is the whole deck; the scope's own count is slides_in_scope.
+    assert out["slide_count"] == len(read.slide_table(pkg)) == 6
+    assert out["slides_in_scope"] == 1
+    assert "slides_in_scope" not in view.get_presentation_view(pkg)
     assert len(re.findall(r"^## Slide ", out["view"], re.M)) == 1
     with pytest.raises(TargetNotFound, match="out of range"):
         view.get_presentation_view(pkg, scope=99)

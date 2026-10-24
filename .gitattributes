@@ -1,4 +1,12 @@
+# Build inputs are LF on every platform so edition payload digests are stable.
+* text=auto eol=lf
+
 # The license text is byte-exact to the canonical AGPL-3.0 from gnu.org so that
 # GitHub's license detection identifies it. Never convert it on checkout or on
 # commit: a CRLF copy is no longer byte-exact.
 LICENSE -text
+
+# Owner-test/release builds accept only a git-archive source tree.  Git
+# replaces the marker in that tree with the exact source commit; a checkout
+# retains the literal placeholder and is refused by the build script.
+scripts/ARCHIVE_REVISION.txt export-subst

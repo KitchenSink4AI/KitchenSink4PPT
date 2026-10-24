@@ -18,16 +18,16 @@ from ..core.errors import PptMcpError
 TIMEOUT_S = 5.0
 
 
-def compile_user_pattern(pattern: str):
+def compile_user_pattern(pattern: str, *, ignore_case: bool = False):
     try:
-        return _regex.compile(pattern)
+        return _regex.compile(pattern, _regex.IGNORECASE if ignore_case else 0)
     except _regex.error as exc:
         raise PptMcpError(f"invalid regex {pattern!r}: {exc}") from exc
 
 
-def finditer(pattern: str, text: str):
+def finditer(pattern: str, text: str, *, ignore_case: bool = False):
     """Materialized match list, timeout-guarded."""
-    compiled = compile_user_pattern(pattern)
+    compiled = compile_user_pattern(pattern, ignore_case=ignore_case)
     try:
         return list(compiled.finditer(text, timeout=TIMEOUT_S))
     except TimeoutError as exc:

@@ -1,5 +1,5 @@
 """Roster-gap ops: apply_layout (proposal deck), get_theme (conference deck),
-manage_section lifecycle, plus a COM opens-clean round
+manage_section lifecycle (its invariants), plus a COM opens-clean round
 on an apply_layout + manage_section output."""
 
 from __future__ import annotations

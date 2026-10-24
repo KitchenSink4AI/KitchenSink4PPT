@@ -1,12 +1,12 @@
-"""Behavior of the COM start-up path.
+"""Regression tests for the COM start-up path.
 
-- the retry set was wider than the recovery action could justify, and a
-    failed attempt that had already started a PowerPoint was not accounted
-    for;
-- an apartment that genuinely could not be armed was recorded and then
-    ignored, so Dispatch spoke for it with a vaguer error;
-- the caller-apartment evidence was claimed to be on the result and is
-    not: it is an in-process diagnostic, reported through powerpoint_status.
+- The retry set is no wider than the recovery action can justify, and a
+  failed attempt that had already started a PowerPoint is accounted for.
+- An apartment that genuinely could not be armed is refused before any
+  Dispatch, instead of being recorded and then ignored so that Dispatch
+  spoke for it with a vaguer error.
+- The caller-apartment evidence is an in-process diagnostic, reported
+  through powerpoint_status. It is not carried on operation results.
 
 No PowerPoint is started by anything in this file.
 """
@@ -101,14 +101,14 @@ def test_the_unrecoverable_startup_faults_are_tried_once(bridge, name):
 def test_a_failed_attempt_that_started_powerpoint_is_reported_not_ended(
     bridge, monkeypatch
 ):
-    """The concrete failure:
+    """A failed attempt that started PowerPoint is reported, not ended.
 
     Attempt one starts POWERPNT.EXE and then fails before a proxy reaches
-    Python. An earlier version ended that pid, reasoning that an empty entry snapshot
-    made it ours. An empty snapshot is not ownership: the user can launch
-    PowerPoint in that same window, and `tasklist` failing produces the
-    same empty set. So the pid is reported and left alone, and the retry
-    stops rather than launching a second process on top of it.
+    Python. An empty entry snapshot does not make that pid ours: the user
+    can launch PowerPoint in that same window, and `tasklist` failing
+    produces the same empty set. So the pid is reported and left alone,
+    and the retry stops rather than launching a second process on top of
+    it.
     """
     world = {"pids": set()}
     killed: list[int] = []
@@ -172,10 +172,10 @@ def test_a_pre_existing_powerpoint_is_never_touched(bridge, monkeypatch):
 def test_a_stranded_process_is_reported_when_the_call_still_fails(
     bridge, monkeypatch
 ):
-    """The refusal names the pid it saw. It may not claim to
-    have ended anything, because it does not, and it may not
-    claim the process is still running either: the snapshot was taken
-    while the start was failing and says nothing about now."""
+    """The refusal names the pid it saw. It may not claim to have ended
+    anything, because it does not, and it may not claim the process is
+    still running either: the snapshot was taken while the start was
+    failing and says nothing about now."""
     world = {"pids": set()}
     monkeypatch.setattr(bridge, "powerpnt_pids", lambda: set(world["pids"]))
 
@@ -245,7 +245,7 @@ def test_an_unarmable_apartment_refuses_before_any_dispatch(
     assert "could not be initialized" in str(exc_info.value)
 
 
-# ------------------------------- the evidence is where it is claimed
+# ------------------------------- the apartment state is reported by status
 
 
 def test_the_apartment_state_is_an_in_process_diagnostic(bridge):
@@ -284,10 +284,9 @@ def test_cleanup_is_disarmed_when_powerpoint_was_already_running(
     it did not start. If an instance was up at entry we ATTACHED, so a
     process appearing mid-call is not ours to reason about.
 
-    This is not hypothetical. Writing this test on a machine where another
-    session had PowerPoint open, an earlier version of the fix read the real
-    process table against an empty baseline and tried to end that session's
-    instance.
+    This is not hypothetical: reading the real process table against an
+    empty baseline would end an unrelated PowerPoint instance that was
+    already open on the machine.
     """
     world = {"pids": {111, 222}}  # somebody else's PowerPoint, plus a second
     killed: list[int] = []
@@ -322,7 +321,7 @@ def test_cleanup_is_disarmed_when_powerpoint_was_already_running(
 def test_an_older_pythoncom_without_coinitializeex_still_works(bridge):
     """A MISSING API is not an apartment failure. Reporting it as one would
     turn an old pywin32 into "PowerPoint could not be started" on every
-    call, which is the opposite of what was asked for."""
+    call, when only a genuine apartment failure should refuse the call."""
 
     class _Old:
         """pythoncom as it was before CoInitializeEx."""

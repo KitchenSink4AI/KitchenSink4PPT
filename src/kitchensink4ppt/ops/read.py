@@ -14,11 +14,15 @@ Contract (binding for every function in this module):
   TargetNotFound with an actionable message ("slide index 47 out of
   range, presentation has 12"); malformed selectors raise PptMcpError.
 - Reading order is spTree document order, recursing into p:grpSp groups
-  and into p:graphicFrame tables (row by row, cells left to right).
-  mc:AlternateContent children are skipped, matching python-pptx.
-- Text rendering: a:br is a newline, a:tab is a tab, a:fld (slide
-  numbers, dates) renders as its cached a:t text. Paragraphs join with
-  newlines; table cells join with tabs, table rows with newlines.
+  and into p:graphicFrame tables (row by row, cells left to right). A
+  shape PowerPoint keeps in a slide-level mc:AlternateContent (a text box
+  that holds an equation, ink, a newer chart) is read from the branch
+  PowerPoint shows, at the wrapper's place (iter_shapes(wrapped=True));
+  edits do not reach it.
+- Text rendering: a:br is ``\v`` (soft line break), a:tab is ``\t``, and
+  a:fld (slide numbers, dates) renders as its cached a:t text. Separate
+  paragraphs join with ``\n``; table cells join with tabs and rows with
+  newlines.
 - Caller-supplied regex (find_text with regex=True) always runs through
   ops/_regex.py (hard-timeout ReDoS guard); never through stdlib re.
 - The list-shaped readers (list_elements, get_text, find_text) answer under
@@ -30,13 +34,17 @@ Contract (binding for every function in this module):
 
 from __future__ import annotations
 
+import hashlib
 import posixpath
 
 from lxml import etree
 
 from ..core import budget as _budget
-from ..core.errors import PptMcpError, TargetNotFound
+from ..core import slide_echo as _slide_echo
+from ..core.errors import PptMcpError, TargetNotFound, UnsupportedStructure
 from ..core.package import NSMAP, PRESENTATION_PART, PptxPackage, qn, resolve_target
+from ..core.xmlbool import attr_bool
+from ._casenote import CaseTally
 
 EMU_PER_INCH = 914400
 
@@ -56,6 +64,7 @@ _URI_TABLE = "http://schemas.openxmlformats.org/drawingml/2006/table"
 _URI_CHART = "http://schemas.openxmlformats.org/drawingml/2006/chart"
 _URI_DIAGRAM = "http://schemas.openxmlformats.org/drawingml/2006/diagram"
 _URI_OLE = "http://schemas.openxmlformats.org/presentationml/2006/ole"
+_DECORATIVE_NS = "http://schemas.microsoft.com/office/drawing/2017/decorative"
 
 # docProps/core.xml namespaces (not in the package NSMAP; local on purpose).
 _CORE_NS = {
@@ -66,6 +75,9 @@ _CORE_NS = {
 
 # p14:sectionLst lives under this namespace (already in the package NSMAP).
 _P14 = NSMAP["p14"]
+
+#: Placeholder types that hold a slide's title.
+_TITLE_PH_TYPES = ("title", "ctrTitle")
 
 _LIST_KINDS = (
     "slides",
@@ -99,9 +111,28 @@ def slide_table(pkg: PptxPackage) -> list[dict]:
     out = []
     for i, sld in enumerate(sld_id_lst.findall(qn("p:sldId"))):
         rid = sld.get(qn("r:id"))
-        part = pkg.relationship_target(PRESENTATION_PART, rid)
+        part = pkg.slide_target(rid)
         out.append({"index": i, "slide_id": int(sld.get("id")), "part": part})
     return out
+
+
+def slide_title(pkg: PptxPackage, part: str) -> str | None:
+    """Text of the slide's title placeholder (title or ctrTitle), or None."""
+    sp_tree = pkg.root(part).find(f"{qn('p:cSld')}/{qn('p:spTree')}")
+    if sp_tree is None:
+        return None
+    for elem, kind, _z, _parent in iter_shapes(sp_tree, wrapped=True):
+        if kind == "placeholder" and _ph(elem).get("type") in _TITLE_PH_TYPES:
+            return shape_text(elem)
+    return None
+
+
+def _report(pkg: PptxPackage, selector, rec: dict, count: int) -> dict:
+    """Tell an armed slide echo which slide this selector named."""
+    _slide_echo.report(
+        selector, rec["index"], count, lambda: slide_title(pkg, rec["part"])
+    )
+    return rec
 
 
 def resolve_slide(pkg: PptxPackage, selector, table: list[dict] | None = None) -> dict:
@@ -114,16 +145,13 @@ def resolve_slide(pkg: PptxPackage, selector, table: list[dict] | None = None) -
         raise PptMcpError(f"invalid slide selector: {selector!r}")
     if isinstance(selector, int):
         if not 0 <= selector < len(table):
-            raise TargetNotFound(
-                f"slide index {selector} out of range, presentation has "
-                f"{len(table)}"
-            )
-        return table[selector]
+            raise TargetNotFound(_slide_echo.range_message(selector, len(table)))
+        return _report(pkg, selector, table[selector], len(table))
     if isinstance(selector, dict) and set(selector) == {"slide_id"}:
         sid = selector["slide_id"]
         for rec in table:
             if rec["slide_id"] == sid:
-                return rec
+                return _report(pkg, selector, rec, len(table))
         known = [r["slide_id"] for r in table]
         raise TargetNotFound(
             f"no slide with slide_id {sid}; ids present: {known}"
@@ -134,27 +162,79 @@ def resolve_slide(pkg: PptxPackage, selector, table: list[dict] | None = None) -
     )
 
 
+def is_range(selector) -> bool:
+    """True for a scope range: {"start": i, "end": j}."""
+    return isinstance(selector, dict) and set(selector) == {"start", "end"}
+
+
+def range_indexes(selector: dict, count: int) -> list[int]:
+    """The 0-based slide indexes of a scope range, both ends included, or a
+    refusal that names the deck's range."""
+    start, end = selector.get("start"), selector.get("end")
+    if any(isinstance(v, bool) or not isinstance(v, int) for v in (start, end)):
+        raise PptMcpError(
+            'a range is {"start": i, "end": j}: whole numbers counted from 0 '
+            "like slide, both included"
+        )
+    if start > end:
+        raise PptMcpError(
+            "a range runs from its start to its end, both included, so its start "
+            f"({start}) cannot come after its end ({end})"
+        )
+    if start < 0 or end >= count:
+        plural = "" if count == 1 else "s"
+        raise TargetNotFound(
+            f"range {start} to {end} is out of range, presentation has {count} "
+            f"slide{plural}: slide counts from 0, so it runs 0 to {count - 1} "
+            f"(slide_number 1 to {count})"
+        )
+    return list(range(start, end + 1))
+
+
 def slides_in_scope(pkg: PptxPackage, scope) -> list[dict]:
     """Slide records selected by `scope`: None = all slides, a single
-    selector, or a list of selectors (kept in the order given)."""
+    selector, a range {"start", "end"} (counted from 0, both included), or
+    a list of selectors and ranges (kept in the order given)."""
     table = slide_table(pkg)
     if scope is None:
         return table
-    if isinstance(scope, list):
-        return [resolve_slide(pkg, s, table) for s in scope]
-    return [resolve_slide(pkg, scope, table)]
+    out: list[dict] = []
+    for selector in scope if isinstance(scope, list) else [scope]:
+        if is_range(selector):
+            out.extend(
+                _report(pkg, index, table[index], len(table))
+                for index in range_indexes(selector, len(table))
+            )
+        else:
+            out.append(resolve_slide(pkg, selector, table))
+    return out
 
 
 # ------------------------------------------------------------- shape walking
 
 
+#: Ink's cNvPr: a p:contentPart carries its id and name on p14:cNvPr.
+_P14_CNVPR = "{http://schemas.microsoft.com/office/powerpoint/2010/main}cNvPr"
+_P14_XFRM = "{http://schemas.microsoft.com/office/powerpoint/2010/main}xfrm"
+
+
 def _cnvpr(elem: etree._Element) -> etree._Element | None:
     """The p:cNvPr of any shape-family element (it lives one level down in
-    the nv*Pr container, whatever the container's exact tag)."""
+    the nv*Pr container, whatever the container's exact tag), or ink's
+    p14:cNvPr."""
     for child in elem:
         if etree.QName(child).localname.startswith("nv"):
-            return child.find(qn("p:cNvPr"))
+            found = child.find(qn("p:cNvPr"))
+            return found if found is not None else child.find(_P14_CNVPR)
     return None
+
+
+def cnvpr_id(cnvpr: etree._Element | None) -> int | None:
+    """The id a shape's cNvPr carries, or None when there is no cNvPr or it
+    has no id or one that is not a whole number (a damaged deck; PowerPoint
+    gives such a shape a new id when it opens the deck)."""
+    raw = cnvpr.get("id") if cnvpr is not None else None
+    return int(raw) if raw is not None and raw.isdigit() else None
 
 
 def _ph(elem: etree._Element) -> etree._Element | None:
@@ -172,15 +252,17 @@ def _shape_kind(elem: etree._Element) -> str:
         if _ph(elem) is not None:
             return "placeholder"
         cnvsppr = elem.find(f"{qn('p:nvSpPr')}/{qn('p:cNvSpPr')}")
-        if cnvsppr is not None and cnvsppr.get("txBox") == "1":
+        if attr_bool(cnvsppr, "txBox"):
             return "textbox"
         return "autoshape"
     if local == "pic":
-        return "picture"
+        return "media" if _holds_media(elem) else "picture"
     if local == "grpSp":
         return "group"
     if local == "cxnSp":
         return "connector"
+    if local == "contentPart":
+        return "ink"
     if local == "graphicFrame":
         data = elem.find(f"{qn('a:graphic')}/{qn('a:graphicData')}")
         uri = data.get("uri") if data is not None else None
@@ -196,10 +278,28 @@ def _shape_kind(elem: etree._Element) -> str:
     return local
 
 
+#: What a p:pic's nvPr holds when it is a video or audio object.
+_MEDIA_FILES = tuple(
+    qn(f"a:{t}") for t in ("videoFile", "audioFile", "quickTimeFile", "wavAudioFile", "audioCd")
+)
+_P14_MEDIA = "{http://schemas.microsoft.com/office/powerpoint/2010/main}media"
+
+
+def _holds_media(pic: etree._Element) -> bool:
+    """Whether a p:pic is a video or audio object (PowerPoint types it
+    media; its picture is only the poster frame)."""
+    nv_pr = pic.find(f"{qn('p:nvPicPr')}/{qn('p:nvPr')}")
+    if nv_pr is None:
+        return False
+    return any(c.tag in _MEDIA_FILES for c in nv_pr) or next(nv_pr.iter(_P14_MEDIA), None) is not None
+
+
 def _xfrm_of(elem: etree._Element) -> etree._Element | None:
     local = etree.QName(elem).localname
     if local == "graphicFrame":
         return elem.find(qn("p:xfrm"))
+    if local == "contentPart":
+        return elem.find(_P14_XFRM)
     if local == "grpSp":
         pr = elem.find(qn("p:grpSpPr"))
     else:
@@ -240,33 +340,139 @@ def _geometry(elem: etree._Element) -> dict | None:
 _SHAPE_TAGS = ("p:sp", "p:pic", "p:graphicFrame", "p:grpSp", "p:cxnSp")
 
 
-def iter_shapes(sp_tree: etree._Element, *, _parent: int | None = None):
+_MC_ALTERNATE = "{http://schemas.openxmlformats.org/markup-compatibility/2006}AlternateContent"
+_MC_CHOICE = "{http://schemas.openxmlformats.org/markup-compatibility/2006}Choice"
+_MC_FALLBACK = "{http://schemas.openxmlformats.org/markup-compatibility/2006}Fallback"
+#: Math PowerPoint writes straight into a paragraph of a box its a14 branch holds.
+_A14_M = "{http://schemas.microsoft.com/office/drawing/2010/main}m"
+
+
+def wrapped_shape_id(el: etree._Element) -> int | None:
+    """The id of the shape a slide-level mc:AlternateContent wraps (the
+    cNvPr of its first branch's shape: an equation's p:sp, ink's
+    p14:contentPart), or None for any other element. PowerPoint stores an
+    equation text box and ink this way, and its stacking and reading order
+    count the wrapper as one shape."""
+    if el.tag != _MC_ALTERNATE:
+        return None
+    for branch in el:
+        for child in branch:
+            for node in child.iter():
+                if isinstance(node.tag, str) and etree.QName(node).localname == "cNvPr":
+                    raw = node.get("id")
+                    return int(raw) if raw is not None and raw.isdigit() else None
+    return None
+
+
+def stack_members(parent: etree._Element) -> list[etree._Element]:
+    """Children of an spTree or group that hold a place in its stacking and
+    reading order: shapes, and mc:AlternateContent wrappers around one."""
+    tags = {qn(t) for t in _SHAPE_TAGS}
+    return [c for c in parent if c.tag in tags or wrapped_shape_id(c) is not None]
+
+
+_CONTENT_PART = qn("p:contentPart")
+
+
+def shown_shapes(wrapper: etree._Element) -> list[etree._Element]:
+    """The shapes of the branch PowerPoint shows of one slide-level
+    mc:AlternateContent (ops/_wrapped.shown_branch: the first Choice whose
+    Requires it reads, else the Fallback), a wrapper nested in that branch
+    resolved the same way. [] when no branch is shown or it holds none."""
+    from ._wrapped import shown_branch
+
+    branch = shown_branch(wrapper)
+    if branch is None:
+        return []
+    tags = {qn(t) for t in _SHAPE_TAGS}
+    out: list[etree._Element] = []
+    for el in branch:
+        if el.tag == _MC_ALTERNATE:
+            out.extend(shown_shapes(el))
+        elif el.tag in tags or el.tag == _CONTENT_PART:
+            out.append(el)
+    return out
+
+
+def in_wrapper(elem: etree._Element) -> bool:
+    """Whether a shape element sits in a branch of an mc:AlternateContent,
+    itself or through a group the branch holds (edits never rewrite one)."""
+    return next(elem.iterancestors(_MC_CHOICE, _MC_FALLBACK), None) is not None
+
+
+def iter_shapes(
+    sp_tree: etree._Element, *, wrapped: bool = False, _parent: int | None = None
+):
     """Yield (elem, kind, z, parent_id) over an spTree (or grpSp) in
     document order, recursing into groups. z is the 0-based position among
     the parent's shape children; parent_id is the containing group's shape
-    id (None at top level). mc:AlternateContent children are skipped."""
+    id (None at top level).
+
+    mc:AlternateContent children are skipped, unless wrapped=True (the
+    reads): then a wrapper PowerPoint keeps a shape in (a text box that
+    holds an equation, ink, a newer chart) yields the shape of the branch
+    PowerPoint shows, at the wrapper's place, and z counts the wrapper as
+    one shape, as stack_members and PowerPoint's own stacking order do.
+    Edits walk with wrapped=False, so they never rewrite a wrapper."""
     tags = {qn(t) for t in _SHAPE_TAGS}
     z = 0
     for child in sp_tree:
-        if child.tag not in tags:
+        if child.tag in tags:
+            members = [child]
+        elif wrapped and wrapped_shape_id(child) is not None:
+            members = shown_shapes(child)
+        else:
             continue
-        kind = _shape_kind(child)
-        yield child, kind, z, _parent
-        if kind == "group":
-            cnvpr = _cnvpr(child)
-            gid = int(cnvpr.get("id")) if cnvpr is not None else None
-            yield from iter_shapes(child, _parent=gid)
+        for elem in members:
+            kind = _shape_kind(elem)
+            yield elem, kind, z, _parent
+            if kind == "group":
+                cnvpr = _cnvpr(elem)
+                gid = cnvpr_id(cnvpr)
+                yield from iter_shapes(elem, wrapped=wrapped, _parent=gid)
         z += 1
+
+
+def wrapped_refusal(sp_tree: etree._Element, shape) -> UnsupportedStructure | None:
+    """The refusal for an edit that names, by id or by name, a shape
+    PowerPoint keeps in a compatibility wrapper (the reads list it; edits do
+    not rewrite a wrapper), or None when no such shape has that address."""
+    if isinstance(shape, bool) or not isinstance(shape, (int, str)):
+        return None
+    for elem, kind, _z, _parent in iter_shapes(sp_tree, wrapped=True):
+        if not in_wrapper(elem):
+            continue
+        cnvpr = _cnvpr(elem)
+        sid = cnvpr_id(cnvpr)
+        name = cnvpr.get("name", "") if cnvpr is not None else ""
+        if isinstance(shape, int):
+            hit = sid == shape
+        else:
+            ref = shape.strip()
+            hit = shape == name or (ref.isdigit() and sid == int(ref))
+        if hit:
+            return UnsupportedStructure(
+                f"shape {sid} ({name!r}, a {kind}) is kept by PowerPoint in a compatibility "
+                "wrapper, as PowerPoint keeps a text box that holds an equation, ink and newer "
+                "charts. The reads show it, but this server does not change it, so nothing was "
+                "changed. Make this change in PowerPoint."
+            )
+    return None
 
 
 def _shape_record(elem: etree._Element, kind: str, z: int, parent: int | None) -> dict:
     cnvpr = _cnvpr(elem)
+    decorative = False
+    if cnvpr is not None:
+        marker = cnvpr.find(f".//{{{_DECORATIVE_NS}}}decorative")
+        decorative = marker is not None and attr_bool(marker, "val", True)
     rec = {
-        "id": int(cnvpr.get("id")) if cnvpr is not None else None,
+        "id": cnvpr_id(cnvpr),
         "name": cnvpr.get("name", "") if cnvpr is not None else "",
         "type": kind,
         "z": z,
-        "hidden": bool(cnvpr is not None and cnvpr.get("hidden") == "1"),
+        "hidden": attr_bool(cnvpr, "hidden"),
+        "decorative": decorative,
     }
     if parent is not None:
         rec["group_id"] = parent
@@ -283,17 +489,31 @@ def _shape_record(elem: etree._Element, kind: str, z: int, parent: int | None) -
 
 
 def paragraph_text(p: etree._Element) -> str:
-    """Plain text of one a:p: runs concatenated, a:br as newline, a:tab as
-    tab, a:fld rendered by its cached a:t text."""
+    """Plain text of one a:p: runs concatenated, a:br as vertical tab,
+    a:tab as tab, a:fld rendered by its cached a:t text.
+
+    Package and live modes share one public convention: ``\v`` is a soft
+    line break inside this paragraph; ``\n`` is reserved for the boundary
+    between separate paragraphs. An mc:AlternateContent in the paragraph (an
+    inline equation, a run for a newer version) reads as the branch
+    PowerPoint shows (ops/_wrapped.py), and math PowerPoint wrote straight
+    into the paragraph (a14:m, in a box its a14 branch holds) as the
+    characters of its math runs.
+    """
     parts: list[str] = []
     for child in p:
+        if child.tag in (_MC_ALTERNATE, _A14_M):
+            from ._wrapped import wrapped_text
+
+            parts.append(wrapped_text(child))
+            continue
         local = etree.QName(child).localname
         if local in ("r", "fld"):
             t = child.find(qn("a:t"))
             if t is not None and t.text:
                 parts.append(t.text)
         elif local == "br":
-            parts.append("\n")
+            parts.append("\v")
         elif local == "tab":
             parts.append("\t")
     return "".join(parts)
@@ -342,6 +562,140 @@ def _table_text(frame: etree._Element) -> str:
     return "\n".join("\t".join(row) for row in table_cells(frame))
 
 
+def _chart_part_for_frame(
+    pkg: PptxPackage, slide_part: str, frame: etree._Element
+) -> str | None:
+    """Resolve a classic chart frame to its c:chartSpace part."""
+    data = frame.find(f"{qn('a:graphic')}/{qn('a:graphicData')}")
+    chart = data.find(qn("c:chart")) if data is not None else None
+    rid = chart.get(qn("r:id")) if chart is not None else None
+    if not rid:
+        return None
+    try:
+        part = pkg.relationship_target(slide_part, rid)
+    except (KeyError, PptMcpError):
+        return None
+    return part if pkg.has_part(part) else None
+
+
+def chart_text_records(
+    pkg: PptxPackage, slide_part: str, frame: etree._Element
+) -> list[dict]:
+    """Visible chart labels retrievable from a classic chart part.
+
+    Each record is ``{"field", "text"}``.  Categories shared by several
+    series are returned once, in first-seen order.  A malformed, missing, or
+    modern-chartex part contributes no guessed text.
+    """
+    part = _chart_part_for_frame(pkg, slide_part, frame)
+    if part is None:
+        return []
+    try:
+        root = pkg.root(part)
+    except (KeyError, etree.XMLSyntaxError):
+        return []
+    chart = root.find(qn("c:chart"))
+    if chart is None:
+        return []
+
+    records: list[dict] = []
+
+    def add(field: str, text: str | None) -> None:
+        value = (text or "").strip()
+        if value:
+            records.append({"field": field, "text": value})
+
+    def rich(container: etree._Element | None) -> str | None:
+        if container is None:
+            return None
+        chunks = [t.text for t in container.iter(qn("a:t")) if t.text]
+        return "".join(chunks) if chunks else None
+
+    def label(container: etree._Element | None) -> str | None:
+        text = rich(container)
+        if text is not None or container is None:
+            return text
+        cached = container.find(f".//{qn('c:pt')}/{qn('c:v')}")
+        if cached is None:
+            cached = container.find(f".//{qn('c:v')}")
+        return cached.text if cached is not None else None
+
+    add("chart_title", label(chart.find(qn("c:title"))))
+    plot = chart.find(qn("c:plotArea"))
+    if plot is None:
+        return records
+    category_sequences: set[tuple[str, ...]] = set()
+    for ser in plot.iter(qn("c:ser")):
+        tx = ser.find(qn("c:tx"))
+        name = None
+        if tx is not None:
+            direct = tx.find(qn("c:v"))
+            if direct is not None:
+                name = direct.text
+            if name is None:
+                point = tx.find(f".//{qn('c:pt')}/{qn('c:v')}")
+                name = point.text if point is not None else rich(tx)
+        add("series_name", name)
+        cat = ser.find(qn("c:cat"))
+        if cat is not None:
+            values = tuple(
+                value.text or ""
+                for value in cat.findall(f".//{qn('c:pt')}/{qn('c:v')}")
+            )
+            if values not in category_sequences:
+                category_sequences.add(values)
+                for value in values:
+                    add("category", value)
+    for axis_name in ("catAx", "valAx", "dateAx", "serAx"):
+        for axis in plot.findall(qn(f"c:{axis_name}")):
+            add("axis_title", label(axis.find(qn("c:title"))))
+    return records
+
+
+def chart_fingerprint(
+    pkg: PptxPackage, slide_part: str, frame: etree._Element
+) -> str | None:
+    """Stable content fingerprint for a classic chart and its workbook.
+
+    XML canonicalization ignores serialization-only byte differences while
+    retaining chart data caches, labels, formulas, formatting, and axes.
+    Linked embedded workbook bytes are included because Edit Data content is
+    material even when a producer failed to refresh the rendered caches.
+    """
+    part = _chart_part_for_frame(pkg, slide_part, frame)
+    if part is None:
+        return None
+    try:
+        canonical = etree.tostring(pkg.root(part), method="c14n")
+    except (KeyError, etree.XMLSyntaxError):
+        return None
+    digest = hashlib.sha256()
+    digest.update(canonical)
+    try:
+        rels = pkg.rels_for(part)
+    except KeyError:
+        rels = None
+    if rels is not None:
+        linked = []
+        for rel in rels.getroot():
+            if rel.get("TargetMode") == "External":
+                continue
+            rel_type = rel.get("Type", "")
+            if not (
+                rel_type.endswith("/package")
+                or rel_type.endswith("/oleObject")
+            ):
+                continue
+            target = resolve_target(part, rel.get("Target", ""))
+            if pkg.has_part(target):
+                linked.append((target, pkg.raw_part(target)))
+        for target, payload in sorted(linked):
+            digest.update(target.encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(payload)
+    return digest.hexdigest()
+
+
 def notes_part_for(pkg: PptxPackage, slide_part: str) -> str | None:
     """The notesSlide part related to a slide, or None."""
     try:
@@ -354,23 +708,39 @@ def notes_part_for(pkg: PptxPackage, slide_part: str) -> str | None:
     return None
 
 
+def notes_bodies(pkg: PptxPackage, notes_part: str) -> list[etree._Element]:
+    """The body placeholders of a notes part (the pane the user types into),
+    in document order, as PowerPoint shows them. PowerPoint keeps a notes
+    body that holds an equation in a compatibility wrapper on the notes
+    page, with a second copy in its Fallback; the walk takes the branch
+    PowerPoint shows (iter_shapes wrapped=True), so a body is read once."""
+    tree = pkg.root(notes_part).find(f"{qn('p:cSld')}/{qn('p:spTree')}")
+    if tree is None:
+        return []
+    out = []
+    for elem, _kind, _z, _parent in iter_shapes(tree, wrapped=True):
+        if elem.tag != qn("p:sp"):
+            continue
+        ph = _ph(elem)
+        if ph is not None and ph.get("type") == "body":
+            out.append(elem)
+    return out
+
+
 def notes_text(pkg: PptxPackage, slide_part: str) -> str | None:
     """Speaker notes for a slide: the text of the notes slide's body
-    placeholder (the pane the user types into). None when the slide has no
-    notesSlide part."""
+    placeholder (the pane the user types into), from the branch PowerPoint
+    shows when the body is wrapped. None when the slide has no notesSlide
+    part."""
     part = notes_part_for(pkg, slide_part)
     if part is None or not pkg.has_part(part):
         return None
-    root = pkg.root(part)
-    for sp in root.iter(qn("p:sp")):
-        ph = _ph(sp)
-        if ph is not None and ph.get("type") == "body":
-            return shape_text(sp)
-    return ""
+    bodies = notes_bodies(pkg, part)
+    return shape_text(bodies[0]) if bodies else ""
 
 
 def _slide_hidden(root: etree._Element) -> bool:
-    return root.get("show") == "0"
+    return not attr_bool(root, "show", True)
 
 
 def _slide_texts(pkg: PptxPackage, part: str) -> list[tuple[etree._Element, str, str]]:
@@ -380,14 +750,17 @@ def _slide_texts(pkg: PptxPackage, part: str) -> list[tuple[etree._Element, str,
     out = []
     if sp_tree is None:
         return out
-    for elem, kind, _z, _parent in iter_shapes(sp_tree):
+    for elem, kind, _z, _parent in iter_shapes(sp_tree, wrapped=True):
         if kind == "table":
             out.append((elem, kind, _table_text(elem)))
         elif kind == "diagram":
-            # SmartArt text lives in the diagram DATA part.
-            # '' when the frame has no data part.
+            # SmartArt text lives in the diagram DATA part; '' when the frame
+            # has no data part.
             out.append((elem, kind, _diagram_frame_text(pkg, part, elem)))
-        elif kind in ("group", "picture", "chart", "ole", "graphicFrame"):
+        elif kind == "chart":
+            text = "\n".join(r["text"] for r in chart_text_records(pkg, part, elem))
+            out.append((elem, kind, text))
+        elif kind in ("group", "picture", "media", "ole", "graphicFrame", "ink"):
             continue  # groups contribute via their children; the rest hold no text
         else:
             out.append((elem, kind, shape_text(elem)))
@@ -462,8 +835,8 @@ def _master_parts(pkg: PptxPackage) -> list[str]:
 def _layouts_of_master(pkg: PptxPackage, master_part: str) -> list[str]:
     """Layout parts of one master in the master's p:sldLayoutIdLst order,
     the order PowerPoint's layout picker shows and the order insert_slide
-    and apply_layout index by. Rels order is NOT that order in practice
-    (Expansion A finding: the proposal deck's rels list is scrambled), so
+    and apply_layout index by. Rels order is NOT that order in real decks
+    (some have a scrambled rels list), so
     the id list is authoritative; rels order is only the fallback for a
     master without one."""
     lst = pkg.root(master_part).find(qn("p:sldLayoutIdLst"))
@@ -546,6 +919,7 @@ def get_presentation_info(pkg: PptxPackage) -> dict:
                 props[key] = node.text
 
     from .labels import read_label
+    from .show import _show_state
 
     return {
         "file": pkg.path.name,
@@ -554,6 +928,7 @@ def get_presentation_info(pkg: PptxPackage) -> dict:
         "masters": masters,
         "core_properties": props,
         "sections": [s["name"] for s in _sections(pkg)],
+        "show": _show_state(pkg),
         # Purview/MIP classification, or None. Reported because a merge or a
         # split that changes it must be visible, and because "make this safe
         # to share" starts with knowing whether it is marked at all.
@@ -579,7 +954,7 @@ def get_slide_info(pkg: PptxPackage, slide, *, limit=None, offset: int = 0) -> d
 
     shapes = []
     if sp_tree is not None:
-        for elem, kind, z, parent in iter_shapes(sp_tree):
+        for elem, kind, z, parent in iter_shapes(sp_tree, wrapped=True):
             shape = _shape_record(elem, kind, z, parent)
             shape["geometry"] = _geometry(elem)
             text = _table_text(elem) if kind == "table" else shape_text(elem)
@@ -680,12 +1055,13 @@ def list_elements(
         for rec in slides_in_scope(pkg, scope):
             part = rec["part"]
             root = pkg.root(part)
-            base = {"slide_index": rec["index"], "slide_id": rec["slide_id"]}
+            base = {"slide_index": rec["index"], "slide_number": rec["index"] + 1,
+                    "slide_id": rec["slide_id"]}
             if kind == "slides":
                 title = None
                 sp_tree = root.find(f"{qn('p:cSld')}/{qn('p:spTree')}")
                 if sp_tree is not None:
-                    for elem, k, _z, _p in iter_shapes(sp_tree):
+                    for elem, k, _z, _p in iter_shapes(sp_tree, wrapped=True):
                         if k == "placeholder" and _ph(elem).get("type") in (
                             "title",
                             "ctrTitle",
@@ -696,6 +1072,7 @@ def list_elements(
                 items.append(
                     {
                         "index": rec["index"],
+                        "slide_number": rec["index"] + 1,
                         "slide_id": rec["slide_id"],
                         "part": part,
                         "title": title,
@@ -713,7 +1090,7 @@ def list_elements(
             sp_tree = root.find(f"{qn('p:cSld')}/{qn('p:spTree')}")
             if sp_tree is None:
                 continue
-            for elem, k, z, parent in iter_shapes(sp_tree):
+            for elem, k, z, parent in iter_shapes(sp_tree, wrapped=True):
                 if kind == "shapes":
                     shape = _shape_record(elem, k, z, parent)
                     items.append({**base, **shape})
@@ -788,7 +1165,7 @@ def list_elements(
                             **shape,
                             "data_part": data_part,
                             "drawing_part": (
-                                drawing_part_of(pkg, data_part)
+                                drawing_part_of(pkg, data_part, part)
                                 if data_part
                                 else None
                             ),
@@ -878,12 +1255,18 @@ def get_text(
     bulk: the whole payload's weight sits in "text", so a page block
     written after it is the first thing a client-side truncation eats,
     and a caller then reads a full-looking dump whose only warning has
-    been cut off. The warning goes where it survives."""
+    been cut off. The warning goes where it survives.
+
+    slide_count is the deck's slide count, as in every other answer; a
+    scoped read adds slides_in_scope (an earlier version's scoped read
+    slide_count counted the slides selected, so one key meant two things)."""
+    counts = {"slide_count": len(slide_table(pkg))}
     slides = []
     for rec in slides_in_scope(pkg, scope):
         parts = [t for _e, _k, t in _slide_texts(pkg, rec["part"]) if t]
         entry = {
             "index": rec["index"],
+            "slide_number": rec["index"] + 1,
             "slide_id": rec["slide_id"],
             "text": "\n".join(parts),
         }
@@ -901,12 +1284,14 @@ def get_text(
     # Page over (entry, block) pairs so the budget sees the real wire cost:
     # every character of slide text is emitted twice, in "slides" and again
     # in the joined "text".
+    if scope is not None:
+        counts["slides_in_scope"] = len(slides)
     pairs = [[entry, block] for entry, block in zip(slides, blocks)]
     kept, page = _budget.page_items(
         pairs,
         limit=limit,
         offset=offset,
-        overhead=_budget.overhead_of({"slide_count": len(slides)}),
+        overhead=_budget.overhead_of(counts),
         unit="slides",
         narrow_hint="narrow the read with scope=<slide index or list of indexes>",
         shrink=_shrink_text_pair,
@@ -915,14 +1300,14 @@ def get_text(
     kept_blocks = [block for _e, block in kept]
     if page is None:
         return {
-            "slide_count": len(slides),
+            **counts,
             "slides": kept_slides,
             "text": "\n\n".join(kept_blocks),
         }
     return {
         "page": page,
         "returned": len(kept_slides),
-        "slide_count": len(slides),
+        **counts,
         "slides": kept_slides,
         "text": "\n\n".join(kept_blocks),
     }
@@ -936,7 +1321,13 @@ def _snippet(text: str, start: int, end: int, radius: int = 30) -> str:
     return prefix + text[lo:hi].replace("\n", " ") + suffix
 
 
-def _match_spans(text: str, query: str, regex: bool) -> list[tuple[int, int]]:
+def _match_spans(
+    text: str, query: str, regex: bool, match_case: bool = True
+) -> list[tuple[int, int]]:
+    if not match_case:
+        from ._casenote import any_case_spans
+
+        return any_case_spans(text, query, regex)
     if regex:
         from . import _regex
 
@@ -956,6 +1347,7 @@ def find_text(
     query: str,
     *,
     regex: bool = False,
+    match_case: bool = True,
     scope=None,
     include_notes: bool = True,
     limit=None,
@@ -968,6 +1360,10 @@ def find_text(
     context snippet. Table matches add row/col (0-based). regex=True runs
     the pattern through the ReDoS guard (ops/_regex.py).
 
+    match_case=True (the default) matches exact case only. When that leaves
+    out matches that differ only in case, case_note says how many, on which
+    slides, and that match_case=False includes them (ops/_casenote.py).
+
     A common word on a large deck matches thousands of times, so the match
     list answers under the output budget: `count` stays the true number of
     matches, `page` names what came back and the offset that continues, and
@@ -975,9 +1371,13 @@ def find_text(
     if not query:
         raise PptMcpError("find_text needs a non-empty query")
     matches: list[dict] = []
+    tally = CaseTally(query, regex) if match_case else None
 
     def _scan(text: str, base: dict) -> None:
-        for start, end in _match_spans(text, query, regex):
+        spans = _match_spans(text, query, regex, match_case)
+        if tally is not None:
+            tally.add(base["slide_index"], text, spans)
+        for start, end in spans:
             matches.append(
                 {
                     **base,
@@ -993,9 +1393,9 @@ def find_text(
         base = {"slide_index": rec["index"], "slide_id": rec["slide_id"]}
         sp_tree = pkg.root(part).find(f"{qn('p:cSld')}/{qn('p:spTree')}")
         if sp_tree is not None:
-            for elem, kind, _z, _parent in iter_shapes(sp_tree):
+            for elem, kind, _z, _parent in iter_shapes(sp_tree, wrapped=True):
                 cnvpr = _cnvpr(elem)
-                sid = int(cnvpr.get("id")) if cnvpr is not None else None
+                sid = cnvpr_id(cnvpr)
                 if kind == "table":
                     tbl = table_element(elem)
                     if tbl is None:
@@ -1016,15 +1416,26 @@ def find_text(
                                     },
                                 )
                 elif kind == "diagram":
-                    # SmartArt text from the diagram DATA part.
-                    # No paragraph semantics there.
+                    # SmartArt text from the diagram DATA part; no paragraph
+                    # semantics there.
                     text = _diagram_frame_text(pkg, part, elem)
                     if text:
                         _scan(
                             text,
                             {**base, "shape_id": sid, "where": "diagram"},
                         )
-                elif kind not in ("group", "picture", "chart", "ole", "graphicFrame"):
+                elif kind == "chart":
+                    for record in chart_text_records(pkg, part, elem):
+                        _scan(
+                            record["text"],
+                            {
+                                **base,
+                                "shape_id": sid,
+                                "where": "chart",
+                                "chart_field": record["field"],
+                            },
+                        )
+                elif kind not in ("group", "picture", "media", "ole", "graphicFrame", "ink"):
                     for pi, p in enumerate(txbody_paragraphs(elem)):
                         _scan(
                             paragraph_text(p),
@@ -1033,12 +1444,11 @@ def find_text(
         if include_notes:
             npart = notes_part_for(pkg, part)
             if npart is not None and pkg.has_part(npart):
-                for sp in pkg.root(npart).iter(qn("p:sp")):
-                    ph = _ph(sp)
-                    if ph is None or ph.get("type") != "body":
-                        continue
+                # The body PowerPoint shows: a wrapped notes body (one that
+                # holds an equation) is read once, not from both branches.
+                for sp in notes_bodies(pkg, npart):
                     cnvpr = _cnvpr(sp)
-                    sid = int(cnvpr.get("id")) if cnvpr is not None else None
+                    sid = cnvpr_id(cnvpr)
                     for pi, p in enumerate(txbody_paragraphs(sp)):
                         _scan(
                             paragraph_text(p),
@@ -1046,6 +1456,9 @@ def find_text(
                         )
 
     result: dict = {"query": query, "regex": regex, "count": len(matches)}
+    case_note = tally.note("find", len(matches)) if tally is not None else None
+    if case_note:
+        result["case_note"] = case_note
     narrow = "narrow the search with scope=<slide index or list of indexes>"
     if compact:
         column = _budget.columnar(matches)
@@ -1079,7 +1492,7 @@ def find_text(
 
 
 # =====================================================================
-# APPEND-ONLY BLOCK: SmartArt/diagram text visibility.
+# SmartArt/diagram text visibility.
 #
 # Legacy SmartArt is a graphicFrame whose graphicData uri is the dgm
 # namespace; its TEXT lives not on the slide but in the diagram DATA part
@@ -1123,21 +1536,26 @@ def _diagram_data_part(pkg: PptxPackage, slide_part: str, frame) -> str | None:
         return None
 
 
+#: The SmartArt point types that hold a node's own text: ordinary nodes and
+#: assistant nodes. The document point, the presentation points and the
+#: connector points (parTrans/sibTrans) carry no text a user typed.
+DIAGRAM_TEXT_POINT_TYPES = ("node", "asst")
+
+
 def _diagram_points(pkg: PptxPackage, data_part: str) -> list[dict]:
-    """Text-bearing dgm:pt nodes of one diagram data part, in document
-    order: [{"model_id", "type", "text"}]. Presentation points (parTrans/
-    sibTrans and empty nodes) are omitted."""
+    """The text nodes of one diagram data part, in document order:
+    [{"model_id", "type", "text"}]. Empty nodes are listed with text ""
+    (a SmartArt nobody has filled in is mostly empty nodes, and PowerPoint
+    counts them), so this is the list set_diagram_text indexes."""
     if not pkg.has_part(data_part):
         return []
     root = pkg.root(data_part)
     out: list[dict] = []
     for pt in root.iter(_dgm("pt")):
         t = pt.find(_dgm("t"))
-        if t is None:
+        if t is None or pt.get("type", "node") not in DIAGRAM_TEXT_POINT_TYPES:
             continue
         text = "\n".join(paragraph_text(p) for p in t.findall(qn("a:p")))
-        if not text.strip():
-            continue
         out.append(
             {
                 "model_id": pt.get("modelId"),
@@ -1151,11 +1569,13 @@ def _diagram_points(pkg: PptxPackage, data_part: str) -> list[dict]:
 def _diagram_frame_text(pkg: PptxPackage, slide_part: str, frame) -> str:
     """Joined plain text of one SmartArt frame ('' when it has no data part
     or no text). _slide_texts and find_text call this for kind ==
-    'diagram' (SmartArt text)."""
+    'diagram'."""
     data_part = _diagram_data_part(pkg, slide_part, frame)
     if data_part is None:
         return ""
-    return "\n".join(p["text"] for p in _diagram_points(pkg, data_part))
+    return "\n".join(
+        p["text"] for p in _diagram_points(pkg, data_part) if p["text"].strip()
+    )
 
 
 def diagram_text(pkg: PptxPackage, scope=None) -> dict:
@@ -1175,7 +1595,7 @@ def diagram_text(pkg: PptxPackage, scope=None) -> dict:
         sp_tree = pkg.root(part).find(f"{qn('p:cSld')}/{qn('p:spTree')}")
         if sp_tree is None:
             continue
-        for elem, kind, _z, _parent in iter_shapes(sp_tree):
+        for elem, kind, _z, _parent in iter_shapes(sp_tree, wrapped=True):
             if kind != "diagram":
                 continue
             cnvpr = _cnvpr(elem)
@@ -1184,11 +1604,11 @@ def diagram_text(pkg: PptxPackage, scope=None) -> dict:
             item = {
                 "slide_index": rec["index"],
                 "slide_id": rec["slide_id"],
-                "shape_id": int(cnvpr.get("id")) if cnvpr is not None else None,
+                "shape_id": cnvpr_id(cnvpr),
                 "name": cnvpr.get("name", "") if cnvpr is not None else "",
                 "data_part": data_part,
                 "nodes": nodes,
-                "text": "\n".join(n["text"] for n in nodes),
+                "text": "\n".join(n["text"] for n in nodes if n["text"].strip()),
             }
             if data_part is None:
                 item["note"] = (

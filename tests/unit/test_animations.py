@@ -1,4 +1,4 @@
-"""transitions + bounded click-build animations.
+"""Transitions + bounded click-build animations.
 
 Covers: transition round-trips on a corpus temp copy including apply-to-all
 and the mc:AlternateContent/p14:dur modern wrapper; entrance animations on
@@ -464,8 +464,8 @@ def test_clear_animations_shape_then_slide(make_deck):
 
 
 def test_set_shape_preserves_timing(make_deck):
-    """Naive editors strip p:timing on save (capability-matrix finding);
-    ours must leave it byte-identical when another shape is edited."""
+    """Naive editors strip p:timing on save; ours must leave it
+    byte-identical when another shape is edited."""
     pkg = PptxPackage(make_deck())
     shapes = _shapes_on(pkg, 3)
     pic = next(s for s in shapes if s["kind"] == "picture")

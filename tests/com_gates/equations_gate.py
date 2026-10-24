@@ -10,7 +10,8 @@ PowerPoint opens but renders equationless is a FAILURE, not a pass.
 
 Also proves survival: SaveCopyAs re-serializes through PowerPoint's own
 writer, and the copy must still contain m:oMath inside
-mc:Choice[@Requires="a14"]/a14:m.
+mc:Choice[@Requires="a14"]/a14:m (this was the ground-truth capture method
+for the wrapper in the first place).
 
 Usage (from the repo root, PowerPoint closed):
 

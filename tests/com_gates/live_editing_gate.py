@@ -1,5 +1,5 @@
-"""Live-editing gate: the comprehensive live COM check as a standalone
-script (no pytest).
+"""Live-editing gate: the comprehensive live COM round as a standalone
+phase-gate script (no pytest).
 
 Run:  .venv/Scripts/python.exe -X utf8 tests/com_gates/live_editing_gate.py
 
@@ -193,12 +193,19 @@ def main() -> int:
 
     # File-level verification with PowerPoint GONE: live_save landed on disk.
     from kitchensink4ppt.core.package import PptxPackage
+    from kitchensink4ppt.ops import notes as notes_ops
     from kitchensink4ppt.ops import read as read_ops
 
-    text = read_ops.get_text(PptxPackage(deck), include_notes=True)["text"]
-    check("file_has_title", "Live Gate Title" in text)
-    check("file_has_replace", "REPLACED-OK" in text)
-    check("file_has_notes", "Gate note 1" in text)
+    pkg = PptxPackage(deck)
+    # The 70,000-character textbox intentionally forces whole-deck reads to
+    # page.  Verify each saved fact through its narrow reader instead of
+    # mistaking a correctly budgeted first page for missing file content.
+    slide0 = read_ops.get_text(pkg, scope=0)["text"]
+    slide1 = read_ops.get_text(pkg, scope=1)["text"]
+    notes0 = notes_ops.get_notes(pkg, 0, rich=False)["text"]
+    check("file_has_title", "Live Gate Title" in slide0)
+    check("file_has_replace", "REPLACED-OK" in slide1)
+    check("file_has_notes", "Gate note 1" in notes0)
 
     failed = [n for n, ok, _d in RESULTS if not ok]
     print(

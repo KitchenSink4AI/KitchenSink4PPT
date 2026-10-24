@@ -1,12 +1,12 @@
-"""Read layer (ops/read.py) against the corpus, with python-pptx as the
+"""Read layer (ops/read.py) against the real corpus, with python-pptx as the
 independent oracle for text extraction and slide enumeration.
 
 Oracle discipline: python-pptx's Presentation.slides
 RENUMBERS slide partnames on mere access, so every oracle helper builds a
 FRESH Presentation instance and resolves order through the sldIdLst-rId
 pattern; partname comparisons never reuse an instance that touched .slides.
-python-pptx renders a:br as a vertical tab ("\\x0b"); ours renders a
-newline, so oracle text is normalized before comparison.
+python-pptx and this package API both render a:br as a vertical tab
+("\\x0b"), distinct from the newline between separate paragraphs.
 """
 
 from __future__ import annotations
@@ -15,10 +15,11 @@ import shutil
 from pathlib import Path
 
 import pytest
+from lxml import etree
 
 from kitchensink4ppt.core.errors import PptMcpError, TargetNotFound
 from kitchensink4ppt.core.package import PptxPackage, qn
-from kitchensink4ppt.ops import read
+from kitchensink4ppt.ops import read, show
 
 CORPUS = Path(__file__).parents[1] / "corpus"
 
@@ -74,13 +75,13 @@ def _oracle_slide_texts(path: Path) -> list[str]:
             if st == MSO_SHAPE_TYPE.GROUP:
                 walk(sh.shapes, parts)
             elif getattr(sh, "has_text_frame", False):
-                t = sh.text_frame.text.replace("\x0b", "\n")
+                t = sh.text_frame.text
                 if t:
                     parts.append(t)
             elif getattr(sh, "has_table", False):
                 t = "\n".join(
                     "\t".join(
-                        c.text_frame.text.replace("\x0b", "\n") for c in r.cells
+                        c.text_frame.text for c in r.cells
                     )
                     for r in sh.table.rows
                 )
@@ -211,6 +212,62 @@ def test_hidden_slide_flag(make_deck):
     pkg.root(part).set("show", "0")  # in-memory only; read layer never saves
     assert read.get_slide_info(pkg, 2)["hidden"] is True
     assert read.list_elements(pkg, "slides")["items"][2]["hidden"] is True
+
+
+def test_shape_records_expose_office_decorative_state(make_deck):
+    pkg = PptxPackage(make_deck())
+    part = pkg.slide_parts()[0]
+    sp_tree = pkg.root(part).find(f"{qn('p:cSld')}/{qn('p:spTree')}")
+    elem, _kind, _z, _parent = next(read.iter_shapes(sp_tree))
+    cnvpr = read._cnvpr(elem)
+    ext_lst = etree.SubElement(cnvpr, qn("a:extLst"))
+    ext = etree.SubElement(
+        ext_lst,
+        qn("a:ext"),
+        uri="{C183D7F6-B498-43B3-948B-1728B52AA6E4}",
+    )
+    marker = etree.SubElement(
+        ext,
+        "{http://schemas.microsoft.com/office/drawing/2017/decorative}decorative",
+    )
+    marker.set("val", "1")
+
+    shapes = read.list_elements(pkg, "shapes", scope=0)["items"]
+    by_id = {shape["id"]: shape for shape in shapes}
+    assert by_id[int(cnvpr.get("id"))]["decorative"] is True
+    assert all(
+        shape["decorative"] is False
+        for sid, shape in by_id.items()
+        if sid != int(cnvpr.get("id"))
+    )
+    info = read.get_slide_info(pkg, 0)
+    assert next(s for s in info["shapes"] if s["id"] == int(cnvpr.get("id")))[
+        "decorative"
+    ] is True
+
+
+def test_presentation_info_includes_effective_slideshow_state(make_deck):
+    pkg = PptxPackage(make_deck())
+    assert read.get_presentation_info(pkg)["show"] == {
+        "show_type": "present",
+        "loop": False,
+        "use_timings": True,
+        "show_narration": False,
+        "show_animation": True,
+        "range": {"kind": "all"},
+    }
+    show.set_show_properties(
+        pkg,
+        show_type="browse",
+        loop=True,
+        use_timings=False,
+        range={"start": 1, "end": 2},
+    )
+    state = read.get_presentation_info(pkg)["show"]
+    assert state["show_type"] == "browse"
+    assert state["loop"] is True
+    assert state["use_timings"] is False
+    assert state["range"] == {"kind": "range", "start": 1, "end": 2}
 
 
 # ------------------------------------------------------------- list_elements

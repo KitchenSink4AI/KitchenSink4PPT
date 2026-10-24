@@ -59,9 +59,9 @@ body:
     id: environment
     attributes:
       label: Environment
-      placeholder: "Windows 11, Python 3.12, PowerPoint 365 (com pack only)"
+      placeholder: "Windows 11, Python 3.12, PowerPoint 365"
   - type: input
-    id: packs
+    id: settings
     attributes:
-      label: Which packs were enabled?
-      placeholder: "lite only / lite + graphics / KS4P_MODE=full"
+      label: Which launch settings are set?
+      placeholder: "none / KS4P_READ_ONLY=1 / KS4P_FORBID=..."

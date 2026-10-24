@@ -4,7 +4,7 @@ Contract (all ops modules): every function takes the open PptxPackage first,
 mutates only the in-memory package, calls pkg.mark_dirty() on every part it
 touches, and returns a summary dict. Nothing here writes to disk.
 
-Media handling rules (research doc: media/rels handling):
+Media handling rules:
 - ppt/media/* parts are a SHARED pool: identical bytes are deduplicated by
   content hash (insert reuses the existing part), and a media part is only
   garbage-collected when a package-wide reference count over every rels file
@@ -32,8 +32,9 @@ from pathlib import Path
 from lxml import etree
 
 from ..core.errors import PptMcpError, UnsupportedStructure
-from ..core.package import PptxPackage, qn, rels_name
+from ..core.package import PptxPackage, qn, rels_name, seat_ahead_of_extlst
 from ..core.sandbox import check_path
+from ..core.xmlbool import attr_bool
 from . import geometry as g
 from . import shapes as _shapes
 from .read import resolve_slide
@@ -377,6 +378,45 @@ def _pic_cnvpr(elem: etree._Element) -> etree._Element:
 # ------------------------------------------------------------------- public
 
 
+def _resolve_graphics_target(pkg, slide, master, layout):
+    selectors = [slide is not None, master is not None, layout is not None]
+    if sum(selectors) != 1:
+        raise PptMcpError(
+            "pass exactly one target: slide=, master=, or layout="
+        )
+    if slide is not None:
+        rec = resolve_slide(pkg, slide)
+        return "slide", rec["part"], rec
+    from . import masters as _masters
+
+    kind, part = _masters._resolve_scope(pkg, master, layout)
+    return kind, part, None
+
+
+def _decorate_graphics_result(pkg, kind, part, rec, result):
+    result["scope"] = kind
+    result["part"] = part
+    if kind == "slide":
+        result["slide_index"] = rec["index"]
+        result["slide_id"] = rec["slide_id"]
+        return result
+    from . import masters as _masters
+
+    result["affected_slides"] = _masters._affected(pkg, kind, part)
+    if kind == "master":
+        hiding = [
+            lp for lp in _masters._layouts_of_master(pkg, part)
+            if not attr_bool(pkg.root(lp), "showMasterSp", True)
+        ]
+        if hiding:
+            result["layouts_hiding_master_shapes"] = hiding
+            result.setdefault("warnings", []).append(
+                "These layouts set showMasterSp=0; slides on them will not "
+                "render the new image."
+            )
+    return result
+
+
 def insert_image(
     pkg: PptxPackage,
     slide,
@@ -386,15 +426,17 @@ def insert_image(
     w: float | None = None,
     h: float | None = None,
     *,
+    master=None,
+    layout=None,
     name: str | None = None,
     alt_text: str | None = None,
 ) -> dict:
-    """Insert a picture at x, y (inches). image: file path or base64.
+    """Insert a picture on exactly one slide, master, or layout at x, y
+    (inches). image: file path or base64.
     Size: both w and h in inches; one of them (the other derives from the
     intrinsic pixel aspect); or neither (native size at 96 DPI). BMP/TIFF
     have no hand parser, so they require both w and h explicitly."""
-    rec = resolve_slide(pkg, slide)
-    part = rec["part"]
+    kind, part, rec = _resolve_graphics_target(pkg, slide, master, layout)
     data, fmt = _load_image(image)
     for value, label in ((w, "w"), (h, "h")):
         if value is not None and float(value) <= 0:
@@ -427,7 +469,7 @@ def insert_image(
     sp_tree = _shapes._sp_tree(pkg, part)
     shape_id = pkg.next_shape_id(part)
     display = name or f"Picture {shape_id}"
-    pic = etree.SubElement(sp_tree, qn("p:pic"))
+    pic = seat_ahead_of_extlst(sp_tree, etree.SubElement(sp_tree, qn("p:pic")))
     nv = etree.SubElement(pic, qn("p:nvPicPr"))
     cnvpr = etree.SubElement(nv, qn("p:cNvPr"))
     cnvpr.set("id", str(shape_id))
@@ -454,8 +496,6 @@ def insert_image(
     result = {
         "shape_id": shape_id,
         "created": [shape_id],
-        "slide_index": rec["index"],
-        "slide_id": rec["slide_id"],
         "name": display,
         "format": fmt,
         "media_part": media_part,
@@ -465,7 +505,7 @@ def insert_image(
     }
     if px is not None:
         result["px"] = {"w": px[0], "h": px[1]}
-    return result
+    return _decorate_graphics_result(pkg, kind, part, rec, result)
 
 
 def replace_image(pkg: PptxPackage, slide, shape: int, image: str) -> dict:

@@ -1,0 +1,719 @@
+{
+ "from": "kitchensink4ppt 1.3.1",
+ "to": "kitchensink4ppt 2.0",
+ "call_shape": "tool(op=<op>, args={...})",
+ "tools": {
+  "add_comment": {
+   "tool": "ppt_review",
+   "op": "add_comment",
+   "args_changed": null
+  },
+  "add_entrance_animation": {
+   "tool": "ppt_design",
+   "op": "add_entrance_animation",
+   "args_changed": null
+  },
+  "add_equation_to_shape": {
+   "tool": "ppt_graphics",
+   "op": "add_equation_to_shape",
+   "args_changed": null
+  },
+  "add_layout_placeholder": {
+   "tool": "ppt_design",
+   "op": "add_layout_placeholder",
+   "args_changed": null
+  },
+  "align_shapes": {
+   "tool": "ppt_graphics",
+   "op": "align_shapes",
+   "args_changed": null
+  },
+  "anonymize_deck": {
+   "tool": "ppt_review",
+   "op": "anonymize_deck",
+   "args_changed": null
+  },
+  "apply_brand": {
+   "tool": "ppt_design",
+   "op": "apply_brand",
+   "args_changed": null
+  },
+  "apply_edits": {
+   "tool": "ppt_edit",
+   "op": "apply_edits",
+   "args_changed": null
+  },
+  "apply_layout": {
+   "tool": "ppt_design",
+   "op": "apply_layout",
+   "args_changed": null
+  },
+  "apply_table_style": {
+   "tool": "ppt_tables",
+   "op": "apply_table_style",
+   "args_changed": null
+  },
+  "audit_accessibility": {
+   "tool": "ppt_inspect",
+   "op": "audit_accessibility",
+   "args_changed": null
+  },
+  "check_layout": {
+   "tool": "ppt_inspect",
+   "op": "check_layout",
+   "args_changed": null
+  },
+  "clear_animations": {
+   "tool": "ppt_design",
+   "op": "clear_animations",
+   "args_changed": null
+  },
+  "comment_report": {
+   "tool": "ppt_inspect",
+   "op": "comment_report",
+   "args_changed": null
+  },
+  "compare_decks": {
+   "tool": "ppt_inspect",
+   "op": "compare_decks",
+   "args_changed": null
+  },
+  "compress_deck": {
+   "tool": "ppt_deck",
+   "op": "compress_deck",
+   "args_changed": null
+  },
+  "copy_format": {
+   "tool": "ppt_graphics",
+   "op": "copy_format",
+   "args_changed": null
+  },
+  "copy_position": {
+   "tool": "ppt_graphics",
+   "op": "copy_position",
+   "args_changed": null
+  },
+  "copy_presentation": {
+   "tool": "ppt_deck",
+   "op": "copy_presentation",
+   "args_changed": null
+  },
+  "copy_slide_between": {
+   "tool": "ppt_deck",
+   "op": "copy_slide_between",
+   "args_changed": null
+  },
+  "create_chart": {
+   "tool": "ppt_tables",
+   "op": "create_chart",
+   "args_changed": null
+  },
+  "create_layout": {
+   "tool": "ppt_design",
+   "op": "create_layout",
+   "args_changed": null
+  },
+  "create_presentation": {
+   "tool": "ppt_deck",
+   "op": "create_presentation",
+   "args_changed": null
+  },
+  "create_snapshot": {
+   "tool": "ppt_deck",
+   "op": "create_snapshot",
+   "args_changed": null
+  },
+  "create_table": {
+   "tool": "ppt_tables",
+   "op": "create_table",
+   "args_changed": null
+  },
+  "deck_statistics": {
+   "tool": "ppt_inspect",
+   "op": "deck_statistics",
+   "args_changed": null
+  },
+  "delete_comment": {
+   "tool": "ppt_review",
+   "op": "delete_comment",
+   "args_changed": null
+  },
+  "delete_master_shape": {
+   "tool": "ppt_design",
+   "op": "delete_master_shape",
+   "args_changed": null
+  },
+  "delete_notes": {
+   "tool": "ppt_edit",
+   "op": "delete_notes",
+   "args_changed": null
+  },
+  "delete_shape": {
+   "tool": "ppt_graphics",
+   "op": "delete_shape",
+   "args_changed": null
+  },
+  "delete_slide": {
+   "tool": "ppt_edit",
+   "op": "delete_slide",
+   "args_changed": null
+  },
+  "delete_table_cols": {
+   "tool": "ppt_tables",
+   "op": "delete_table_cols",
+   "args_changed": null
+  },
+  "delete_table_rows": {
+   "tool": "ppt_tables",
+   "op": "delete_table_rows",
+   "args_changed": null
+  },
+  "diagnose": {
+   "tool": "ppt_inspect",
+   "op": "diagnose",
+   "args_changed": null
+  },
+  "disable_tools": {
+   "tool": null,
+   "op": null,
+   "args_changed": null,
+   "reason": "removed: every operation is available from the start"
+  },
+  "distribute_shapes": {
+   "tool": "ppt_graphics",
+   "op": "distribute_shapes",
+   "args_changed": null
+  },
+  "duplicate_slide": {
+   "tool": "ppt_edit",
+   "op": "duplicate_slide",
+   "args_changed": null
+  },
+  "enable_tools": {
+   "tool": null,
+   "op": null,
+   "args_changed": null,
+   "reason": "removed: every operation is available from the start"
+  },
+  "export_handout": {
+   "tool": "ppt_deck",
+   "op": "export_handout",
+   "args_changed": null
+  },
+  "export_pdf": {
+   "tool": "ppt_deck",
+   "op": "export_pdf",
+   "args_changed": null
+  },
+  "export_slide_image": {
+   "tool": "ppt_deck",
+   "op": "export_slide_image",
+   "args_changed": null
+  },
+  "export_table": {
+   "tool": "ppt_deck",
+   "op": "export_table",
+   "args_changed": null
+  },
+  "extract_brand": {
+   "tool": "ppt_inspect",
+   "op": "extract_brand",
+   "args_changed": null
+  },
+  "extract_text": {
+   "tool": "ppt_read",
+   "op": "extract_text",
+   "args_changed": null
+  },
+  "find_text": {
+   "tool": "ppt_read",
+   "op": "find_text",
+   "args_changed": null
+  },
+  "fit_text": {
+   "tool": "ppt_edit",
+   "op": "fit_text",
+   "args_changed": null
+  },
+  "font_inventory": {
+   "tool": "ppt_inspect",
+   "op": "font_inventory",
+   "args_changed": null
+  },
+  "format_chart": {
+   "tool": "ppt_tables",
+   "op": "format_chart",
+   "args_changed": null
+  },
+  "format_table_cells": {
+   "tool": "ppt_tables",
+   "op": "format_table_cells",
+   "args_changed": null
+  },
+  "format_text": {
+   "tool": "ppt_edit",
+   "op": "format_text",
+   "args_changed": null
+  },
+  "generate_agenda_slide": {
+   "tool": "ppt_deck",
+   "op": "generate_agenda_slide",
+   "args_changed": null
+  },
+  "generate_diagram": {
+   "tool": "ppt_graphics",
+   "op": "generate_diagram",
+   "args_changed": null
+  },
+  "get_autofit_state": {
+   "tool": "ppt_inspect",
+   "op": "get_autofit_state",
+   "args_changed": null
+  },
+  "get_chart_data": {
+   "tool": "ppt_read",
+   "op": "get_chart_data",
+   "args_changed": null
+  },
+  "get_document_properties": {
+   "tool": "ppt_inspect",
+   "op": "get_document_properties",
+   "args_changed": null
+  },
+  "get_export_engines": {
+   "tool": "ppt_inspect",
+   "op": "get_export_engines",
+   "args_changed": null
+  },
+  "get_footer_support": {
+   "tool": "ppt_inspect",
+   "op": "get_footer_support",
+   "args_changed": null
+  },
+  "get_media_playback": {
+   "tool": "ppt_read",
+   "op": "get_media_playback",
+   "args_changed": null
+  },
+  "get_notes": {
+   "tool": "ppt_read",
+   "op": "get_notes",
+   "args_changed": null
+  },
+  "get_presentation_info": {
+   "tool": "ppt_read",
+   "op": "get_presentation_info",
+   "args_changed": null
+  },
+  "get_presentation_view": {
+   "tool": "ppt_read",
+   "op": "get_presentation_view",
+   "args_changed": null
+  },
+  "get_server_info": {
+   "tool": "ppt_read",
+   "op": "get_server_info",
+   "args_changed": null
+  },
+  "get_slide_info": {
+   "tool": "ppt_read",
+   "op": "get_slide_info",
+   "args_changed": null
+  },
+  "get_table": {
+   "tool": "ppt_read",
+   "op": "get_table",
+   "args_changed": null
+  },
+  "get_text": {
+   "tool": "ppt_read",
+   "op": "get_text",
+   "args_changed": null
+  },
+  "get_theme": {
+   "tool": "ppt_inspect",
+   "op": "get_theme",
+   "args_changed": null
+  },
+  "get_transitions": {
+   "tool": "ppt_read",
+   "op": "get_transitions",
+   "args_changed": null
+  },
+  "get_workflows": {
+   "tool": "ppt_read",
+   "op": "get_workflows",
+   "args_changed": null
+  },
+  "group_shapes": {
+   "tool": "ppt_graphics",
+   "op": "group_shapes",
+   "args_changed": null
+  },
+  "import_table": {
+   "tool": "ppt_tables",
+   "op": "import_table",
+   "args_changed": null
+  },
+  "insert_audio": {
+   "tool": "ppt_graphics",
+   "op": "insert_audio",
+   "args_changed": null
+  },
+  "insert_connector": {
+   "tool": "ppt_graphics",
+   "op": "insert_connector",
+   "args_changed": null
+  },
+  "insert_equation": {
+   "tool": "ppt_graphics",
+   "op": "insert_equation",
+   "args_changed": null
+  },
+  "insert_image": {
+   "tool": "ppt_graphics",
+   "op": "insert_image",
+   "args_changed": null
+  },
+  "insert_master_shape": {
+   "tool": "ppt_design",
+   "op": "insert_master_shape",
+   "args_changed": null
+  },
+  "insert_shape": {
+   "tool": "ppt_graphics",
+   "op": "insert_shape",
+   "args_changed": null
+  },
+  "insert_slide": {
+   "tool": "ppt_edit",
+   "op": "insert_slide",
+   "args_changed": null
+  },
+  "insert_table_cols": {
+   "tool": "ppt_tables",
+   "op": "insert_table_cols",
+   "args_changed": null
+  },
+  "insert_table_rows": {
+   "tool": "ppt_tables",
+   "op": "insert_table_rows",
+   "args_changed": null
+  },
+  "insert_textbox": {
+   "tool": "ppt_edit",
+   "op": "insert_textbox",
+   "args_changed": null
+  },
+  "insert_video": {
+   "tool": "ppt_graphics",
+   "op": "insert_video",
+   "args_changed": null
+  },
+  "list_animations": {
+   "tool": "ppt_read",
+   "op": "list_animations",
+   "args_changed": null
+  },
+  "list_comments": {
+   "tool": "ppt_read",
+   "op": "list_comments",
+   "args_changed": null
+  },
+  "list_elements": {
+   "tool": "ppt_read",
+   "op": "list_elements",
+   "args_changed": null
+  },
+  "list_equations": {
+   "tool": "ppt_read",
+   "op": "list_equations",
+   "args_changed": null
+  },
+  "list_hyperlinks": {
+   "tool": "ppt_read",
+   "op": "list_hyperlinks",
+   "args_changed": null
+  },
+  "list_master_elements": {
+   "tool": "ppt_inspect",
+   "op": "list_master_elements",
+   "args_changed": null
+  },
+  "live_save": {
+   "tool": "ppt_deck",
+   "op": "live_save",
+   "args_changed": null
+  },
+  "live_scroll_to": {
+   "tool": "ppt_deck",
+   "op": "live_scroll_to",
+   "args_changed": null
+  },
+  "live_status": {
+   "tool": "ppt_inspect",
+   "op": "live_status",
+   "args_changed": null
+  },
+  "manage_backups": {
+   "tool": "ppt_deck",
+   "op": "manage_backups",
+   "args_changed": null
+  },
+  "manage_custom_show": {
+   "tool": "ppt_deck",
+   "op": "manage_custom_show",
+   "args_changed": null
+  },
+  "manage_section": {
+   "tool": "ppt_edit",
+   "op": "manage_section",
+   "args_changed": null
+  },
+  "merge_cells": {
+   "tool": "ppt_tables",
+   "op": "merge_cells",
+   "args_changed": null
+  },
+  "merge_decks": {
+   "tool": "ppt_deck",
+   "op": "merge_decks",
+   "args_changed": null
+  },
+  "move_slide": {
+   "tool": "ppt_edit",
+   "op": "move_slide",
+   "args_changed": null
+  },
+  "powerpoint_status": {
+   "tool": "ppt_inspect",
+   "op": "powerpoint_status",
+   "args_changed": null
+  },
+  "refresh_agenda_slide": {
+   "tool": "ppt_deck",
+   "op": "refresh_agenda_slide",
+   "args_changed": null
+  },
+  "remove_hyperlink": {
+   "tool": "ppt_edit",
+   "op": "remove_hyperlink",
+   "args_changed": null
+  },
+  "remove_layout_placeholder": {
+   "tool": "ppt_design",
+   "op": "remove_layout_placeholder",
+   "args_changed": null
+  },
+  "reorder_slides": {
+   "tool": "ppt_edit",
+   "op": "reorder_slides",
+   "args_changed": null
+  },
+  "replace_colors": {
+   "tool": "ppt_design",
+   "op": "replace_colors",
+   "args_changed": null
+  },
+  "replace_fonts": {
+   "tool": "ppt_design",
+   "op": "replace_fonts",
+   "args_changed": null
+  },
+  "replace_image": {
+   "tool": "ppt_graphics",
+   "op": "replace_image",
+   "args_changed": null
+  },
+  "replace_image_everywhere": {
+   "tool": "ppt_graphics",
+   "op": "replace_image_everywhere",
+   "args_changed": null
+  },
+  "reply_to_comment": {
+   "tool": "ppt_review",
+   "op": "reply_to_comment",
+   "args_changed": null
+  },
+  "resolve_comment": {
+   "tool": "ppt_review",
+   "op": "resolve_comment",
+   "args_changed": null
+  },
+  "search_and_replace": {
+   "tool": "ppt_edit",
+   "op": "search_and_replace",
+   "args_changed": null
+  },
+  "set_alt_text": {
+   "tool": "ppt_graphics",
+   "op": "set_alt_text",
+   "args_changed": null
+  },
+  "set_bullets": {
+   "tool": "ppt_edit",
+   "op": "set_bullets",
+   "args_changed": null
+  },
+  "set_column_widths": {
+   "tool": "ppt_tables",
+   "op": "set_column_widths",
+   "args_changed": null
+  },
+  "set_diagram_text": {
+   "tool": "ppt_graphics",
+   "op": "set_diagram_text",
+   "args_changed": null
+  },
+  "set_document_properties": {
+   "tool": "ppt_deck",
+   "op": "set_document_properties",
+   "args_changed": null
+  },
+  "set_footer": {
+   "tool": "ppt_deck",
+   "op": "set_footer",
+   "args_changed": null
+  },
+  "set_hyperlink": {
+   "tool": "ppt_edit",
+   "op": "set_hyperlink",
+   "args_changed": null
+  },
+  "set_image": {
+   "tool": "ppt_graphics",
+   "op": "set_image",
+   "args_changed": null
+  },
+  "set_language": {
+   "tool": "ppt_edit",
+   "op": "set_language",
+   "args_changed": null
+  },
+  "set_layout_placeholder": {
+   "tool": "ppt_design",
+   "op": "set_layout_placeholder",
+   "args_changed": null
+  },
+  "set_master_background": {
+   "tool": "ppt_design",
+   "op": "set_master_background",
+   "args_changed": null
+  },
+  "set_master_placeholder": {
+   "tool": "ppt_design",
+   "op": "set_master_placeholder",
+   "args_changed": null
+  },
+  "set_media_playback": {
+   "tool": "ppt_graphics",
+   "op": "set_media_playback",
+   "args_changed": null
+  },
+  "set_notes": {
+   "tool": "ppt_edit",
+   "op": "set_notes",
+   "args_changed": null
+  },
+  "set_placeholder_text": {
+   "tool": "ppt_edit",
+   "op": "set_placeholder_text",
+   "args_changed": null
+  },
+  "set_reading_order": {
+   "tool": "ppt_graphics",
+   "op": "set_reading_order",
+   "args_changed": null
+  },
+  "set_row_heights": {
+   "tool": "ppt_tables",
+   "op": "set_row_heights",
+   "args_changed": null
+  },
+  "set_shape": {
+   "tool": "ppt_graphics",
+   "op": "set_shape",
+   "args_changed": null
+  },
+  "set_show_properties": {
+   "tool": "ppt_deck",
+   "op": "set_show_properties",
+   "args_changed": null
+  },
+  "set_slide_background": {
+   "tool": "ppt_design",
+   "op": "set_slide_background",
+   "args_changed": null
+  },
+  "set_slide_hidden": {
+   "tool": "ppt_edit",
+   "op": "set_slide_hidden",
+   "args_changed": null
+  },
+  "set_slide_size": {
+   "tool": "ppt_design",
+   "op": "set_slide_size",
+   "args_changed": null
+  },
+  "set_table_cells": {
+   "tool": "ppt_tables",
+   "op": "set_table_cells",
+   "args_changed": null
+  },
+  "set_theme_colors": {
+   "tool": "ppt_design",
+   "op": "set_theme_colors",
+   "args_changed": null
+  },
+  "set_theme_fonts": {
+   "tool": "ppt_design",
+   "op": "set_theme_fonts",
+   "args_changed": null
+  },
+  "set_transition": {
+   "tool": "ppt_design",
+   "op": "set_transition",
+   "args_changed": null
+  },
+  "set_z_order": {
+   "tool": "ppt_graphics",
+   "op": "set_z_order",
+   "args_changed": null
+  },
+  "split_deck": {
+   "tool": "ppt_deck",
+   "op": "split_deck",
+   "args_changed": null
+  },
+  "svg_to_shapes": {
+   "tool": "ppt_graphics",
+   "op": "svg_to_shapes",
+   "args_changed": null
+  },
+  "ungroup_shapes": {
+   "tool": "ppt_graphics",
+   "op": "ungroup_shapes",
+   "args_changed": null
+  },
+  "unmerge_cells": {
+   "tool": "ppt_tables",
+   "op": "unmerge_cells",
+   "args_changed": null
+  },
+  "update_chart_data": {
+   "tool": "ppt_tables",
+   "op": "update_chart_data",
+   "args_changed": null
+  },
+  "validate": {
+   "tool": "ppt_deck",
+   "op": "validate",
+   "args_changed": null
+  },
+  "zombie_check": {
+   "tool": "ppt_inspect",
+   "op": "zombie_check",
+   "args_changed": null
+  }
+ }
+}

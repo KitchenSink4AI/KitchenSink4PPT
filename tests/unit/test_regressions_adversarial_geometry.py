@@ -1,16 +1,15 @@
-"""Adversarial-input regressions for geometry, copy, branding and limits.
+"""Regression tests: one test (or more) per behaviour listed here.
 
-- geometry float-overflow (1e308/inf/nan) refuses in-envelope, never a raw
-    OverflowError, across every geometry tool.
+- Geometry float-overflow (1e308/inf/nan) refuses in-envelope, never a raw
+  OverflowError, across every geometry tool.
 - copy_slide_between merges the copied comment's author into the
-    destination authors.xml and remaps the authorId.
+  destination authors.xml and remaps the authorId.
 - apply_brand accepts plain-string typefaces like set_theme_fonts.
 - generate_orgchart refuses trees past the node-count ceiling.
-- (test-harness fix, exercised by the COM scenarios themselves)
 - apply_brand colors-as-string gets an actionable error.
 - insert_textbox exposes name in both modes.
 - check_layout accepts the bare-dict checks its docstring shows.
-- KS4P_MODE tolerates "full" inside a comma list.
+- Retired KS4P_MODE values fail closed at startup.
 """
 
 from __future__ import annotations
@@ -21,29 +20,30 @@ from pathlib import Path
 
 import pytest
 
-from kitchensink4ppt import packs, server
+from kitchensink4ppt import server
 from kitchensink4ppt.core.package import PptxPackage
+from kitchensink4ppt.settings import Settings, SettingsError
 from kitchensink4ppt.ops import comments as cm
 from kitchensink4ppt.ops import generators as gn
 from kitchensink4ppt.ops import interdeck as idk
 from kitchensink4ppt.ops import themes as thm
+from kitchensink4ppt.surface import envelope
 
 
 def _fn(name: str):
-    return packs.tool_objects()[name].fn
+    fn = getattr(server, name)
+
+    def call(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except BaseException as exc:
+            return envelope.refusal(exc)
+
+    return call
 
 
 def _md5(path) -> str:
     return hashlib.md5(Path(path).read_bytes()).hexdigest()
-
-
-@pytest.fixture(autouse=True)
-def _restore_surface():
-    before = dict(packs._ENABLED)
-    yield
-    packs._ENABLED.clear()
-    packs._ENABLED.update(before)
-    server._PENDING_VISIBILITY.clear()
 
 
 # ---------------------------------------------------- float overflow
@@ -276,19 +276,16 @@ def test_l3_check_layout_bare_dict_checks(make_deck):
     assert out["checks_run"] == ["tiny_text"]
 
 
-# ------------------------------------------- KS4P_MODE full,pack
+# --------------------------------------- legacy launch setting handling
 
 
-def test_l4_mode_full_in_comma_list(monkeypatch):
+def test_l4_mode_full_in_comma_list_refuses_startup(monkeypatch):
     monkeypatch.setenv("KS4P_MODE", "full,graphics")
-    packs.apply_startup_mode()
-    total = sum(len(v) for v in packs.tool_names().values())
-    assert packs.surface_report()["active_tools"] == total
+    with pytest.raises(SettingsError, match="KS4P_MODE"):
+        Settings.from_env()
 
 
-def test_l4_mode_full_with_typo_still_fails_loudly(monkeypatch):
-    from kitchensink4ppt.core.errors import PptMcpError
-
+def test_l4_mode_full_with_typo_also_refuses_startup(monkeypatch):
     monkeypatch.setenv("KS4P_MODE", "full,typo-pack")
-    with pytest.raises(PptMcpError):
-        packs.apply_startup_mode()
+    with pytest.raises(SettingsError, match="KS4P_MODE"):
+        Settings.from_env()

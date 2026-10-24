@@ -1,7 +1,7 @@
-"""Layout guardrails: check_layout, the read-only design reviewer.
+"""Layout guardrails: check_layout, the read-only design check.
 
-The gap this closes: every ecosystem server can MAKE a slide; none can tell
-the agent the slide it made is bad. check_layout runs a battery of named
+What it does: it tells the agent when a slide it made is bad.
+check_layout runs a battery of named
 checks over one slide or the whole deck and returns findings an agent can
 act on directly: shape ids, severities, and a fix hint naming the exact
 tool call that repairs the problem.
@@ -12,7 +12,7 @@ return plain dicts. Everything here is READ-ONLY: no mark_dirty, no disk.
 Honesty rules (binding):
 - Every check is a static-XML heuristic, not a renderer. Each check that
   approximates says so in its caveat, which ships in the result. The fit
-  authority remains PowerPoint's renderer (export_slide_images + look).
+  authority remains PowerPoint's renderer (export_slide_image + look).
 - A check that cannot evaluate a shape (image fill, a backdrop no static
   read can resolve) SKIPS it and counts the skip in the check's caveat
   data rather than guessing. Inherited geometry and inherited font size
@@ -48,7 +48,7 @@ The checks and their heuristics:
   defRPr, shape lstStyle, layout placeholder, master placeholder, master
   txStyles, presentation default) and the finding names the source;
   strict=True also reports runs that resolve nowhere.
-- overflow: ops/text.py's text-fit estimate (average glyph width vs the
+- overflow: ops/text.py's estimate (average glyph width vs the
   frame's inner box) honoring cached normAutofit scales. Labeled
   heuristic: no real font metrics, so treat a hit as "render and look",
   not proof.
@@ -84,15 +84,21 @@ The checks and their heuristics:
 
 from __future__ import annotations
 
+from collections import OrderedDict
 import colorsys
+import hashlib
+import json
 import re as _re
+import threading
 import unicodedata as _ud
 
 from lxml import etree
 
 from ..core import budget as _budget
 from ..core.errors import PptMcpError, UnsupportedStructure
+from ..core.messages import MISSING_TITLE
 from ..core.package import PptxPackage, qn, resolve_target
+from ..core.xmlbool import attr_bool, xml_bool
 from . import inherit as _inh
 from .design import COLOR_SLOTS, _theme_part_of
 from .read import (
@@ -186,7 +192,7 @@ CHECKS: dict[str, tuple[dict, str]] = {
         "estimate with no real font metrics, suppressed under the wider "
         "min_fill_ratio because that model's error is wider and "
         "uncalibrated. Shapes with spAutoFit are skipped because their "
-        "frame grows with the text; confirm with export_slide_images "
+        "frame grows with the text; confirm with export_slide_image "
         "before acting",
     ),
     "empty_placeholder": (
@@ -196,10 +202,7 @@ CHECKS: dict[str, tuple[dict, str]] = {
     ),
     "missing_title": (
         {},
-        "accessibility nudge (screen readers and Outline view read the "
-        "title placeholder); slides carrying a de-facto title (a text "
-        "shape starting in the top quarter of the slide) are not flagged, "
-        "so textbox-styled decks do not drown the report",
+        MISSING_TITLE,
     ),
     "contrast": (
         {"min_ratio": 4.5, "large_min_ratio": 3.0},
@@ -369,7 +372,7 @@ def _is_hidden(elem: etree._Element) -> bool:
     for child in elem:
         if etree.QName(child).localname.startswith("nv"):
             cnvpr = child.find(qn("p:cNvPr"))
-            return cnvpr is not None and cnvpr.get("hidden") == "1"
+            return attr_bool(cnvpr, "hidden")
     return False
 
 
@@ -447,7 +450,7 @@ class _SlideCtx:
         return self._resolver
 
     def finding(self, check: str, severity: str, message: str, fix: str, **extra) -> dict:
-        # Contract (production-test finding): every finding carries the
+        # Contract: every finding carries the
         # structured location fields, never prose alone. shape_ids is
         # always present (possibly empty) so clients can address shapes
         # without parsing the message.
@@ -455,6 +458,7 @@ class _SlideCtx:
             "check": check,
             "severity": severity,
             "slide_index": self.rec["index"],
+            "slide_number": self.rec["index"] + 1,
             "slide_id": self.rec["slide_id"],
             "shape_ids": [],
             "message": message,
@@ -705,9 +709,9 @@ def _own_fill_alpha(sppr_owner: etree._Element) -> float | None:
     """Opacity (0..1) of the shape's OWN explicit solid fill, or None when
     fully opaque / no explicit solid fill. Reads the a:alpha child of the
     solidFill's color element (both '10000' thousandths and '10%' forms).
-    Production-test finding: tinted fills (accent1 at 10% alpha, the
-    matrix-cell default) used to be judged at full strength, flagging dark
-    text on a pale wash as a contrast error."""
+    Tinted fills (accent1 at 10% alpha, the matrix-cell default) used to
+    be judged at full strength, flagging dark text on a pale wash as a
+    contrast error."""
     sppr = sppr_owner.find(qn("p:spPr"))
     if sppr is None:
         return None
@@ -779,7 +783,7 @@ def _backdrop_hex(
         ox, oy, ocx, ocy = other["box"]
         if not (ox <= cx <= ox + ocx and oy <= cy <= oy + ocy):
             continue
-        if other["kind"] in ("picture", "chart", "diagram"):
+        if other["kind"] in ("picture", "media", "chart", "diagram"):
             # A photograph under the text has no single colour to measure
             # against, and picking one would be a confident guess.
             return None, f"{other['kind']} beneath the text ({_label(other)})"
@@ -950,12 +954,14 @@ def _check_overlap(ctx: _SlideCtx, opts: dict) -> list[dict]:
                     f"{_label(a)} and {_label(b)} overlap by "
                     f"{round(pct)}% of the smaller shape; {_label(front)} "
                     "is in front and hides the other",
-                    f"set_shape(slide={ctx.rec['index']}, shape="
-                    f"{front['id']}, dx=..., dy=...) to nudge it clear, or "
-                    f"align_shapes/distribute_shapes(slide="
-                    f"{ctx.rec['index']}, ids=[{a['id']}, {b['id']}]) to "
-                    "lay them out; if the stacking is deliberate, "
-                    "set_z_order controls which shows",
+                    "call ppt_graphics with op='set_shape' and args="
+                    f"{{'slide': {ctx.rec['index']}, 'shape': {front['id']}, "
+                    "'dx': ..., 'dy': ...} to nudge it clear, or use "
+                    "ppt_graphics op='align_shapes' or "
+                    "op='distribute_shapes' with args="
+                    f"{{'slide': {ctx.rec['index']}, 'ids': "
+                    f"[{a['id']}, {b['id']}]}} to lay them out; "
+                    "ppt_graphics op='set_z_order' controls deliberate stacking",
                     shape_ids=[a["id"], b["id"]],
                     overlap_pct=round(pct, 1),
                 )
@@ -1037,11 +1043,13 @@ def _check_group_overlap(ctx: _SlideCtx, opts: dict) -> list[dict]:
                         f"overlap by {ow / EMU_PER_INCH:.3f} x "
                         f"{oh / EMU_PER_INCH:.3f} in; {_label(front)} is in "
                         "front",
-                        f"set_shape(slide={ctx.rec['index']}, "
-                        f"shape={front['id']}, dx=..., dy=...) moves the "
-                        "member itself (moving the group moves both), or "
-                        f"ungroup_shapes(slide={ctx.rec['index']}, "
-                        f"shape={root}) first if the layout needs rebuilding",
+                        "call ppt_graphics with op='set_shape' and args="
+                        f"{{'slide': {ctx.rec['index']}, "
+                        f"'shape': {front['id']}, 'dx': ..., 'dy': ...}} "
+                        "to move the member itself (moving the group moves "
+                        "both), or call ppt_graphics with op='ungroup_shapes' "
+                        f"and args={{'slide': {ctx.rec['index']}, "
+                        f"'group': {root}}} first if the layout needs rebuilding",
                         shape_ids=[a["id"], b["id"]],
                         group_id=root,
                         overlap_in=[
@@ -1077,10 +1085,12 @@ def _check_off_slide(ctx: _SlideCtx, opts: dict) -> list[dict]:
                     f"{round(ctx.slide_cx / EMU_PER_INCH, 2)} x "
                     f"{round(ctx.slide_cy / EMU_PER_INCH, 2)} in slide); it "
                     "renders nowhere",
-                    f"set_shape(slide={ctx.rec['index']}, shape={s['id']}, "
-                    f"x={_clamp_in(x, cx, ctx.slide_cx)}, "
-                    f"y={_clamp_in(y, cy, ctx.slide_cy)}) brings it fully "
-                    "on-slide, or delete_shape if it is debris",
+                    "call ppt_graphics with op='set_shape' and args="
+                    f"{{'slide': {ctx.rec['index']}, 'shape': {s['id']}, "
+                    f"'x': {_clamp_in(x, cx, ctx.slide_cx)}, "
+                    f"'y': {_clamp_in(y, cy, ctx.slide_cy)}}} to bring it "
+                    "fully on-slide, or use ppt_graphics op='delete_shape' "
+                    "if it is debris",
                     shape_ids=[s["id"]],
                     extent="full",
                 )
@@ -1093,10 +1103,11 @@ def _check_off_slide(ctx: _SlideCtx, opts: dict) -> list[dict]:
                     f"{_label(s)} extends "
                     f"{round(overhang / EMU_PER_INCH, 2)} in past the slide "
                     "edge; the overhang is cut off when presenting",
-                    f"set_shape(slide={ctx.rec['index']}, shape={s['id']}, "
-                    f"x={_clamp_in(x, cx, ctx.slide_cx)}, "
-                    f"y={_clamp_in(y, cy, ctx.slide_cy)}) pulls it inside "
-                    "(or shrink with w=/h=)",
+                    "call ppt_graphics with op='set_shape' and args="
+                    f"{{'slide': {ctx.rec['index']}, 'shape': {s['id']}, "
+                    f"'x': {_clamp_in(x, cx, ctx.slide_cx)}, "
+                    f"'y': {_clamp_in(y, cy, ctx.slide_cy)}}} to pull it "
+                    "inside (or shrink it with w/h arguments)",
                     shape_ids=[s["id"]],
                     extent="partial",
                     overhang_in=round(overhang / EMU_PER_INCH, 2),
@@ -1234,10 +1245,11 @@ def _check_tiny_text(ctx: _SlideCtx, opts: dict) -> list[dict]:
                     f"{_label(s)} has {unresolved} run(s) whose font size "
                     "does not resolve through the layout, the master or "
                     "the presentation default; size was not checked there",
-                    "render the slide (export_slide_images) and read the "
-                    "size off the picture, or set one explicitly with "
-                    f"format_text(slide={ctx.rec['index']}, "
-                    f"shape={s['id']}, size_pt=...)",
+                    "render the slide with ppt_deck op='export_slide_image' "
+                    "and read the size off the picture, or call ppt_edit "
+                    "with op='format_text' and args="
+                    f"{{'slide': {ctx.rec['index']}, 'shape': {s['id']}, "
+                    "'size_pt': ...}",
                     shape_ids=[s["id"]],
                     unresolved_runs=unresolved,
                 )
@@ -1268,9 +1280,10 @@ def _check_tiny_text(ctx: _SlideCtx, opts: dict) -> list[dict]:
                 f"{', '.join(f'{sz:g}pt' for sz in too_small)}, below the "
                 f"{floor:g}pt {role} floor; unreadable from the back of "
                 f"the room{note}",
-                f"format_text(slide={ctx.rec['index']}, shape={s['id']}, "
-                f"size_pt={floor:g}) raises every run in the shape (add "
-                "paragraph=/start=/end= to target one run)",
+                "call ppt_edit with op='format_text' and args="
+                f"{{'slide': {ctx.rec['index']}, 'shape': {s['id']}, "
+                f"'size_pt': {floor:g}}} to raise every run in the shape "
+                "(add paragraph/start/end arguments to target one run)",
                 shape_ids=[s["id"]],
                 sizes_pt=too_small,
                 floor_pt=floor,
@@ -1328,7 +1341,7 @@ def _check_overflow(ctx: _SlideCtx, opts: dict) -> list[dict]:
         # The suppression threshold is an allowance for MODEL error, so it
         # tracks the model. The character-count estimate keeps the wide 1.4x
         # margin it always had; a measurement of the font's own advance
-        # widths does not need it, and a real ~1.1x overflow was being
+        # widths does not need it, because a real ~1.1x overflow was being
         # swallowed by it.
         floor = float(
             opts["min_fill_ratio_metrics"] if measured
@@ -1347,10 +1360,13 @@ def _check_overflow(ctx: _SlideCtx, opts: dict) -> list[dict]:
                 f"{_label(s)} likely overflows its frame"
                 + (f" (estimated {ratio}x the available height)" if ratio else "")
                 + "; " + how,
-                f"format_text(slide={ctx.rec['index']}, shape={s['id']}, "
-                f"size_pt=...) to shrink the text, or set_shape(slide="
-                f"{ctx.rec['index']}, shape={s['id']}, h=...) to grow the "
-                "frame; confirm with export_slide_images first",
+                "call ppt_edit with op='format_text' and args="
+                f"{{'slide': {ctx.rec['index']}, 'shape': {s['id']}, "
+                "'size_pt': ...} to shrink the text, or call ppt_graphics "
+                "with op='set_shape' and args="
+                f"{{'slide': {ctx.rec['index']}, 'shape': {s['id']}, "
+                "'h': ...} to grow the frame; confirm first with ppt_deck "
+                "op='export_slide_image'",
                 shape_ids=[s["id"]],
                 fill_ratio=ratio,
                 heuristic=not measured,
@@ -1385,9 +1401,11 @@ def _check_empty_placeholder(ctx: _SlideCtx, opts: dict) -> list[dict]:
                 f"{_label(s)} is an empty {ph_type or 'content'} "
                 "placeholder; it renders as invisible dead space (or "
                 "prompt text in edit view)",
-                f"set_placeholder_text(slide={ctx.rec['index']}, ...) to "
-                f"fill it, or delete_shape(slide={ctx.rec['index']}, "
-                f"shape={s['id']}) to clear it",
+                "call ppt_edit with op='set_placeholder_text' and args="
+                f"{{'slide': {ctx.rec['index']}, ...}} to fill it, or call "
+                "ppt_graphics with op='delete_shape' and args="
+                f"{{'slide': {ctx.rec['index']}, 'shape': {s['id']}}} "
+                "to clear it",
                 shape_ids=[s["id"]],
                 placeholder_type=ph_type,
             )
@@ -1396,7 +1414,7 @@ def _check_empty_placeholder(ctx: _SlideCtx, opts: dict) -> list[dict]:
 
 
 def _check_missing_title(ctx: _SlideCtx, opts: dict) -> list[dict]:
-    empty_title_id = None
+    empty_title_ids: list[int] = []
     for s in ctx.all:
         if s["kind"] != "placeholder":
             continue
@@ -1405,35 +1423,34 @@ def _check_missing_title(ctx: _SlideCtx, opts: dict) -> list[dict]:
             continue
         if shape_text(s["elem"]).strip():
             return []
-        empty_title_id = s["id"]
-    # De-facto title: a visible text shape starting in the top quarter of
-    # the slide. Textbox-styled decks title every slide this way; flagging
-    # all of them would drown the report in noise.
-    for s in ctx.all:
-        if s["hidden"] or s["box"] is None:
-            continue
-        if etree.QName(s["elem"]).localname != "sp":
-            continue
-        if s["box"][1] < ctx.slide_cy * 0.25 and shape_text(s["elem"]).strip():
-            return []
-    if empty_title_id is not None:
+        if s["id"] is not None:
+            empty_title_ids.append(s["id"])
+    if empty_title_ids:
         fix = (
-            f"set_placeholder_text(slide={ctx.rec['index']}, "
-            'placeholder="title", text=...) fills the existing empty title'
+            "call ppt_edit with op='set_placeholder_text' and args="
+            f"{{'slide': {ctx.rec['index']}, 'placeholder': 'title', "
+            "'text': ...} to fill the existing empty title"
         )
     else:
         fix = (
-            f"apply_layout(slide={ctx.rec['index']}, layout=...) to a "
-            "layout with a title placeholder, then set_placeholder_text"
+            "call ppt_design with op='apply_layout' and args="
+            f"{{'slide': {ctx.rec['index']}, 'layout': ...}} for a layout "
+            "with a title placeholder, then use ppt_edit "
+            "op='set_placeholder_text'"
         )
     return [
         ctx.finding(
             "missing_title",
             "info",
-            "slide has no title text; screen readers and Outline view "
-            "identify slides by their title",
+            MISSING_TITLE,
             fix,
-            shape_ids=[empty_title_id] if empty_title_id is not None else [],
+            shape_ids=empty_title_ids,
+            title_placeholder_ids=empty_title_ids,
+            reason=(
+                "empty_title_placeholder"
+                if empty_title_ids
+                else "no_title_placeholder"
+            ),
         )
     ]
 
@@ -1545,7 +1562,7 @@ def _run_text_color(
             except ValueError:
                 pass
         if bold is None and props.get("b") is not None:
-            bold = props.get("b") == "1"
+            bold = xml_bool(props.get("b"))
 
     if hexval is None and elem is not None:
         # p:style/fontRef is how an inserted autoshape gets its text
@@ -1574,7 +1591,7 @@ def _run_text_color(
 #: row beats a column band, a column band beats a row band, first/last
 #: column beats both bands, and a corner cell beats everything.
 #:
-#: The round-2 version of this list was walked FIRST-match, so wholeTbl
+#: An earlier version of this list was walked FIRST-match, so wholeTbl
 #: beat every emphasis part and the resolver reported white-on-white where
 #: the renderer paints a navy header. Read it highest-first (see _parts).
 _TBL_STYLE_ORDER = (
@@ -1740,7 +1757,7 @@ def _table_style_for(ctx: "_SlideCtx", tbl: etree._Element):
     for style in lst.findall(qn("a:tblStyle")):
         if (style.get("styleId") or "").strip() == style_id:
             flags = {
-                flag: (tblpr.get(flag) == "1") if tblpr is not None else False
+                flag: attr_bool(tblpr, flag)
                 for flag in (
                     "firstRow", "lastRow", "firstCol", "lastCol",
                     "bandRow", "bandCol",
@@ -1824,7 +1841,7 @@ def _contrast_finding(ctx, s, worst, bg_hex) -> dict:
         else f", colour from the {worst['source']}"
     )
     if worst["source"] in _GUESSED_SOURCES:
-        # A check must never fabricate a gate-severity failure out of a
+        # A check must never fabricate an error-severity failure out of a
         # colour it had to guess. An ordinary dark-header table built with
         # this server's own tools used to come back as an ERROR reading
         # "text #000000 on #1F3864" when the header text is white: the
@@ -1838,9 +1855,11 @@ def _contrast_finding(ctx, s, worst, bg_hex) -> dict:
             f"its colour is not stated anywhere this read can reach "
             f"({worst['sample']!r}); the theme default would give "
             f"{round(worst['ratio'], 2)}:1, which is a guess, not a finding",
-            f"export_slide_image(slide={ctx.rec['index']}) and look, or "
-            f"format_text(slide={ctx.rec['index']}, shape={s['id']}, "
-            f'color="{suggested}") to state it',
+            "call ppt_deck with op='export_slide_image' and args="
+            f"{{'slides': [{ctx.rec['index']}]}} and look, or call ppt_edit "
+            "with op='format_text' and args="
+            f"{{'slide': {ctx.rec['index']}, 'shape': {s['id']}, "
+            f"'color': '{suggested}'}} to state it",
             shape_ids=[s["id"]],
             reason="unresolved_colour_source",
             fill_color=bg_hex,
@@ -1853,10 +1872,12 @@ def _contrast_finding(ctx, s, worst, bg_hex) -> dict:
         f"{round(worst['ratio'], 2)}:1, below the {worst['threshold']}:1 "
         f"target ({worst['sample']!r}){where}; approximated from resolved "
         "solid colors, not a render",
-        f"format_text(slide={ctx.rec['index']}, shape={s['id']}, "
-        f'color="{suggested}") fixes the text, or set_shape(slide='
-        f"{ctx.rec['index']}, shape={s['id']}, fill=...) changes "
-        "the background",
+        "call ppt_edit with op='format_text' and args="
+        f"{{'slide': {ctx.rec['index']}, 'shape': {s['id']}, "
+        f"'color': '{suggested}'}} to fix the text, or call ppt_graphics "
+        "with op='set_shape' and args="
+        f"{{'slide': {ctx.rec['index']}, 'shape': {s['id']}, "
+        "'fill': ...} to change the background",
         shape_ids=[s["id"]],
         ratio=round(worst["ratio"], 2),
         text_color=worst["fg"],
@@ -1911,9 +1932,11 @@ def _check_contrast(ctx: _SlideCtx, opts: dict) -> list[dict]:
                     f"{_label(s)} carries text over an unresolvable "
                     f"backdrop ({skip_reason or 'no colour resolved'}); "
                     "its contrast was NOT checked",
-                    f"export_slide_image(slide={ctx.rec['index']}) and look, "
-                    f"or set_shape(slide={ctx.rec['index']}, "
-                    f"shape={s['id']}, fill=...) to give it a known fill",
+                    "call ppt_deck with op='export_slide_image' and args="
+                    f"{{'slides': [{ctx.rec['index']}]}} and look, or call "
+                    "ppt_graphics with op='set_shape' and args="
+                    f"{{'slide': {ctx.rec['index']}, 'shape': {s['id']}, "
+                    "'fill': ...} to give it a known fill",
                     shape_ids=[s["id"]],
                     unresolvable_backdrop=skip_reason or "no colour resolved",
                 )
@@ -2013,9 +2036,12 @@ def _check_table_contrast(
     if worst is not None:
         out.append(_contrast_finding(ctx, s, worst, worst_bg))
     remedy = (
-        f"export_slide_image(slide={ctx.rec['index']}) and look, or "
-        f"format_table_cells(slide={ctx.rec['index']}, "
-        f"table={s['id']}, ..., fill=...) to set explicit cell fills"
+        "call ppt_deck with op='export_slide_image' and args="
+        f"{{'slides': [{ctx.rec['index']}]}} and look, or call ppt_tables "
+        "with op='format_table_cells' and args="
+        f"{{'slide': {ctx.rec['index']}, "
+        f"'table': {{'shape_id': {s['id']}}}, ..., "
+        "'fill': ...} to set explicit cell fills"
     )
     # One finding per REASON. A declined corner used to be counted with
     # the built-in-style cells and reported as one of them, so the
@@ -2087,10 +2113,12 @@ def _check_diagram_glue(ctx: _SlideCtx, opts: dict) -> list[dict]:
                 f"connector {cid} has {glued_count} of 2 ends glued but "
                 f"{touched}; the loose end(s) LOOK attached and will be "
                 "left behind the moment the shape moves",
-                f"delete_shape(slide={ctx.rec['index']}, shape={cid}) and "
-                f"re-create with insert_connector(slide="
-                f"{ctx.rec['index']}, {', '.join(kwargs)}) so both ends "
-                "are glued and follow their shapes",
+                "call ppt_graphics with op='delete_shape' and args="
+                f"{{'slide': {ctx.rec['index']}, 'shape': {cid}}}, then "
+                "re-create it with ppt_graphics op='insert_connector' and "
+                f"args={{'slide': {ctx.rec['index']}, "
+                f"{', '.join(kwargs)}}} so both ends are glued and follow "
+                "their shapes",
                 shape_ids=[cid] + [hit["id"] for _n, hit in loose],
                 connector_id=cid,
                 glued_ends=glued_count,
@@ -2131,6 +2159,59 @@ _CHECK_FNS = {
 
 _SEV_RANK = {"error": 0, "warning": 1, "info": 2}
 
+# A caller following check_layout's continuation token asks the same read-only
+# question repeatedly.  Re-running every heuristic over the whole deck for
+# each page turns a linear audit into quadratic work (a 70-slide deck took
+# more than two minutes on Python 3.12).  Keep a few completed sweeps, keyed
+# by the package's actual bytes and the normalized request.  The digest makes
+# an edit invalidate the entry even when a filesystem timestamp is preserved;
+# dirty in-memory packages bypass the cache because their XML trees no longer
+# match the loaded bytes.
+_AUDIT_CACHE: "OrderedDict[tuple[bytes, str], tuple[list[dict], dict[str, dict[str, int]], int]]" = OrderedDict()
+_AUDIT_CACHE_LOCK = threading.RLock()
+_AUDIT_CACHE_MAX = 8
+
+
+def _audit_cache_key(pkg: PptxPackage, slide, plan) -> tuple[bytes, str] | None:
+    if pkg._dirty:
+        return None
+    digest = hashlib.sha256()
+    # Hash the saved file rather than pkg._raw.  save() clears the dirty set
+    # after publishing but intentionally leaves the originally loaded byte
+    # map alone, so that map can describe the pre-save deck on a package an
+    # API caller continues to use.
+    with pkg.path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    request = json.dumps(
+        {"slide": slide, "plan": plan},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return digest.digest(), request
+
+
+def _cached_audit(key):
+    if key is None:
+        return None
+    with _AUDIT_CACHE_LOCK:
+        hit = _AUDIT_CACHE.get(key)
+        if hit is not None:
+            _AUDIT_CACHE.move_to_end(key)
+        return hit
+
+
+def _remember_audit(key, value) -> None:
+    if key is None:
+        return
+    with _AUDIT_CACHE_LOCK:
+        _AUDIT_CACHE[key] = value
+        _AUDIT_CACHE.move_to_end(key)
+        while len(_AUDIT_CACHE) > _AUDIT_CACHE_MAX:
+            _AUDIT_CACHE.popitem(last=False)
+
 
 # ================================================================ public API
 
@@ -2147,20 +2228,31 @@ def check_layout(pkg: PptxPackage, slide=None, checks=None, *,
     problem, plus per-check caveats stating what each heuristic can and
     cannot see. Read-only; nothing is modified."""
     plan = _normalize_checks(checks)
-    recs = slides_in_scope(pkg, slide)
-    findings: list[dict] = []
-    stats: dict[str, dict[str, int]] = {}
-    for rec in recs:
-        ctx = _SlideCtx(pkg, rec)
-        for name, opts in plan:
-            findings.extend(_CHECK_FNS[name](ctx, opts))
-        for check, counters in ctx.stats.items():
-            bucket = stats.setdefault(check, {})
-            for key, value in counters.items():
-                bucket[key] = bucket.get(key, 0) + value
-    findings.sort(
-        key=lambda f: (_SEV_RANK.get(f["severity"], 3), f["slide_index"])
-    )
+    cache_key = _audit_cache_key(pkg, slide, plan)
+    # Offset zero starts a fresh audit and refreshes the continuation cache.
+    # Besides being the least surprising read semantics, this matters when a
+    # long-lived host's runtime capabilities change (for example, font
+    # metrics become available).  Only later pages reuse the completed sweep.
+    cached = _cached_audit(cache_key) if offset else None
+    if cached is None:
+        recs = slides_in_scope(pkg, slide)
+        findings: list[dict] = []
+        stats: dict[str, dict[str, int]] = {}
+        for rec in recs:
+            ctx = _SlideCtx(pkg, rec)
+            for name, opts in plan:
+                findings.extend(_CHECK_FNS[name](ctx, opts))
+            for check, counters in ctx.stats.items():
+                bucket = stats.setdefault(check, {})
+                for key, value in counters.items():
+                    bucket[key] = bucket.get(key, 0) + value
+        findings.sort(
+            key=lambda f: (_SEV_RANK.get(f["severity"], 3), f["slide_index"])
+        )
+        slides_checked = len(recs)
+        _remember_audit(cache_key, (findings, stats, slides_checked))
+    else:
+        findings, stats, slides_checked = cached
     summary: dict[str, int] = {}
     for f in findings:
         summary[f["check"]] = summary.get(f["check"], 0) + 1
@@ -2168,7 +2260,7 @@ def check_layout(pkg: PptxPackage, slide=None, checks=None, *,
     # stay complete; only the finding list pages. On the heaviest corpus
     # deck this call used to return 1.4 million characters.
     header = {
-        "slides_checked": len(recs),
+        "slides_checked": slides_checked,
         "checks_run": [name for name, _o in plan],
         "finding_count": len(findings),
         "by_severity": {
@@ -2185,7 +2277,8 @@ def check_layout(pkg: PptxPackage, slide=None, checks=None, *,
         "caveats": {name: CHECKS[name][1] for name, _o in plan},
         "note": (
             "static-XML heuristics, not a renderer; for final visual "
-            "verification use export_slide_images and look at the PNGs"
+            "verification use ppt_deck op='export_slide_image' and look at "
+            "the PNGs"
         ),
     }
     kept, page = _budget.page_items(

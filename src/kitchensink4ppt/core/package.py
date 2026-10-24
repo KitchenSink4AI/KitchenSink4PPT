@@ -9,8 +9,10 @@ Design guarantees:
   back, not re-deflated: that is both faithful to the source package and, on
   media-heavy decks, most of the save time (deflating 39 MB of already
   compressed media bought 0.8% and cost 900 ms of a 1,520 ms save).
-- Saves are atomic: temp file -> validation -> os.replace. The original is
-  never left half-written, and validation failure leaves it untouched.
+- Saves are atomic: temp file -> validation -> one swap (ReplaceFileW on
+  Windows, which keeps the deck's identity; see core.safesave.promote). The
+  original is never left half-written, and validation failure leaves it
+  untouched.
 - Auto-backup on by default: before each in-place save the current content is
   rotated into stable slots (prev.pptx / anchor.pptx) inside a hidden
   .ks4p-backups/ folder next to the presentation (see core.safesave).
@@ -28,11 +30,15 @@ wrong is the classic corruption):
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import hashlib
 import io
 import os
 import posixpath
 import re
+import stat
+import time
 import zipfile
 from pathlib import Path
 from urllib.parse import unquote
@@ -40,14 +46,45 @@ from urllib.parse import unquote
 from lxml import etree
 
 from .errors import (
+    DocumentBusy,
     DocumentCorrupt,
     DocumentLocked,
     DocumentNotFound,
+    DocumentEditProtected,
+    DocumentReadOnly,
     DocumentProtected,
+    OutputRefused,
     PptMcpError,
+    SlideIdsExhausted,
+    UnsupportedPackage,
     ValidationFailed,
 )
+from . import xmlsafe, zipsafe
 from .sandbox import check_path
+from .swapwait import deck_not_found, exists_after_swap
+
+
+class DamagedPart(DocumentCorrupt, etree.XMLSyntaxError):
+    """A part of the deck is not well-formed XML: damage in the file, not
+    the caller's mistake, so it is reported as such and names the part. It
+    is still an XMLSyntaxError, so code that reads around a part it cannot
+    parse keeps doing so."""
+
+    def __init__(self, deck: str, part: str, cause: etree.XMLSyntaxError):
+        self.message = (
+            f"{part} in {deck} is damaged: it is not well-formed XML ({cause}), "
+            "so it cannot be read; nothing was changed. PowerPoint repairs what "
+            "it can when it opens a deck: open this one in PowerPoint, save it, "
+            "and try again."
+        )
+        etree.XMLSyntaxError.__init__(
+            self, self.message, cause.code, cause.lineno, cause.offset, None
+        )
+        self.part = part
+
+    def __str__(self) -> str:
+        return self.message
+
 
 NSMAP = {
     "p": "http://schemas.openxmlformats.org/presentationml/2006/main",
@@ -64,6 +101,129 @@ NSMAP = {
 }
 
 PRESENTATION_PART = "ppt/presentation.xml"
+#: The highest shape id PowerPoint reads (xsd:unsignedInt).
+MAX_SHAPE_ID = 4294967295
+#: The root relationship to the presentation, Transitional and Strict.
+_RT_OFFICE_DOCUMENT = (
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument")
+_RT_OFFICE_DOCUMENT_STRICT = (
+    "http://purl.oclc.org/ooxml/officeDocument/relationships/officeDocument")
+_STRICT_PML_NS = "http://purl.oclc.org/ooxml/presentationml/main"
+
+#: Pauses before looking again when a read lands inside another program's
+#: save (about 0.85 s in all); see PptxPackage._load.
+_READ_RACE_DELAYS = (0.05, 0.1, 0.2, 0.5)
+
+#: Set for the length of one call: whether a package opened during it is
+#: opened to READ (dispatch sets it for the read-only operations), and the
+#: decks it read from their saved file while PowerPoint had them open.
+_READING: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "ks4p_reading", default=False)
+_HELD_READS: contextvars.ContextVar[list | None] = contextvars.ContextVar(
+    "ks4p_held_reads", default=None)
+
+
+@contextlib.contextmanager
+def reading_call(read_only: bool):
+    """For one call: open decks to read when the operation only reads, and
+    collect every deck read from its saved file while PowerPoint had it
+    open (open_deck_note turns them into the answer's note)."""
+    held: list[dict] = []
+    reading_token = _READING.set(bool(read_only))
+    held_token = _HELD_READS.set(held)
+    try:
+        yield held
+    finally:
+        _READING.reset(reading_token)
+        _HELD_READS.reset(held_token)
+
+
+def _note_held(path, reason: str | None = None) -> None:
+    held = _HELD_READS.get()
+    if held is None:
+        return
+    key = os.path.normcase(os.path.abspath(str(path)))
+    for record in held:
+        if record["path"] == key:
+            if reason and not record.get("reason"):
+                record["reason"] = reason
+            return
+    held.append({"path": key, "name": Path(path).name, "reason": reason})
+
+
+def note_live_unreachable(path, reason: str) -> None:
+    """A read with a live route tried the open copy and could not reach it;
+    the saved file is read instead, and the note says why."""
+    _note_held(path, " ".join(str(reason).split())[:240])
+
+
+def open_deck_note(held: list[dict]) -> str | None:
+    """The answer's note for decks read from their saved file while
+    PowerPoint had them open, or None."""
+    from .messages import OPEN_DECK_LIVE_FAILED, OPEN_DECK_READ_NOTE
+
+    parts = []
+    for record in held:
+        text = OPEN_DECK_READ_NOTE.format(name=record["name"])
+        if record.get("reason"):
+            text += OPEN_DECK_LIVE_FAILED.format(reason=record["reason"])
+        parts.append(text)
+    return " ".join(parts) or None
+
+
+def _owner_file(path: Path) -> Path:
+    """The owner file PowerPoint writes beside a deck it has open."""
+    return path.with_name("~$" + path.name[-153:])
+
+
+def powerpoint_holds(path) -> bool:
+    """True when PowerPoint has the deck open: its owner file is there and
+    the deck refuses write access. Only looks; changes nothing."""
+    p = Path(path)
+    if not _owner_file(p).exists():
+        return False
+    try:
+        with open(p, "r+b"):
+            return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+
+
+def has_read_only_attribute(path: str | os.PathLike) -> bool:
+    """Whether the file is explicitly marked read-only.
+
+    On Windows the owner-write mode bit mirrors FILE_ATTRIBUTE_READONLY; on
+    POSIX it is the ordinary owner-write bit.  Inspecting the bit, rather
+    than relying on ``os.access``, keeps the result stable when tests or the
+    server run with elevated permissions.
+    """
+    try:
+        return not bool(Path(path).stat().st_mode & stat.S_IWRITE)
+    except OSError:
+        return False
+
+
+def read_only_error(path: str | os.PathLike) -> DocumentReadOnly:
+    """Build the user-facing refusal for an in-place file mutation."""
+    target = os.path.abspath(os.fspath(path))
+    exc = DocumentReadOnly(
+        f"{target} is read-only: its file read-only attribute is set. "
+        "Reading is allowed, but file-mode changes cannot be saved."
+    )
+    exc.hint = (
+        "Clear the file's read-only attribute and retry, or use "
+        "copy_presentation to create a writable copy."
+    )
+    return exc
+
+
+def make_file_writable(path: str | os.PathLike) -> None:
+    """Clear a copied file's read-only bit while preserving other mode bits."""
+    p = Path(path)
+    p.chmod(p.stat().st_mode | stat.S_IWRITE)
+
 
 #: Relationship type URIs used by the package layer.
 RT_SLIDE = (
@@ -74,6 +234,7 @@ RT_SLIDE_LAYOUT = (
 )
 
 #: Content types used by the package layer.
+CT_RELATIONSHIPS = "application/vnd.openxmlformats-package.relationships+xml"
 CT_SLIDE = (
     "application/vnd.openxmlformats-officedocument.presentationml.slide+xml"
 )
@@ -82,6 +243,15 @@ CT_SLIDE = (
 #: same bounds).
 SLIDE_ID_MIN = 256
 SLIDE_ID_MAX = 2147483647
+#: The refusal when a new slide would need an id past SLIDE_ID_MAX. Slide ids
+#: are given out above the highest in use and never reused: a reused id
+#: would make a view anchor or comment of a deleted slide name the new one.
+SLIDE_IDS_EXHAUSTED = (
+    "This deck's slide ids have reached 2147483647, the highest the file format allows, "
+    "so a new slide cannot be numbered after them; nothing was changed. New slide ids are "
+    "always numbered after the highest id in use. To add slides, copy this deck's slides "
+    "into a new deck with merge_decks, where they are numbered afresh."
+)
 
 #: PowerPoint's practical drawing coordinate ceiling (32-bit signed EMU).
 #: Payload validation refuses any xfrm/path coordinate past it: PowerPoint
@@ -211,6 +381,25 @@ def _is_ole_encrypted(head: bytes) -> bool:
     return head.startswith(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1")
 
 
+def refuse_ole_encrypted(path: str | os.PathLike) -> None:
+    """Refuse an OLE/encrypted presentation before an Office process sees it.
+
+    Password-protected OOXML presentations are OLE compound files rather
+    than ZIP packages.  PowerPoint raises a modal password prompt when one
+    reaches ``Presentations.Open``, so every path-based COM/export caller
+    uses this cheap package preflight before selecting or starting an engine.
+    Legacy binary ``.ppt`` files have the same magic and remain unsupported.
+    """
+    p = Path(path)
+    with open(p, "rb") as fh:
+        head = fh.read(8)
+    if _is_ole_encrypted(head):
+        raise DocumentProtected(
+            f"{p.name} is password-protected or a legacy binary .ppt; "
+            "remove the password or convert to .pptx in PowerPoint first."
+        )
+
+
 #: Media extensions whose payload is ALREADY compressed. Deflating these is
 #: the save path's largest cost and buys almost nothing: on the 40 MB corpus
 #: deck, deflating 39.3 MB of JPEG/PNG/GIF/MP4 took 980 ms and shrank it by
@@ -268,12 +457,76 @@ def resolve_target(source_part: str, target: str) -> str:
     return posixpath.normpath(posixpath.join(base, target) if base else target)
 
 
-class PptxPackage:
-    """One .pptx opened for inspection or editing."""
+def spelled_target(source_part: str, target: str, names) -> str | None:
+    """The text a relationship Target should be read as, when as written it
+    names no part of the package but another spelling PowerPoint reads the
+    same does: backslashes as slashes, a #fragment dropped, percent codes
+    decoded (slide%31.xml is slide1.xml). None when the target already names
+    a part, or when no spelling does. `names` is any container of part names."""
+    if resolve_target(source_part, target) in names:
+        return None
+    plain = target.replace("\\", "/").split("#", 1)[0]
+    if not plain:
+        return None
+    for candidate in (plain, unquote(plain)):
+        if resolve_target(source_part, candidate) in names:
+            return candidate
+    return None
 
-    def __init__(self, path: str | os.PathLike):
+
+def seat_ahead_of_extlst(container: etree._Element, element: etree._Element) -> etree._Element:
+    """Put a shape just added to the end of a shape tree (or group) ahead of
+    the container's own p:extLst. The schema ends a p:spTree / p:grpSp with
+    its extLst, and PowerPoint ignores a shape written after it: the file
+    opens clean and the new shape is not there. Returns `element`."""
+    ext = container.find("{%s}extLst" % NSMAP["p"])
+    if ext is not None and element.getparent() is container:
+        ext.addprevious(element)
+    return element
+
+
+_P14_CNVPR = "{http://schemas.microsoft.com/office/powerpoint/2010/main}cNvPr"
+
+
+def known_problem_keys(path) -> frozenset:
+    """The keys of the structural problems the deck at `path` already has
+    (PptxPackage._payload_problems), so that a save or a restore refuses
+    only the problems it would add. An empty set when the file is missing
+    or cannot be read as a package: then every problem is refused."""
+    try:
+        data = Path(path).read_bytes()
+        return frozenset(
+            key for key, _m in PptxPackage._payload_problems(data, doc=Path(path).name))
+    except Exception:  # noqa: BLE001 - unreadable means nothing is tolerated
+        return frozenset()
+
+
+def kept_problems_note(messages: list[str]) -> str:
+    """One sentence for the answer's warnings: the problems a save or a
+    restore kept because the deck already had them."""
+    from .messages import KEPT_PROBLEM_ONE, KEPT_PROBLEMS_MANY
+
+    first = messages[0].rstrip(".")
+    if len(messages) == 1:
+        return KEPT_PROBLEM_ONE.format(first=first)
+    return KEPT_PROBLEMS_MANY.format(count=len(messages), first=first)
+
+
+class PptxPackage:
+    """One .pptx opened for inspection or editing.
+
+    reading=True opens it to read: a deck PowerPoint has open is read from
+    its saved file (PowerPoint shares read access) instead of refused, and
+    held_by_powerpoint says so. None takes the call's setting
+    (reading_call); an edit always opens with reading=False."""
+
+    def __init__(self, path: str | os.PathLike, *, reading: bool | None = None):
         check_path(path, "open presentation")  # no-op unless KS4P_ALLOWED_ROOTS is set
         self.path = Path(path)
+        self.reading = _READING.get() if reading is None else bool(reading)
+        #: True when PowerPoint had the deck open and this package read the
+        #: file as last saved.
+        self.held_by_powerpoint = False
         self._raw: dict[str, bytes] = {}  # part name -> original bytes
         self._order: list[str] = []  # original entry order, preserved on save
         self._trees: dict[str, etree._ElementTree] = {}  # parsed parts
@@ -281,64 +534,179 @@ class PptxPackage:
         #: part name -> the ZIP compression method the source package used
         #: (zipfile.ZIP_STORED / ZIP_DEFLATED / ...), replayed on save.
         self._compress: dict[str, int] = {}
+        #: Warnings from the last save, for the caller's answer (a deck whose
+        #: own permissions could not be kept, for one).
+        self.save_warnings: list[str] = []
         self._load()
 
     # ---------- loading ----------
 
+    def _comes_back(self) -> bool:
+        """A save puts the new deck in place with ReplaceFileW, which moves
+        the old file aside for an instant: the path is missing, then back.
+        True once it is back; False at once when no save has the old file
+        aside (core/swapwait.py, which only looks)."""
+        return exists_after_swap(self.path)
+
     def _load(self) -> None:
-        if not self.path.exists():
-            raise DocumentNotFound(f"No file at {self.path}")
-        if self.path.is_dir():
+        # os.path.exists and isdir, not pathlib's: a file in the middle of a
+        # swap can make stat fail, and pathlib re-raises that on Python 3.12.
+        if not os.path.exists(self.path) and not self._comes_back():
+            raise deck_not_found(self.path, f"No file at {self.path}")
+        if os.path.isdir(self.path):
             # Opening a directory raises PermissionError on Windows, which
             # the lock check would misread as a PowerPoint lock.
             raise PptMcpError(
                 f"{self.path} is a directory, not a .pptx file; pass the "
                 "full path to the presentation file"
             )
-        self._check_lock()
-        # Read 8 bytes, not the file. read_bytes()[:8] slurped the whole deck
-        # (23.6 ms and a 40 MB transient allocation on the largest corpus
-        # deck) to look at a magic number.
-        with open(self.path, "rb") as fh:
-            head = fh.read(8)
-        if _is_ole_encrypted(head):
-            raise DocumentProtected(
-                f"{self.path.name} is password-protected or a legacy binary "
-                ".ppt; remove the password or convert to .pptx in PowerPoint "
-                "first."
-            )
-        try:
-            with zipfile.ZipFile(self.path) as zf:
-                bad = zf.testzip()
-                if bad is not None:
-                    raise DocumentCorrupt(
-                        f"{self.path.name}: corrupt ZIP entry '{bad}'."
-                    )
-                for info in zf.infolist():
-                    self._raw[info.filename] = zf.read(info.filename)
-                    self._order.append(info.filename)
-                    self._compress[info.filename] = info.compress_type
-        except zipfile.BadZipFile as exc:
-            raise DocumentCorrupt(
-                f"{self.path.name} is not a valid .pptx (bad ZIP): {exc}"
-            ) from exc
+        # A save by another server replaces the file in place. A read that
+        # lands inside that replace gets a bare PermissionError, from the lock
+        # probe just before the open or from the open itself. Nothing typed
+        # the first: the caller was told the server failed, or that the deck
+        # was open in PowerPoint when no PowerPoint was involved. The replace
+        # takes milliseconds: look again, probe included, and if it is still
+        # being written, say so (DocumentBusy, never "open in PowerPoint").
+        for delay in (*_READ_RACE_DELAYS, None):
+            try:
+                self._check_lock()
+                self._read_package()
+                break
+            except (PermissionError, FileNotFoundError) as gone:
+                self._raw.clear()
+                self._order.clear()
+                self._compress.clear()
+                if isinstance(gone, FileNotFoundError):
+                    # Missing mid-read: a save has the old deck aside for an
+                    # instant, or the deck really went.
+                    if not self._comes_back():
+                        raise deck_not_found(
+                            self.path, f"No file at {self.path}") from None
+                if delay is None:
+                    if self.reading and _owner_file(self.path).exists():
+                        raise DocumentBusy(
+                            f"{self.path.name} is open in PowerPoint, which is "
+                            "not letting other programs read it right now (it "
+                            "may be saving it), so it could not be read."
+                        ) from None
+                    raise DocumentBusy(
+                        f"{self.path.name} is being written by another program "
+                        "right now, so it could not be read."
+                    ) from None
+                if isinstance(gone, PermissionError):
+                    time.sleep(delay)  # a deck that came back is read again at once
+        self._check_main_part()
+
+    def _check_main_part(self) -> None:
+        """Refuse a package this server would misread: the root relationship
+        names the presentation, and it must be ppt/presentation.xml in the
+        Transitional namespaces PowerPoint saves by default. A Strict Open
+        XML deck has the same part names and other namespaces, so it read as
+        a deck with no slides; a package whose main part has another name was
+        read from a ppt/presentation.xml PowerPoint never looks at, or
+        refused as not a presentation."""
+        from .messages import MAIN_PART_REFUSAL, STRICT_DECK_REFUSAL
+
+        main, strict = None, False
+        rels = self._raw.get("_rels/.rels")
+        if rels is not None:
+            try:
+                root = xmlsafe.fromstring(rels, doc=self.path.name, part="_rels/.rels")
+            except etree.XMLSyntaxError:
+                root = None
+            for rel in root if root is not None else ():
+                kind = rel.get("Type", "")
+                if kind in (_RT_OFFICE_DOCUMENT, _RT_OFFICE_DOCUMENT_STRICT):
+                    main = resolve_target("", rel.get("Target", ""))
+                    strict = kind == _RT_OFFICE_DOCUMENT_STRICT
+                    break
+        if not strict and PRESENTATION_PART in self._raw:
+            strict = xmlsafe.root_namespace(
+                self._raw[PRESENTATION_PART], doc=self.path.name,
+                part=PRESENTATION_PART) == _STRICT_PML_NS
+        if strict:
+            raise UnsupportedPackage(STRICT_DECK_REFUSAL.format(name=self.path.name))
+        if main is not None and main != PRESENTATION_PART:
+            raise UnsupportedPackage(
+                MAIN_PART_REFUSAL.format(name=self.path.name, part=main))
         if PRESENTATION_PART not in self._raw:
             raise DocumentCorrupt(
                 f"{self.path.name} has no {PRESENTATION_PART}; not a "
                 "PowerPoint presentation."
             )
 
-    def _check_lock(self) -> None:
-        """PowerPoint holds an exclusive lock on open decks; detect it up front."""
-        owner_file = self.path.with_name("~$" + self.path.name[-153:])
+    def _read_package(self) -> None:
+        # Read 8 bytes, not the file. read_bytes()[:8] slurped the whole deck
+        # (23.6 ms and a 40 MB transient allocation on the largest corpus
+        # deck) to look at a magic number.
+        refuse_ole_encrypted(self.path)
         try:
-            with open(self.path, "r+b"):
+            with zipfile.ZipFile(self.path) as zf:
+                # From the directory alone, before anything is inflated
+                # (testzip inflates every part): a part named twice, and
+                # parts that would inflate far past what they store.
+                zipsafe.check_members(zf.infolist(), doc=self.path.name)
+                bad = zf.testzip()
+                if bad is not None:
+                    raise DocumentCorrupt(
+                        f"{self.path.name}: corrupt ZIP entry '{bad}'."
+                    )
+                for info in zf.infolist():
+                    self._raw[info.filename] = zf.read(info)
+                    self._order.append(info.filename)
+                    self._compress[info.filename] = info.compress_type
+        except zipfile.BadZipFile as exc:
+            raise DocumentCorrupt(
+                f"{self.path.name} is not a valid .pptx (bad ZIP): {exc}"
+            ) from exc
+        # A document type declaration in any XML part refuses the deck here,
+        # whichever operation asked and whichever parts it would have read.
+        for name in self._order:
+            if name.lower().endswith((".xml", ".rels", ".vml")):
+                xmlsafe.refuse_dtd(self._raw[name], doc=self.path.name, part=name)
+
+    def _check_lock(self) -> None:
+        """Distinguish a read-only attribute from a process-held lock, and
+        PowerPoint's hold from another program's save.
+
+        A read-only deck is still a valid input to every package reader.  The
+        old unconditional ``r+b`` probe misdiagnosed it as open in
+        PowerPoint and prevented even text extraction.  An exclusive holder
+        still blocks the read probe.
+
+        PowerPoint writes an owner file (``~$name``) beside a deck it has
+        open, so a failed probe with that file present is PowerPoint's hold.
+        An edit refuses it with DocumentLocked, at once, which is what sends
+        a live='auto' edit to the open copy. A read does not: PowerPoint
+        denies other programs write access to a deck it has open but shares
+        read access, so a read opens the file as last saved and says so
+        (held_by_powerpoint, and the answer's open_deck_note). Without the
+        owner file the same failure is most likely another server's save
+        replacing the deck, a matter of milliseconds, so the PermissionError
+        goes to ``_load``, which looks again after the read-race pauses and
+        answers DocumentBusy if the deck is still not free; that protection
+        holds for reads and edits alike.
+        """
+        owner_file = _owner_file(self.path)
+        mode = "rb" if has_read_only_attribute(self.path) else "r+b"
+        try:
+            with open(self.path, mode):
                 pass
         except PermissionError:
-            hint = " (PowerPoint owner file present)" if owner_file.exists() else ""
+            if not owner_file.exists():
+                raise
+            if self.reading:
+                # A refusal of read access too (PowerPoint in the middle of
+                # its own save) raises here and is looked at again in _load.
+                with open(self.path, "rb"):
+                    pass
+                self.held_by_powerpoint = True
+                _note_held(self.path)
+                return
             raise DocumentLocked(
                 f"{self.path.name} is open in PowerPoint or locked by another "
-                f"process{hint}. Close the file in PowerPoint and retry."
+                "process (PowerPoint owner file present). Close the file in "
+                "PowerPoint and retry."
             ) from None
 
     # ---------- part access ----------
@@ -350,15 +718,41 @@ class PptxPackage:
         return list(self._order)
 
     def tree(self, name: str = PRESENTATION_PART) -> etree._ElementTree:
-        """Parsed XML for a part. Parsing is cached; call mark_dirty() after edits."""
+        """Parsed XML for a part. Parsing is cached; call mark_dirty() after edits.
+        A part that is not well-formed XML raises DamagedPart, naming it."""
         if name not in self._trees:
             if name not in self._raw:
                 raise KeyError(f"part not in package: {name}")
-            parser = etree.XMLParser(remove_blank_text=False, strip_cdata=False)
-            self._trees[name] = etree.ElementTree(
-                etree.fromstring(self._raw[name], parser=parser)
-            )
+            try:
+                root = xmlsafe.fromstring(self._raw[name], doc=self.path.name, part=name,
+                                          remove_blank_text=False, strip_cdata=False)
+            except etree.XMLSyntaxError as exc:
+                raise DamagedPart(self.path.name, name, exc) from exc
+            if name.endswith(".rels"):
+                self._read_targets_as_powerpoint_does(name, root)
+            self._trees[name] = etree.ElementTree(root)
         return self._trees[name]
+
+    def _read_targets_as_powerpoint_does(self, rels_part: str, root: etree._Element) -> None:
+        """PowerPoint opens a deck whose relationship Target is spelled with a
+        percent code, a backslash or a #fragment (slides/slide%31.xml). The
+        reads here took the text as the part name and failed, and a write
+        built a stray rels part for a slide that does not exist. The
+        in-memory tree is given the spelling that names the real part; the
+        file's bytes are written back unchanged unless this rels part is
+        itself edited. Only the presentation's own relationships (its slides,
+        masters and the like) are read this way: the targets of other parts
+        keep the spelling they have, which a copy of a slide carries over as
+        written."""
+        source = rels_source(rels_part)
+        if source != PRESENTATION_PART:
+            return
+        for rel in root:
+            if not isinstance(rel.tag, str) or rel.get("TargetMode") == "External":
+                continue
+            spelling = spelled_target(source, rel.get("Target", ""), self._raw)
+            if spelling is not None:
+                rel.set("Target", spelling)
 
     def root(self, name: str = PRESENTATION_PART) -> etree._Element:
         return self.tree(name).getroot()
@@ -366,6 +760,17 @@ class PptxPackage:
     def presentation(self) -> etree._Element:
         """Root element of ppt/presentation.xml (the spine)."""
         return self.root(PRESENTATION_PART)
+
+    def assert_modifiable(self) -> None:
+        """Refuse filesystem or package protection before an edit."""
+        if has_read_only_attribute(self.path):
+            raise read_only_error(self.path)
+        if self.presentation().find(qn("p:modifyVerifier")) is not None:
+            raise DocumentEditProtected(
+                f"{self.path.name} has a password to modify, so this server will not edit it by "
+                "file path; nothing was changed, and reading still works. A copy made "
+                "with copy_presentation keeps the password."
+            )
 
     def raw_part(self, name: str) -> bytes:
         return self._raw[name]
@@ -378,6 +783,13 @@ class PptxPackage:
         self._trees.pop(name, None)
         self._dirty.discard(name)  # raw bytes are authoritative now
         self._compress.setdefault(name, _default_compress_type(name))
+        if (name.endswith(".rels") and name != "[Content_Types].xml"
+                and "[Content_Types].xml" in self._raw
+                and self.content_type(name) is None):
+            # A deck that declares its relationship parts one by one (no
+            # Default for "rels") gives a new rels part no type at all, and
+            # PowerPoint repairs the file.
+            self.add_content_type_override(name, CT_RELATIONSHIPS)
 
     def mark_dirty(self, name: str = PRESENTATION_PART) -> None:
         if name not in self._trees:
@@ -452,6 +864,62 @@ class PptxPackage:
 
     # ---------- content types ----------
 
+    def _content_type_tables(self) -> tuple[dict[str, str], dict[str, str]]:
+        """({part name lowercased: Override type}, {extension lowercased:
+        Default type}) from [Content_Types].xml; OPC compares both without
+        case."""
+        overrides: dict[str, str] = {}
+        defaults: dict[str, str] = {}
+        if "[Content_Types].xml" not in self._raw:
+            return overrides, defaults
+        for node in self.root("[Content_Types].xml"):
+            local = etree.QName(node).localname if isinstance(node.tag, str) else ""
+            if local == "Override":
+                name = (node.get("PartName") or "").lstrip("/").lower()
+                overrides[name] = node.get("ContentType", "")
+            elif local == "Default":
+                defaults[(node.get("Extension") or "").lower()] = node.get("ContentType", "")
+        return overrides, defaults
+
+    @staticmethod
+    def _content_type_tables_of(root) -> tuple[dict[str, str], dict[str, str]]:
+        """_content_type_tables for a parsed [Content_Types].xml root."""
+        overrides: dict[str, str] = {}
+        defaults: dict[str, str] = {}
+        for node in root if root is not None else ():
+            local = etree.QName(node).localname if isinstance(node.tag, str) else ""
+            if local == "Override":
+                overrides[(node.get("PartName") or "").lstrip("/").lower()] = node.get("ContentType", "")
+            elif local == "Default":
+                defaults[(node.get("Extension") or "").lower()] = node.get("ContentType", "")
+        return overrides, defaults
+
+    @staticmethod
+    def _type_from(tables, part: str) -> str | None:
+        overrides, defaults = tables
+        found = overrides.get(part.lower())
+        if found is not None:
+            return found
+        base = posixpath.basename(part)
+        if "." not in base:
+            return None
+        return defaults.get(base.rsplit(".", 1)[-1].lower())
+
+    def content_type(self, part: str) -> str | None:
+        """The content type that covers one part: its Override, else the
+        Default for its extension; None when nothing covers it."""
+        return self._type_from(self._content_type_tables(), part)
+
+    def content_type_map(self) -> dict[str, str]:
+        """{part name: content type} for every covered part."""
+        tables = self._content_type_tables()
+        out: dict[str, str] = {}
+        for name in self._order:
+            found = self._type_from(tables, name)
+            if found is not None:
+                out[name] = found
+        return out
+
     def add_content_type_override(self, part: str, content_type: str) -> None:
         """Ensure [Content_Types].xml carries an Override for `part`.
         Additive only: existing Overrides for other parts are never dropped."""
@@ -478,6 +946,20 @@ class PptxPackage:
 
     # ---------- slides ----------
 
+    def slide_target(self, rid: str) -> str:
+        """The slide part one presentation relationship names. A slide
+        relationship that names no part of the file is damage in the file:
+        it is refused by name, not left to fail later as a missing key."""
+        part = self.relationship_target(PRESENTATION_PART, rid)
+        if part not in self._raw:
+            raise DocumentCorrupt(
+                f"{self.path.name} lists a slide ({rid}) whose relationship names "
+                f"{part}, and the file has no such part, so its slides cannot be "
+                "read; nothing was changed. PowerPoint repairs what it can when it "
+                "opens a deck: open this one in PowerPoint, save it, and try again."
+            )
+        return part
+
     def slide_parts(self) -> list[str]:
         """Slide part names in PRESENTATION ORDER: p:sldIdLst entries resolved
         through the presentation rels. NEVER ZIP order or filename numbering;
@@ -491,19 +973,35 @@ class PptxPackage:
             rid = sld.get(qn("r:id"))
             if rid is None:
                 raise DocumentCorrupt("p:sldId entry without r:id")
-            parts.append(self.relationship_target(PRESENTATION_PART, rid))
+            part = self.slide_target(rid)
+            parts.append(part)
         return parts
 
     def next_shape_id(self, slide_part: str) -> int:
         """Next free shape id for one slide/layout/master/notesSlide part.
         Shape ids (p:cNvPr/@id) are unique PER PART, never package-global."""
         highest = 1  # the root spTree's own cNvPr is conventionally id=1
-        for node in self.root(slide_part).iter(qn("p:cNvPr")):
+        used: set[int] = set()
+        # Ink content parts carry their id on p14:cNvPr, often with no
+        # picture fallback repeating it, so both spellings count.
+        for node in self.root(slide_part).iter(qn("p:cNvPr"), _P14_CNVPR):
             try:
-                highest = max(highest, int(node.get("id", "0")))
+                value = int(node.get("id", "0"))
             except ValueError:
                 continue
-        return highest + 1
+            used.add(value)
+            highest = max(highest, value)
+        if highest < MAX_SHAPE_ID:
+            return highest + 1
+        # A shape id is an unsigned 32-bit number: past it PowerPoint repairs
+        # the deck. Take the lowest id nothing uses.
+        candidate = 2
+        while candidate in used:
+            candidate += 1
+        if candidate > MAX_SHAPE_ID:
+            raise PptMcpError(
+                f"{slide_part} has no free shape id left; nothing was changed")
+        return candidate
 
     def _next_slide_id(self, sld_id_lst: etree._Element | None) -> int:
         highest = SLIDE_ID_MIN - 1
@@ -514,7 +1012,7 @@ class PptxPackage:
                 except ValueError:
                     continue
         if highest >= SLIDE_ID_MAX:
-            raise PptMcpError("slide id space exhausted")
+            raise SlideIdsExhausted(SLIDE_IDS_EXHAUSTED)
         return highest + 1
 
     def _insert_presentation_child(self, element: etree._Element) -> None:
@@ -546,7 +1044,7 @@ class PptxPackage:
         if layout_part not in self._raw:
             raise PptMcpError(f"layout part not in package: {layout_part}")
         try:
-            etree.fromstring(slide_xml)
+            xmlsafe.fromstring(slide_xml, doc=self.path.name, part="the new slide")
         except etree.XMLSyntaxError as exc:
             raise ValidationFailed(f"new slide XML is not well-formed: {exc}") from exc
         highest = 0
@@ -622,6 +1120,8 @@ class PptxPackage:
         dest_path = Path(dest) if dest else self.path
         check_path(dest_path, "save presentation")
         in_place = dest_path.resolve() == self.path.resolve()
+        if dest_path.exists() and has_read_only_attribute(dest_path):
+            raise read_only_error(dest_path)
 
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -630,8 +1130,9 @@ class PptxPackage:
                 zf.writestr(name, data, compress_type=self._compress_type_for(name))
         payload = buf.getvalue()
 
-        # Validate the payload before touching the destination.
-        self._validate_payload(payload)
+        # Validate the payload before touching the destination. A problem the
+        # deck on disk already has is kept and reported, never refused.
+        kept = self._check_payload(payload)
 
         # Linux filenames cap at 255 BYTES (not chars); a long CJK name plus
         # our suffix can exceed it, so hash-shorten while staying in the same
@@ -643,25 +1144,30 @@ class PptxPackage:
             ).hexdigest()[:16]
             tmp_name = f".{digest}.ppt-mcp-tmp"
         tmp = dest_path.with_name(tmp_name)
-        tmp.write_bytes(payload)
+        ticket = None
         try:
-            # Capture the current (pre-mutation) content into the backup slots
-            # via hardlink-then-replace: the presentation never leaves its own
-            # path, and the old bytes survive the final replace below under
-            # the prev slot's directory entry.
+            tmp.write_bytes(payload)
+            safesave.claim_publish("the presentation save")
+            # Stage the current (pre-mutation) content for the backup slots
+            # by hard link. promote lands it on the slots only after the swap
+            # went through, so a refused save leaves the slots as they were.
             if in_place and do_backup and dest_path.exists():
-                try:
-                    safesave.rotate_slots(dest_path)
-                except PermissionError as exc:
-                    raise PptMcpError(
-                        f"cannot rotate backup slots for {dest_path.name}: "
-                        f"another process holds a handle on a slot file. "
-                        f"Close any program reading the backups and retry. "
-                        f"({exc})"
-                    ) from exc
-            safesave.replace_with_retry(tmp, dest_path)
-        except BaseException:
-            tmp.unlink(missing_ok=True)
+                ticket = safesave.prepare_rotation(dest_path)
+            self.save_warnings = list(
+                safesave.promote(tmp, dest_path, ticket=ticket) or [])
+            if kept:
+                self.save_warnings.append(kept_problems_note(kept))
+        except BaseException as exc:
+            if ticket is not None:
+                ticket.abort()
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+            if isinstance(exc, OSError):
+                refusal = safesave.os_write_refusal(dest_path, exc)
+                if refusal is not None:
+                    raise refusal from exc
             raise
         # After a successful save the written bytes are the new baseline.
         if in_place:
@@ -671,27 +1177,66 @@ class PptxPackage:
         return dest_path
 
     @staticmethod
-    def _validate_payload(payload: bytes) -> None:
+    def _validate_payload(
+        payload: bytes, *, tolerate=frozenset(), doc: str = "the file"
+    ) -> list[str]:
         """Structural sanity before the destination is touched: valid ZIP,
         required roots present, every XML part well-formed, every internal
         relationship target resolvable, every sldIdLst entry resolvable.
-        Dangling rels are the pptx equivalent of Word's repair prompt."""
+        Dangling rels are the pptx equivalent of Word's repair prompt.
+
+        Raises ValidationFailed for the first problem whose key is not in
+        `tolerate` (the problems the deck already had: see
+        known_problem_keys); returns the messages of the tolerated ones,
+        which the caller reports. With nothing tolerated (validate, a backup
+        restored over a missing deck) every problem is refused, as before.
+        A package built to exhaust memory, or naming a part twice, is
+        refused (DocumentCorrupt, named by `doc`) before any part is read."""
+        problems = PptxPackage._payload_problems(payload, doc=doc)
+        for key, message in problems:
+            if key not in tolerate:
+                raise ValidationFailed(message)
+        return [message for _key, message in problems]
+
+    @staticmethod
+    def _payload_problems(payload: bytes, *, doc: str = "the file") -> list[tuple[tuple, str]]:
+        """Every structural problem of a payload as (key, message), in the
+        order the checks run. The key names the problem by kind, part and
+        id, so the same problem in the deck on disk and in a payload built
+        from it compares equal. A payload that is not a ZIP raises at once,
+        and so does one whose directory names a part twice or declares parts
+        built to exhaust memory (core/zipsafe.py, as opening a deck checks
+        it): a backup, a restore source and a file given to validate are
+        read here without being opened first."""
+        problems: list[tuple[tuple, str]] = []
+
+        def found(key: tuple, message: str) -> None:
+            problems.append((key, message))
+
         try:
             with zipfile.ZipFile(io.BytesIO(payload)) as zf:
+                zipsafe.check_members(zf.infolist(), doc=doc)
                 names = set(zf.namelist())
                 if PRESENTATION_PART not in names:
-                    raise ValidationFailed(f"output lost {PRESENTATION_PART}")
+                    found(("root", PRESENTATION_PART), f"output lost {PRESENTATION_PART}")
+                    return problems
                 if "[Content_Types].xml" not in names:
-                    raise ValidationFailed("output lost [Content_Types].xml")
+                    found(("root", "[Content_Types].xml"), "output lost [Content_Types].xml")
+                    return problems
                 roots: dict[str, etree._Element] = {}
-                for name in names:
+                for name in sorted(names):
                     if name.endswith((".xml", ".rels")):
                         try:
-                            roots[name] = etree.fromstring(zf.read(name))
+                            roots[name] = xmlsafe.fromstring(zf.read(name), part=name)
+                        except DocumentCorrupt:
+                            raise OutputRefused(
+                                f"output part {name} contains a document type declaration "
+                                "(<!DOCTYPE ...>), which a PowerPoint presentation never "
+                                "has; nothing was saved"
+                            ) from None
                         except etree.XMLSyntaxError as exc:
-                            raise ValidationFailed(
-                                f"output part {name} is not well-formed XML: {exc}"
-                            ) from exc
+                            found(("xml", name),
+                                  f"output part {name} is not well-formed XML: {exc}")
 
                 # No drawing coordinate may exceed PowerPoint's 2^31-1 EMU
                 # ceiling: past it the deck fails to open (repair path), so
@@ -714,76 +1259,205 @@ class PptxPackage:
                             except ValueError:
                                 continue
                             if abs(value) > MAX_DRAWING_EMU:
-                                raise ValidationFailed(
+                                found(
+                                    ("coordinate", name, etree.QName(el).localname, attr, value),
                                     f"out-of-range coordinate in {name}: "
                                     f"{etree.QName(el).localname} {attr}="
                                     f"{value} EMU exceeds PowerPoint's "
                                     f"{MAX_DRAWING_EMU} EMU limit; the deck "
-                                    "would not open cleanly"
+                                    "would not open cleanly",
                                 )
 
                 # Every text body needs at least one a:p. A p:txBody with
                 # none is schema-clean and relationship-clean, so it sailed
                 # through every check here, and PowerPoint then refused the
                 # whole deck naming nothing: about 40 minutes of manual
-                # bisection on a 45-slide build. The content model says a body HAS paragraphs, so a
-                # payload carrying an empty one is invalid.
+                # bisection on a 45-slide build. The content model says a body
+                # HAS paragraphs, so a payload carrying an empty one is
+                # invalid.
                 for name, root in roots.items():
                     if not name.startswith("ppt/") or name.endswith(".rels"):
                         continue
                     for body in root.iter(*_TXBODY_TAGS):
                         if _supplies_paragraph(body):
                             continue
-                        raise ValidationFailed(
+                        owner = _txbody_owner(body)
+                        found(
+                            ("empty_text_body", name, owner),
                             f"empty text body in {name}: "
                             f"{etree.QName(body).localname} on "
-                            f"{_txbody_owner(body)} has no a:p paragraph, "
+                            f"{owner} has no a:p paragraph, "
                             "directly or through an AlternateContent "
                             "branch; PowerPoint refuses to open a deck "
-                            "with one. Leave one empty paragraph instead."
+                            "with one. Leave one empty paragraph instead.",
                         )
 
+                # Every part needs a content type, by Override or by the
+                # Default for its extension. A part with none is schema-clean
+                # and relationship-clean, and PowerPoint repairs the deck.
+                tables = PptxPackage._content_type_tables_of(roots.get("[Content_Types].xml"))
+                for name in sorted(names if "[Content_Types].xml" in roots else ()):
+                    if name == "[Content_Types].xml" or name.endswith("/"):
+                        continue
+                    if PptxPackage._type_from(tables, name) is None:
+                        found(
+                            ("no_content_type", name),
+                            f"output part {name} has no content type: "
+                            "[Content_Types].xml has no Override for it and no Default "
+                            "for its extension, so PowerPoint would repair the deck",
+                        )
+
+                # Drawing ids are unsigned 32-bit numbers; a shape tree ends
+                # with its own p:extLst; a timing target names a shape the
+                # slide has. Each of these passes the checks above and makes
+                # PowerPoint repair the deck (or ignore the edit).
+                for name, root in roots.items():
+                    if not name.startswith("ppt/") or name.endswith(".rels"):
+                        continue
+                    for el in root.iter(qn("p:cNvPr"), _P14_CNVPR):
+                        raw = el.get("id")
+                        if raw is not None and raw.isdigit() and int(raw) > MAX_SHAPE_ID:
+                            found(
+                                ("shape_id_range", name, int(raw)),
+                                f"shape id {raw} in {name} is past {MAX_SHAPE_ID}, the "
+                                "highest id PowerPoint reads; the deck would be repaired",
+                            )
+                    for tree_el in root.iter(qn("p:spTree"), qn("p:grpSp")):
+                        kids = [c for c in tree_el if isinstance(c.tag, str)]
+                        tags = [c.tag for c in kids]
+                        if qn("p:extLst") in tags:
+                            after = len(kids) - 1 - tags.index(qn("p:extLst"))
+                            if after:
+                                owner = tree_el.find(".//" + qn("p:cNvPr"))
+                                found(
+                                    ("shape_after_extlst", name,
+                                     owner.get("id") if owner is not None else None, after),
+                                    f"{after} shape(s) in {name} are written after the "
+                                    "shape tree's p:extLst, where PowerPoint ignores them",
+                                )
+                    for authors in root.iter(qn("p:cmAuthorLst")):
+                        seen: set[tuple[str, str]] = set()
+                        for author in authors.findall(qn("p:cmAuthor")):
+                            presence = next(
+                                author.iter("{%s}presenceInfo" % NSMAP["p15"]), None)
+                            if presence is None:
+                                continue
+                            who = (author.get("name", ""), presence.get("userId", ""))
+                            if who in seen:
+                                found(
+                                    ("comment_authors_alike", name, who[0], who[1]),
+                                    f"two comment authors in {name} share the name "
+                                    f"{who[0]!r} and the same user id; PowerPoint would "
+                                    "repair the deck",
+                                )
+                            seen.add(who)
+                    if name.startswith("ppt/slides/slide") and root.tag == qn("p:sld"):
+                        shape_ids = {
+                            el.get("id") for el in root.iter(qn("p:cNvPr"), _P14_CNVPR)}
+                        for tgt_el in root.iter(qn("p:tgtEl")):
+                            tgt = next((c for c in tgt_el if isinstance(c.tag, str)), None)
+                            if tgt is None:
+                                found(
+                                    ("timing_empty_target", name),
+                                    f"an animation target in {name} names nothing "
+                                    "(empty p:tgtEl); PowerPoint would repair the deck",
+                                )
+                            elif tgt.tag == qn("p:spTgt") and tgt.get("spid") not in shape_ids:
+                                found(
+                                    ("timing_target", name, tgt.get("spid")),
+                                    f"an animation in {name} targets shape {tgt.get('spid')}, "
+                                    "which is not on the slide; PowerPoint would repair the deck",
+                                )
+
                 # Every internal relationship target must exist in the package.
+                # Keep the complete id set (including external relationships)
+                # for the inverse check below: an XML r:id/r:embed/r:link is
+                # just as broken when its .rels entry was dropped.
                 rel_tag = f"{{{NSMAP['rel']}}}Relationship"
                 pres_rid_targets: dict[str, str] = {}
+                rel_ids_by_source: dict[str, set[str]] = {}
                 for name, root in roots.items():
                     if not name.endswith(".rels"):
                         continue
                     source = rels_source(name)
                     for rel in root.iter(rel_tag):
+                        rid = rel.get("Id", "")
+                        rel_ids_by_source.setdefault(source, set()).add(rid)
                         if rel.get("TargetMode") == "External":
                             continue
                         target = rel.get("Target", "")
                         resolved = resolve_target(source, target)
                         if resolved not in names:
-                            # Partnames with escaped characters (%20) resolve
-                            # through their unquoted spelling.
-                            if unquote(resolved) in names:
+                            # Spellings PowerPoint reads as the part: escaped
+                            # characters (%20), backslashes, a #fragment.
+                            spelling = spelled_target(source, target, names)
+                            if spelling is not None:
+                                resolved = resolve_target(source, spelling)
+                            elif unquote(resolved) in names:
                                 resolved = unquote(resolved)
                             else:
-                                raise ValidationFailed(
+                                found(
+                                    ("dangling_relationship", name, rid, target),
                                     f"dangling relationship in {name}: "
                                     f"{rel.get('Id')} -> {target} (no part "
-                                    f"{resolved})"
+                                    f"{resolved})",
                                 )
+                                continue
                         if source == PRESENTATION_PART:
-                            pres_rid_targets[rel.get("Id", "")] = resolved
+                            pres_rid_targets[rid] = resolved
+
+                relationship_ns = NSMAP["r"]
+                for name, root in roots.items():
+                    if name.endswith(".rels"):
+                        continue
+                    known_ids = rel_ids_by_source.get(name, set())
+                    for element in root.iter():
+                        for attribute, rid in element.attrib.items():
+                            qname = etree.QName(attribute)
+                            if qname.namespace != relationship_ns:
+                                continue
+                            # PowerPoint's ground-truthed media click action
+                            # uses a:hlinkClick r:id="" with
+                            # action="ppaction://media". The empty value is a
+                            # sentinel, not a relationship lookup.
+                            if rid == "":
+                                continue
+                            if rid not in known_ids:
+                                found(
+                                    ("dangling_relationship_id", name, qname.localname, rid),
+                                    f"dangling relationship id in {name}: "
+                                    f"{qname.localname}={rid!r} has no entry in "
+                                    f"{rels_name(name)}",
+                                )
 
                 # Every slide in sldIdLst must resolve through those rels.
-                pres = roots[PRESENTATION_PART]
-                sld_id_lst = pres.find(qn("p:sldIdLst"))
+                pres = roots.get(PRESENTATION_PART)
+                sld_id_lst = pres.find(qn("p:sldIdLst")) if pres is not None else None
                 if sld_id_lst is not None:
                     for sld in sld_id_lst.findall(qn("p:sldId")):
                         rid = sld.get(qn("r:id"))
                         if rid not in pres_rid_targets:
-                            raise ValidationFailed(
+                            found(
+                                ("slide_id", sld.get("id"), rid),
                                 f"sldId {sld.get('id')} references {rid}, "
-                                "which is not a presentation relationship"
+                                "which is not a presentation relationship",
                             )
         except zipfile.BadZipFile as exc:  # pragma: no cover
             raise ValidationFailed(f"output is not a valid ZIP: {exc}") from exc
+        return problems
 
-    # ---------- package-level primitives for slide CRUD ----------
+    def _check_payload(self, payload: bytes) -> list[str]:
+        """The save's check: refuse any problem this change would add, and
+        keep (and report) a problem the deck on disk already has. A deck
+        that came in with an unused relationship to a missing picture, or a
+        part nothing references, could otherwise never be changed at all."""
+        problems = self._payload_problems(payload, doc=self.path.name)
+        if not problems:
+            return []
+        return self._validate_payload(
+            payload, tolerate=known_problem_keys(self.path), doc=self.path.name)
+
+    # ---------- Package-level primitives for slide CRUD ----------
 
     def part_bytes(self, name: str) -> bytes:
         """Current effective bytes of a part: the serialized tree when the

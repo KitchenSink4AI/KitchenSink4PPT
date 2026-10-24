@@ -1,13 +1,13 @@
-"""Charts: combo charts (per-series type, secondary axis),
+"""Combo charts (per-series type, secondary axis),
 format_chart (title/legend/axis titles/number format/gridlines/data labels),
 and update_chart_data over multiple plot groups.
 
 Axis-wiring assertions mirror the PowerPoint 365 ground truth captured via
-COM: each secondary group carries its
-own axis pair, catAx id first in c:axId order; the secondary catAx is
-delete=1, the secondary valAx sits right with crosses=max, and each axis's
-crossAx points at its partner. python-pptx is the oracle where its reader
-copes (multi-plot values); axis internals are asserted on the XML directly.
+COM: each secondary group carries its own axis pair, catAx id first in
+c:axId order; the secondary catAx is delete=1, the secondary valAx sits
+right with crosses=max, and each axis's crossAx points at its partner.
+python-pptx is the oracle where its reader copes (multi-plot values); axis
+internals are asserted on the XML directly.
 """
 
 from __future__ import annotations
@@ -141,7 +141,7 @@ class TestComboCreate:
         ]
 
     def test_primary_only_chart_unchanged(self, deck):
-        """No secondary series -> exactly the v1 two-axis emission."""
+        """No secondary series -> exactly the original two-axis emission."""
         pkg, slide = deck
         r = ch.create_chart(
             pkg, slide, "column", CATS,
@@ -217,7 +217,7 @@ class TestComboUpdate:
         )
         assert out["type"] == "combo"
         assert out["points"] == 4
-        assert out["embedded_workbook"] == "regenerated"
+        assert out["embedded_workbook"] == "updated_in_place"
         pa = _plot_area(pkg, r["chart_part"])
         line_ser = pa.find(_qc("lineChart")).find(_qc("ser"))
         vals = [

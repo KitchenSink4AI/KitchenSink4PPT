@@ -11,6 +11,9 @@ follow. Every save is validated, and a backup lands first.
 **The habits that matter.** Big decks read in pages, never all at once, so
 one look never floods the conversation. `diagnose` is the health check: run
 it when anything seems off, and it also reports the version and update
-state (weekly check, off with KS4P_UPDATE_CHECK=off). Close your own
+state. The server checks at most once a week, in the background after you
+use a tool; when a newer version exists, your AI app shows a short notice,
+or your AI mentions it once (KS4P_UPDATE_NOTICES=off turns the notices off,
+KS4P_UPDATE_CHECK=off turns the check off). Close your own
 PowerPoint before long automated runs; the server refuses to fight your open
 copy for the file.

@@ -1,5 +1,5 @@
-"""Ops: the text engine (placeholders, text boxes, formatting,
-bullets, search/replace, autofit reporting), exercised on the corpus via
+"""Text ops: the text engine (placeholders, text boxes, formatting,
+bullets, search/replace, autofit reporting), exercised on the real corpus via
 tmp copies (originals are never opened for saving) plus deliberately built
 structures the corpus lacks (fragmented runs, fields).
 
@@ -26,6 +26,7 @@ from kitchensink4ppt.core.errors import (
 )
 from kitchensink4ppt.core.package import PptxPackage, qn
 from kitchensink4ppt.ops import _runmap
+from kitchensink4ppt.ops import charts
 from kitchensink4ppt.ops.read import (
     find_text,
     get_slide_info,
@@ -82,7 +83,8 @@ def _slide_with_title_and_body(pkg: PptxPackage) -> dict:
 
 
 def _add_table(pkg: PptxPackage, slide_index: int, rows: list[list[str]]) -> int:
-    """Minimal a:tbl graphicFrame appended to a slide; returns the shape id."""
+    """Minimal a:tbl graphicFrame appended to a slide (the corpus decks
+    carry no native tables); returns the shape id."""
     part = pkg.slide_parts()[slide_index]
     sp_tree = pkg.root(part).find(f"{qn('p:cSld')}/{qn('p:spTree')}")
     sid = pkg.next_shape_id(part)
@@ -536,7 +538,7 @@ def test_replace_deck_parity_and_no_self_reference_loop(tmp_path):
     assert expected >= 2
 
     # Replacement CONTAINS the search term: the self-referencing
-    # lesson; snapshot-once right-to-left must not re-match its own output.
+    # case; snapshot-once right-to-left must not re-match its own output.
     result = search_and_replace(pkg, term, term + "-plus")
     assert result["total"] == expected
     assert sum(s["count"] for s in result["slides"]) == expected
@@ -653,6 +655,62 @@ def test_replace_refuses_field_overlap(tmp_path):
     pkg.save()
 
 
+def test_whole_deck_text_reads_chart_labels_and_replace_reports_skips(make_deck):
+    path = make_deck("chart_text.pptx")
+    pkg = PptxPackage(path)
+    made = charts.create_chart(
+        pkg,
+        0,
+        "column",
+        ["North", "South"],
+        [{"name": "Revenue", "values": [10, 20]}],
+        1,
+        1,
+        6,
+        4,
+        title="Quarterly results",
+    )
+    charts.format_chart(
+        pkg,
+        0,
+        made["shape_id"],
+        cat_axis_title="Region",
+        val_axis_title="USD millions",
+    )
+
+    text = get_text(pkg, scope=0)["text"]
+    for expected in (
+        "Quarterly results",
+        "Revenue",
+        "North",
+        "South",
+        "Region",
+        "USD millions",
+    ):
+        assert expected in text
+
+    found = find_text(pkg, "Revenue", scope=0, include_notes=False)
+    assert found["count"] == 1
+    assert found["matches"][0]["where"] == "chart"
+    assert found["matches"][0]["chart_field"] == "series_name"
+    assert found["matches"][0]["shape_id"] == made["shape_id"]
+
+    replaced = search_and_replace(pkg, "Revenue", "Sales", scope=0)
+    assert replaced["total"] == 0
+    assert replaced["matches_found"] == 1
+    assert replaced["chart_matches_skipped"] == 1
+    assert replaced["slides"] == [
+        {
+            "slide_index": 0,
+            "slide_id": get_text(pkg, scope=0)["slides"][0]["slide_id"],
+            "count": 0,
+            "chart_matches_skipped": 1,
+        }
+    ]
+    assert find_text(pkg, "Revenue", scope=0, include_notes=False)["count"] == 1
+    assert find_text(pkg, "Sales", scope=0, include_notes=False)["count"] == 0
+
+
 # ------------------------------------------------------------- runmap direct
 
 
@@ -674,7 +732,7 @@ def test_runmap_replace_covering_break_slot():
         f"<a:r><a:t>two</a:t></a:r></a:p>"
     )
     text, segments = _runmap.build_map(p)
-    assert text == "one\ntwo"
+    assert text == "one\vtwo"
     _runmap.replace_range(p, segments, 3, 4, " ")  # the br slot alone
     assert paragraph_text(p) == "one two"
     assert p.find(qn("a:br")) is None
@@ -705,7 +763,11 @@ def test_get_autofit_state_real_placeholder(tmp_path):
             assert 0 < rec["font_scale_pct"] <= 100
         overflow = rec.get("overflow")
         if overflow is not None and overflow.get("likely_overflow") is not None:
-            assert overflow["heuristic"] is True
+            # Installed font metrics are the preferred path; the heuristic
+            # flag is reserved for the fallback estimate when no font file can
+            # be resolved on the host.
+            assert overflow["method"] in ("font-metrics", "estimate")
+            assert overflow["heuristic"] is (overflow["method"] == "estimate")
             assert "fill_ratio" in overflow
 
 
@@ -736,3 +798,69 @@ def test_get_autofit_state_shape_selector_errors(tmp_path):
     pkg = PptxPackage(work)
     with pytest.raises(TargetNotFound, match="no shape"):
         get_autofit_state(pkg, 0, 99999)
+
+
+# ------------------------------------------- bullets geometry and spacing
+
+
+def _first_ppr(pkg, sid):
+    elem = _shape_elem(pkg, 0, sid)
+    return txbody_paragraphs(elem)[0].find(qn("a:pPr"))
+
+
+def test_set_bullets_defaults_to_level0_hanging_indent_on_textbox(tmp_path):
+    work = _work_copy("proposal_deck.pptx", tmp_path)
+    pkg = PptxPackage(work)
+    sid = insert_textbox(pkg, 0, "One\nTwo", 1, 1, 4, 2)["shape_id"]
+    set_bullets(pkg, 0, sid, "char")  # level omitted
+    ppr = _first_ppr(pkg, sid)
+    assert ppr.get("marL") == "228600" and ppr.get("indent") == "-228600"
+    # an explicit level still wins
+    set_bullets(pkg, 0, sid, "autonum", level=2)
+    ppr = _first_ppr(pkg, sid)
+    assert ppr.get("marL") == str(228600 + 2 * 457200)
+
+
+def test_set_bullets_default_keeps_explicit_marl(tmp_path):
+    work = _work_copy("proposal_deck.pptx", tmp_path)
+    pkg = PptxPackage(work)
+    sid = insert_textbox(pkg, 0, "One", 1, 1, 4, 1)["shape_id"]
+    _first_ppr(pkg, sid).set("marL", "123456")
+    set_bullets(pkg, 0, sid, "char")
+    assert _first_ppr(pkg, sid).get("marL") == "123456"
+
+
+def test_set_bullets_none_clears_indent(tmp_path):
+    work = _work_copy("proposal_deck.pptx", tmp_path)
+    pkg = PptxPackage(work)
+    sid = insert_textbox(pkg, 0, "One", 1, 1, 4, 1)["shape_id"]
+    set_bullets(pkg, 0, sid, "char", level=1)
+    assert _first_ppr(pkg, sid).get("marL") is not None
+    set_bullets(pkg, 0, sid, "none")
+    ppr = _first_ppr(pkg, sid)
+    assert ppr.get("marL") is None and ppr.get("indent") is None
+    assert ppr.find(qn("a:buNone")) is not None
+
+
+def test_format_text_space_before_after(tmp_path):
+    work = _work_copy("proposal_deck.pptx", tmp_path)
+    pkg = PptxPackage(work)
+    sid = insert_textbox(pkg, 0, "A\nB", 1, 1, 4, 2)["shape_id"]
+    format_text(pkg, 0, sid, line_spacing=1.2, space_before=6, space_after=12.5)
+    elem = _shape_elem(pkg, 0, sid)
+    for p in txbody_paragraphs(elem):
+        ppr = p.find(qn("a:pPr"))
+        assert ppr.find(f"{qn('a:spcBef')}/{qn('a:spcPts')}").get("val") == "600"
+        assert ppr.find(f"{qn('a:spcAft')}/{qn('a:spcPts')}").get("val") == "1250"
+        assert [etree.QName(c).localname for c in ppr][:3] == [
+            "lnSpc", "spcBef", "spcAft"
+        ]
+    # one paragraph, replace in place, spacing alone is a valid change
+    format_text(pkg, 0, sid, paragraph=0, space_before=0)
+    ppr = txbody_paragraphs(elem)[0].find(qn("a:pPr"))
+    assert ppr.find(f"{qn('a:spcBef')}/{qn('a:spcPts')}").get("val") == "0"
+    assert len(ppr.findall(qn("a:spcBef"))) == 1
+    with pytest.raises(PptMcpError, match="space_after"):
+        format_text(pkg, 0, sid, space_after=-1)
+    with pytest.raises(PptMcpError, match="space_before"):
+        format_text(pkg, 0, sid, space_before=5000)
